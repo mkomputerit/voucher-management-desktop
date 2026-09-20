@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Build
+build/
+dist/
+.generated-assets/
+*.spec.bak
+
+# Runtime / persistent application state
+config/
+data/
+logs/
+Print/
+Loghi/
+assets/custom_logo.*
+
+# Secrets and operational data
+*.key
+*.secret
+*.env
+*.log
+*.pfx
+*.p12
+*.pem
+history*.jsonl
+*credential*
+*api-key*
+
+# Backups / diagnostic output
+*.zip
+unifi-api-test*.json
+
+# Real controller exports / generated production PDFs
+*.pdf
+!tests/fixtures/*.pdf
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

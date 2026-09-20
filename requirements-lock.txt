@@ -1,0 +1,30 @@
+# Fully pinned environment captured from the successful Windows CI review.
+#
+# The release workflow installs this file with --no-deps inside a fresh venv.
+# That means any newly introduced transitive dependency causes CI to fail
+# instead of being resolved silently at a different version.
+#
+# Runtime
+reportlab==4.5.1
+Pillow==11.3.0
+pypdfium2==4.30.0
+pywin32==311
+sv-ttk==2.6.1
+darkdetect==0.8.0
+charset-normalizer==3.5.1
+
+# Tests
+pytest==8.4.2
+colorama==0.4.6
+iniconfig==2.3.0
+packaging==26.3
+pluggy==1.6.0
+Pygments==2.21.0
+
+# Windows packaging
+pyinstaller==6.22.3
+altgraph==0.17.5
+pefile==2024.8.26
+pyinstaller-hooks-contrib==2026.7
+pywin32-ctypes==0.2.3
+setuptools==84.0.0

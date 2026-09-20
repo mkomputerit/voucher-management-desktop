@@ -1,0 +1,162 @@
+name: Build Windows portable
+
+on:
+  push:
+    branches:
+      - main
+      - public-readiness
+      - 'beta/**'
+      - 'release/**'
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'launcher.py'
+      - 'tools/**'
+      - 'third_party_licenses/**'
+      - 'requirements*.txt'
+      - 'pyinstaller.spec'
+      - 'version.txt'
+      - 'README.md'
+      - 'LICENSE'
+      - 'PRIVACY.md'
+      - 'SECURITY.md'
+      - 'CONTRIBUTING.md'
+      - 'CODE_SIGNING_POLICY.md'
+      - 'THIRD_PARTY_NOTICES.md'
+      - 'docs/**'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    # Pin the runner family used by the reviewed build instead of following
+    # the moving windows-latest alias.
+    runs-on: windows-2025
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+          check-latest: false
+          cache: 'pip'
+          cache-dependency-path: requirements-lock.txt
+
+      - name: Create isolated build environment
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install pip==26.2.1
+          .\.venv\Scripts\python.exe -m pip install --no-deps -r requirements-lock.txt
+          .\.venv\Scripts\python.exe -m pip check
+
+      - name: Compile source
+        env:
+          PYTHONPATH: src
+        run: .\.venv\Scripts\python.exe -m compileall -q src launcher.py
+
+      - name: Check generic engineering privacy
+        run: .\.venv\Scripts\python.exe tools/check_public_tree.py
+
+      - name: Build and verify clean public snapshot
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe tools\export_public_snapshot.py build\public-snapshot
+          .\.venv\Scripts\python.exe tools\check_public_tree.py --root build\public-snapshot --public-export
+
+      - name: Run tests
+        env:
+          PYTHONPATH: src
+        run: .\.venv\Scripts\python.exe -m pytest -q
+
+      - name: Validate PowerShell diagnostics
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem tools\*.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              Write-Error "PowerShell parse errors in $($_.Name)"
+              $errors | ForEach-Object { Write-Error $_.Message }
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Build portable onedir
+        run: .\.venv\Scripts\pyinstaller.exe --noconfirm --clean pyinstaller.spec
+
+      - name: Verify Windows executable metadata
+        shell: pwsh
+        run: |
+          $expectedVersion = (Get-Content version.txt -Raw).Trim()
+          $info = (Get-Item dist\VoucherManagement\VoucherManagement.exe).VersionInfo
+          $checks = @{
+            ProductName = "Voucher Management"
+            FileDescription = "Voucher Management"
+            OriginalFilename = "VoucherManagement.exe"
+            ProductVersion = $expectedVersion
+            FileVersion = $expectedVersion
+          }
+          foreach ($name in $checks.Keys) {
+            $actual = $info.$name
+            $expected = $checks[$name]
+            if ($actual -ne $expected) {
+              throw "Windows metadata mismatch for ${name}: expected '$expected', got '$actual'"
+            }
+          }
+
+          $bundleIcon = "dist\VoucherManagement\_internal\assets\VoucherManagement.ico"
+          if (-not (Test-Path -LiteralPath $bundleIcon -PathType Leaf)) {
+            throw "Bundled application icon is missing: $bundleIcon"
+          }
+          if ((Get-Item -LiteralPath $bundleIcon).Length -le 0) {
+            throw "Bundled application icon is empty: $bundleIcon"
+          }
+
+          .\.venv\Scripts\python.exe tools\verify_exe_icon.py --exe dist\VoucherManagement\VoucherManagement.exe --ico $bundleIcon
+
+      - name: Add release documentation and dependency inventory
+        shell: pwsh
+        run: |
+          Copy-Item version.txt dist\VoucherManagement\version.txt
+          Copy-Item README.md dist\VoucherManagement\README.md
+          Copy-Item LICENSE dist\VoucherManagement\LICENSE
+          Copy-Item PRIVACY.md dist\VoucherManagement\PRIVACY.md
+          Copy-Item THIRD_PARTY_NOTICES.md dist\VoucherManagement\THIRD_PARTY_NOTICES.md
+          New-Item -ItemType Directory -Force dist\VoucherManagement\docs | Out-Null
+          Copy-Item docs\ARCHITECTURE.md dist\VoucherManagement\docs\ARCHITECTURE.md
+          Copy-Item SECURITY.md dist\VoucherManagement\SECURITY.md
+          .\.venv\Scripts\python.exe -m pip freeze --all | Out-File -Encoding utf8 dist\VoucherManagement\DEPENDENCIES.txt
+          .\.venv\Scripts\python.exe tools\collect_dependency_licenses.py dist\VoucherManagement\THIRD_PARTY_LICENSES
+          New-Item -ItemType Directory -Force dist\VoucherManagement\THIRD_PARTY_LICENSES\pypdfium2 | Out-Null
+          Copy-Item third_party_licenses\pypdfium2\* dist\VoucherManagement\THIRD_PARTY_LICENSES\pypdfium2\ -Force
+          Get-FileHash dist\VoucherManagement\VoucherManagement.exe -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  VoucherManagement.exe" } |
+            Out-File -Encoding ascii dist\VoucherManagement\SHA256SUMS.txt
+
+      - name: Upload portable build
+        # Normal development pushes are still fully compiled/tested, but the
+        # ~28 MB portable ZIP is retained only when explicitly requested or
+        # when building a release/main branch. This prevents Actions artifact
+        # storage from growing on every review commit.
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: VoucherManagement-Windows-x64-${{ github.sha }}
+          path: dist/VoucherManagement/
+          if-no-files-found: error
+          retention-days: 14
+

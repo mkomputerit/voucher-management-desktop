@@ -1,0 +1,11 @@
+# Defense in depth for archive-based source exports.
+docs/PRIVATE_TO_PUBLIC_TRANSITION.md export-ignore
+docs/PUBLIC_RELEASE_READINESS.md export-ignore
+docs/CODE_REVIEW_REPORT_PRIVATE.md export-ignore
+docs/REVIEW_FIXES_4_2_0_BETA_2.md export-ignore
+docs/PUBLICATION_PLAN.md export-ignore
+docs/CODE_REVIEW_REPORT.md export-ignore
+docs/UBIQUITI_COMPLIANCE_REVIEW.md export-ignore
+docs/BETA_4_2_0_REVIEW.md export-ignore
+docs/BETA_4_2_0_TEST_PLAN.md export-ignore
+.github/workflows/cleanup-actions-storage.yml export-ignore
