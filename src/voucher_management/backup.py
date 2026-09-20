@@ -57,12 +57,47 @@ class BackupService:
         self.paths = paths
 
     @staticmethod
+    def _portable_basename(value: str) -> str:
+        """Return a basename for either Windows or POSIX-style legacy paths."""
+
+        return PurePosixPath(str(value).replace("\\", "/")).name
+
+    @staticmethod
+    def _validate_history_rows(history_path: Path, *, context: str) -> list[dict]:
+        """Read history rows with the same fail-closed semantics used at runtime."""
+
+        rows: list[dict] = []
+        try:
+            with history_path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if not line.strip():
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise BackupError(
+                            f"{context}: cronologia danneggiata alla riga "
+                            f"{line_number}"
+                        ) from exc
+                    if not isinstance(item, dict):
+                        raise BackupError(
+                            f"{context}: cronologia danneggiata alla riga "
+                            f"{line_number}"
+                        )
+                    rows.append(item)
+        except BackupError:
+            raise
+        except (OSError, UnicodeError) as exc:
+            raise BackupError(f"{context}: cronologia non leggibile") from exc
+        return rows
+
+    @staticmethod
     def _sanitized_settings_bytes(settings_path: Path) -> bytes:
         """Serialize supported settings without machine-specific logo paths."""
         settings = SettingsStore(settings_path).load()
         logo_value = str(settings.get("logo_path", "") or "").strip()
         if logo_value:
-            settings["logo_path"] = Path(logo_value).name
+            settings["logo_path"] = BackupService._portable_basename(logo_value)
         return json.dumps(
             settings,
             indent=2,
@@ -78,44 +113,26 @@ class BackupService:
         disclose the Windows profile path that created an older event.
         """
         rows: list[str] = []
-        try:
-            with history_path.open("r", encoding="utf-8") as handle:
-                for line_number, line in enumerate(handle, start=1):
-                    if not line.strip():
-                        continue
-                    try:
-                        item = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        raise BackupError(
-                            "Impossibile creare un backup da una cronologia "
-                            f"danneggiata alla riga {line_number}"
-                        ) from exc
-                    if not isinstance(item, dict):
-                        raise BackupError(
-                            "Impossibile creare un backup da una cronologia "
-                            f"danneggiata alla riga {line_number}"
-                        )
-                    output = str(item.get("output_file", "") or "").strip()
-                    if output:
-                        item["output_file"] = Path(output).name
-                    rows.append(
-                        json.dumps(
-                            item,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        )
-                    )
-        except BackupError:
-            raise
-        except (OSError, UnicodeError) as exc:
-            raise BackupError(
-                "Impossibile leggere la cronologia durante il backup"
-            ) from exc
+        for item in BackupService._validate_history_rows(
+            history_path,
+            context="Impossibile creare il backup",
+        ):
+            output = str(item.get("output_file", "") or "").strip()
+            if output:
+                item["output_file"] = BackupService._portable_basename(output)
+            rows.append(
+                json.dumps(
+                    item,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
 
         payload = "\n".join(rows)
         if rows:
             payload += "\n"
         return payload.encode("utf-8")
+
     def create(self, destination: Path) -> Path:
         """Write a validated ZIP snapshot and return its final path."""
         destination = Path(destination)
@@ -158,6 +175,11 @@ class BackupService:
                         if not source.is_file() or source.is_symlink():
                             continue
                         if source.name == "history.lock":
+                            continue
+                        if (
+                            dirname == "config"
+                            and source.name.startswith("settings.json.corrupt-")
+                        ):
                             continue
 
                         relative = source.relative_to(
@@ -319,6 +341,12 @@ class BackupService:
             has_history = history_path.is_file() and history_path.stat().st_size > 0
         except OSError as exc:
             raise BackupError("Cronologia backup non leggibile") from exc
+
+        if history_path.is_file():
+            BackupService._validate_history_rows(
+                history_path,
+                context="Backup non valido",
+            )
 
         actual = (
             hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]

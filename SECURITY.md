@@ -20,7 +20,7 @@ The project follows these rules:
 
 ## Authentication
 
-The 4.2 development line uses the documented UniFi Network API and X-API-Key
+Voucher Management 4.2.0 uses the documented UniFi Network API and X-API-Key
 authentication.
 
 The API key is accepted only for the active connection. It is never persisted
@@ -83,6 +83,12 @@ sensitive operational data.
 
 Backups never intentionally contain controller passwords or API keys.
 
+
+On restore, Voucher Management clears the saved controller API root and
+certificate fingerprint before the restored data becomes active. The operator
+must re-enter the API root and independently approve any self-signed certificate
+again; controller trust is never imported from a backup.
+
 ## Repository policy
 
 Never commit real:
@@ -95,12 +101,11 @@ Never commit real:
 
 Fixtures must be synthetic.
 
-The CI privacy scanner also accepts an external marker list through
-`--markers-file`. Deployment-specific names belong in the private
-`PUBLIC_PRIVACY_MARKERS` Actions secret, one marker per line, rather than in
-repository source or ordinary SHA-256 digests. Private engineering CI invokes
-the scanner with `--require-markers`, so a missing or empty marker list is a
-hard failure. The exported public workflow does not consume that secret.
+The privacy scanner also accepts an external marker list through
+`--markers-file`. Deployment-specific marker lists must stay outside the
+repository and should be supplied only during maintainer-side release checks.
+The public workflow performs generic repository checks without requiring any
+deployment-specific secret.
 
 ## Vulnerability reporting
 

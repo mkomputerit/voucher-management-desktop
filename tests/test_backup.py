@@ -397,5 +397,48 @@ class BackupServiceTests(unittest.TestCase):
             self.service.validate(bad)
 
 
+    def test_backup_excludes_corrupt_settings_forensic_copies(self):
+        corrupt = (
+            self.paths.user_root
+            / "config"
+            / "settings.json.corrupt-synthetic"
+        )
+        corrupt.write_text("{unexpected archival payload", encoding="utf-8")
+        backup = Path(self.temp.name) / "backup.zip"
+
+        self.service.create(backup)
+
+        with zipfile.ZipFile(backup, "r") as archive:
+            self.assertNotIn(
+                "config/settings.json.corrupt-synthetic",
+                archive.namelist(),
+            )
+
+    def test_restore_rejects_malformed_history_before_live_change(self):
+        backup = Path(self.temp.name) / "backup.zip"
+        self.service.create(backup)
+        live_settings = (
+            self.paths.user_root / "config" / "settings.json"
+        ).read_bytes()
+
+        tampered = Path(self.temp.name) / "tampered-history.zip"
+        with zipfile.ZipFile(backup, "r") as src, zipfile.ZipFile(
+            tampered, "w", compression=zipfile.ZIP_DEFLATED
+        ) as dst:
+            for info in src.infolist():
+                payload = src.read(info.filename)
+                if info.filename == "data/history.jsonl":
+                    payload = b"{not-json}\n"
+                dst.writestr(info, payload)
+
+        with self.assertRaisesRegex(BackupError, "cronologia danneggiata"):
+            self.service.restore(tampered)
+
+        self.assertEqual(
+            (self.paths.user_root / "config" / "settings.json").read_bytes(),
+            live_settings,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -41,9 +41,10 @@ def _remove_block(text: str, start_marker: str, end_marker: str, *, label: str) 
     end = text.find(end_marker)
 
     # The exporter also runs in the already-sanitized public repository CI.
-    # If both markers are absent, the block has already been removed and the
-    # operation is intentionally idempotent. A partial marker pair still
-    # indicates a malformed workflow and must fail closed.
+    # If the start marker is absent, the private block has already been
+    # removed; the public workflow intentionally keeps the following public
+    # step that also serves as the end marker. A surviving start marker without
+    # a valid end marker is malformed and must fail closed.
     if start == -1:
         return text
     if end == -1 or end <= start:

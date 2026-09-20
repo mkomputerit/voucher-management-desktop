@@ -25,8 +25,11 @@ def test_public_export_strips_private_workflow_steps(tmp_path: Path):
     ).read_text(encoding="utf-8")
     assert "Package private engineering prerelease" not in workflow
     assert "Publish private engineering prerelease" not in workflow
-    assert "contents: write" not in workflow
     assert "contents: read" in workflow
+    assert workflow.count("contents: write") == 1
+    test_job, release_job = workflow.split("\n  release:\n", 1)
+    assert "contents: write" not in test_job
+    assert "contents: write" in release_job
     assert "PUBLIC_PRIVACY_MARKERS" not in workflow
     assert "PRIVACY_MARKERS_FILE" not in workflow
     assert "PRIVATE_REPOSITORY_IDENTITY" not in workflow
@@ -118,4 +121,28 @@ def test_exporting_an_already_public_snapshot_is_idempotent(
 
     for relative in PRIVATE_ONLY_PATHS:
         assert not (third / relative).exists()
+
+def test_public_docs_do_not_reference_private_ci_plumbing(tmp_path: Path):
+    output = export_snapshot(tmp_path / "public")
+    readme = (output / "README.md").read_text(encoding="utf-8")
+    security = (output / "SECURITY.md").read_text(encoding="utf-8")
+    combined = readme + "\n" + security
+
+    assert "PUBLIC_PRIVACY_MARKERS" not in combined
+    assert "private engineering CI" not in combined.lower()
+    assert "docs/PUBLIC_RELEASE_READINESS.md" not in readme
+
+def test_public_workflow_release_permissions_are_isolated(tmp_path: Path):
+    output = export_snapshot(tmp_path / "public")
+    workflow = (
+        output / ".github" / "workflows" / "build-windows.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Package public release files" in workflow
+    assert "Upload public release files" in workflow
+    assert "Download verified release files" in workflow
+    assert "Publish GitHub release" in workflow
+    assert "SHA256SUMS.txt" in workflow
+    assert "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in workflow
+    assert "github.event.repository.private == false" in workflow
 

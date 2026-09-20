@@ -109,7 +109,7 @@ def test_connect_validates_info_and_single_site(monkeypatch):
     client = UniFiClient("controller.example.invalid")
     calls = []
 
-    def fake_request(method, path, payload=None, expected=(200,)):
+    def fake_request(method, path, payload=None, expected=(200,), **kwargs):
         calls.append((method, path))
         if path == "/info":
             return {"applicationVersion": "10.6.106"}
@@ -136,7 +136,7 @@ def test_connect_validates_info_and_single_site(monkeypatch):
 def test_connect_refuses_to_guess_between_multiple_sites(monkeypatch):
     client = UniFiClient("controller.example.invalid")
 
-    def fake_request(method, path, payload=None, expected=(200,)):
+    def fake_request(method, path, payload=None, expected=(200,), **kwargs):
         if path == "/info":
             return {"applicationVersion": "10.6.106"}
         return {
@@ -210,7 +210,7 @@ def test_list_vouchers_follows_offset_pagination(monkeypatch):
     )
     paths = []
 
-    def fake_request(method, path, payload=None, expected=(200,)):
+    def fake_request(method, path, payload=None, expected=(200,), **kwargs):
         paths.append(path)
         if "offset=0" in path:
             return page([first], offset=0, total=2)
@@ -228,7 +228,7 @@ def test_create_payload_maps_all_documented_limits(monkeypatch):
     client = connected_client()
     calls = []
 
-    def fake_request(method, path, payload=None, expected=(200,)):
+    def fake_request(method, path, payload=None, expected=(200,), **kwargs):
         calls.append((method, path, payload, expected))
         return {
             "vouchers": [
@@ -275,7 +275,7 @@ def test_create_unlimited_omits_authorized_guest_limit(monkeypatch):
     client = connected_client()
     payloads = []
 
-    def fake_request(method, path, payload=None, expected=(200,)):
+    def fake_request(method, path, payload=None, expected=(200,), **kwargs):
         payloads.append(payload)
         return {"vouchers": [voucher_json(guest_limit=None)]}
 
@@ -304,7 +304,7 @@ def test_delete_multiple_uses_individual_uuid_endpoints(monkeypatch):
     client = connected_client()
     calls = []
 
-    def fake_request(method, path, payload=None, expected=(200,)):
+    def fake_request(method, path, payload=None, expected=(200,), **kwargs):
         calls.append((method, path))
         return {"vouchersDeleted": 1}
 
@@ -325,7 +325,7 @@ def test_delete_reports_partial_completion(monkeypatch):
     client = connected_client()
     calls = 0
 
-    def fake_request(method, path, payload=None, expected=(200,)):
+    def fake_request(method, path, payload=None, expected=(200,), **kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -475,3 +475,41 @@ def test_pinned_connection_missing_socket_raises_typed_mismatch(monkeypatch):
         conn.connect()
     assert excinfo.value.expected_sha256 == "a" * 64
     assert excinfo.value.actual_sha256 == ""
+
+def test_get_voucher_404_reports_missing_voucher_not_api_root():
+    client = connected_client()
+
+    class NotFoundOpener:
+        def open(self, request, timeout=None):
+            raise HTTPError(
+                request.full_url,
+                404,
+                "Not Found",
+                {},
+                None,
+            )
+
+    client.opener = NotFoundOpener()
+
+    with pytest.raises(UniFiApiError, match="non è più presente"):
+        client.get_voucher("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+
+
+def test_generic_404_still_reports_api_root_configuration():
+    client = connected_client()
+
+    class NotFoundOpener:
+        def open(self, request, timeout=None):
+            raise HTTPError(
+                request.full_url,
+                404,
+                "Not Found",
+                {},
+                None,
+            )
+
+    client.opener = NotFoundOpener()
+
+    with pytest.raises(UniFiApiError, match="URL API"):
+        client._request("GET", "/info")
+

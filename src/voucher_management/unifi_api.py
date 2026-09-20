@@ -293,6 +293,7 @@ class UniFiClient:
         payload: dict | None = None,
         *,
         expected: tuple[int, ...] = (200,),
+        not_found_message: str | None = None,
     ) -> dict:
         if not self._api_key:
             raise UniFiApiError("Inserire la API key e connettersi prima")
@@ -328,7 +329,8 @@ class UniFiClient:
                 ) from exc
             if exc.code == 404:
                 raise UniFiApiError(
-                    "Endpoint UniFi non disponibile: verificare l'URL API in Network > Integrations"
+                    not_found_message
+                    or "Endpoint UniFi non disponibile: verificare l'URL API in Network > Integrations"
                 ) from exc
             raise UniFiApiError(f"Errore HTTP UniFi {exc.code}") from exc
         except URLError as exc:
@@ -569,6 +571,10 @@ class UniFiClient:
         result = self._request(
             "GET",
             f"/sites/{encoded_site}/hotspot/vouchers/{encoded_voucher}",
+            not_found_message=(
+                "Il voucher non è più presente sul controller UniFi. "
+                "Aggiornare l'elenco prima di riprovare."
+            ),
         )
         return self._voucher_from_json(result)
 
@@ -661,6 +667,10 @@ class UniFiClient:
                 result = self._request(
                     "DELETE",
                     f"/sites/{encoded_site}/hotspot/vouchers/{encoded_voucher}",
+                    not_found_message=(
+                        "Il voucher è già stato rimosso dal controller UniFi. "
+                        "Aggiornare l'elenco prima di riprovare."
+                    ),
                 )
                 count = int(result.get("vouchersDeleted", 0) or 0)
                 if count < 1:

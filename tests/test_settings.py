@@ -147,3 +147,23 @@ def test_update_rejects_unknown_keys(tmp_path):
         pass
     else:
         raise AssertionError("unknown/credential settings key was accepted")
+
+def test_malformed_settings_preserve_only_one_copy_per_content(tmp_path):
+    path = tmp_path / "config" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{broken", encoding="utf-8")
+    store = SettingsStore(path)
+
+    for _ in range(6):
+        store.load()
+
+    preserved = list(path.parent.glob("settings.json.corrupt-*"))
+    assert len(preserved) == 1
+    assert preserved[0].read_text(encoding="utf-8") == "{broken"
+
+    path.write_text("{different-broken", encoding="utf-8")
+    store.load()
+
+    preserved = list(path.parent.glob("settings.json.corrupt-*"))
+    assert len(preserved) == 2
+

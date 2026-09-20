@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 from copy import deepcopy
-from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -43,14 +43,22 @@ class SettingsStore:
         self.last_load_warning = ""
 
     def _preserve_corrupt_file(self) -> Path | None:
-        """Keep a forensic copy before callers overwrite malformed settings."""
+        """Keep one forensic copy per distinct malformed settings payload."""
 
         if not self.path.is_file():
             return None
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        try:
+            payload = self.path.read_bytes()
+        except OSError:
+            return None
+
+        digest = hashlib.sha256(payload).hexdigest()[:16]
         target = self.path.with_name(
-            f"{self.path.name}.corrupt-{stamp}"
+            f"{self.path.name}.corrupt-{digest}"
         )
+        if target.is_file():
+            return target
+
         try:
             shutil.copy2(self.path, target)
             return target

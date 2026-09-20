@@ -1,5 +1,32 @@
 # Changelog
 
+## 4.2.0 - 2026-09-20
+
+- First public stable release.
+- Application behavior is unchanged from 4.2.0-rc.13; this release promotes
+  the reviewed candidate, aligns stable version metadata and adds the
+  public-release CI path that publishes the verified Windows ZIP together with
+  `SHA256SUMS.txt`.
+
+## 4.2.0-rc.13 - 2026-09-20
+
+- Preserved only one forensic `settings.json.corrupt-*` copy per distinct
+  malformed settings payload and excluded those forensic copies from backups.
+- Validated `history.jsonl` parsing in restore staging before live data is
+  changed.
+- Added contextual 404 messages for vouchers that have already disappeared
+  from the controller instead of suggesting that the API root is wrong.
+- Normalized legacy Windows/POSIX paths portably when sanitizing backup logo and
+  PDF filenames.
+- Removed private-engineering CI/secret details and a private-only broken link
+  from public README/SECURITY documentation.
+- Documented that restore intentionally clears controller endpoint/certificate
+  trust and that voucher creation is limited to batches of 50.
+- Corrected the exporter idempotence comment and added a regression test that
+  public docs remain free of private-CI plumbing.
+- Documented the current WinAnsi PDF character-set limitation; full Unicode
+  font embedding remains a planned 4.2.x improvement.
+
 ## 4.2.0-rc.12 - 2026-09-20
 
 - Made public snapshot export idempotent when run inside an already-sanitized

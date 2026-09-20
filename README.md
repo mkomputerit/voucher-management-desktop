@@ -19,7 +19,7 @@ The application currently provides:
 - persistent custom logo library;
 - Windows 11 light/dark themes.
 
-The 4.2 beta line uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
+Voucher Management 4.2.0 uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
 
 ## Current limitations
 
@@ -27,11 +27,16 @@ The 4.2 beta line uses Ubiquiti's documented Network integration API with API-ke
   controller exposing multiple sites is rejected rather than selecting one
   automatically;
 - Windows printing submits each PDF page for the requested copy count; printer
-  collation behavior therefore depends on the selected printer/driver.
+  collation behavior therefore depends on the selected printer/driver;
+- voucher creation is intentionally limited to batches of 50 in the operator
+  UI and adapter.
+- current PDF templates use ReportLab's standard Helvetica fonts; characters
+  outside the supported WinAnsi repertoire may not render correctly. Embedded
+  Unicode font support is planned for a 4.2.x update.
 
-## Public release goals
+## Public release
 
-The public release will:
+Voucher Management 4.2.0:
 
 1. use the neutral **Voucher Management** product identity;
 2. use the MIT License;
@@ -43,7 +48,6 @@ The public release will:
 
 See:
 
-- `docs/PUBLIC_RELEASE_READINESS.md`
 - `docs/UNIFI_OFFICIAL_API_ANALYSIS.md`
 - `SECURITY.md`
 - `PRIVACY.md`
@@ -96,6 +100,12 @@ delete settings, audit history, generated PDFs or custom logos. Users who also
 want to remove their local data can delete the Voucher Management application
 data directory after making any desired backup.
 
+
+After restoring a backup, the saved controller API root and TLS certificate pin
+are intentionally cleared. Re-enter the controller API root and independently
+verify/approve the certificate fingerprint before reconnecting. This prevents a
+backup from carrying controller trust to another installation.
+
 ## Code signing policy
 
 See [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md).
@@ -121,12 +131,11 @@ The application icon is original project artwork generated reproducibly from
 deployment branding.
 
 Deployment-specific names can be supplied to the privacy scanner through
-`tools/check_public_tree.py --markers-file <path>`. The marker file must remain
-outside the repository. The private engineering CI requires the
-`PUBLIC_PRIVACY_MARKERS` Actions secret, one marker per line, and fails if it is
-missing or empty. The scanner checks both text content and file paths without
-printing the marker values. The clean public workflow does not reference this
-private secret.
+`tools/check_public_tree.py --markers-file <path>`. Marker files must remain
+outside the repository. The scanner checks both text content and file paths
+without printing marker values. Public CI runs the repository-independent
+privacy checks; maintainers can run additional deployment-specific scans before
+publishing a release.
 
 Current architecture and API behavior are documented in `docs/ARCHITECTURE.md`
 and `docs/UNIFI_OFFICIAL_API_ANALYSIS.md`.

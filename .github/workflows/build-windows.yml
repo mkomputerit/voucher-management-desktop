@@ -147,6 +147,30 @@ jobs:
             ForEach-Object { "$($_.Hash.ToLower())  VoucherManagement.exe" } |
             Out-File -Encoding ascii dist\VoucherManagement\SHA256SUMS.txt
 
+      - name: Package public release files
+        if: github.event.repository.private == false && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
+        shell: pwsh
+        run: |
+          $version = (Get-Content version.txt -Raw).Trim()
+          if ($version -match "-rc") {
+            throw "Public stable release cannot use a release-candidate version: $version"
+          }
+          $archive = "VoucherManagement-$version-Windows-x64.zip"
+          Compress-Archive -Path dist\VoucherManagement\* -DestinationPath $archive -CompressionLevel Optimal
+          $zipHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+          "$zipHash  $archive" | Out-File -Encoding ascii SHA256SUMS.txt
+
+      - name: Upload public release files
+        if: github.event.repository.private == false && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: VoucherManagement-release-${{ github.sha }}
+          path: |
+            VoucherManagement-*-Windows-x64.zip
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload portable build
         # Normal development pushes are still fully compiled/tested, but the
         # ~28 MB portable ZIP is retained only when explicitly requested or
@@ -159,4 +183,40 @@ jobs:
           path: dist/VoucherManagement/
           if-no-files-found: error
           retention-days: 14
+
+
+  release:
+    if: github.event.repository.private == false && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified release files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: VoucherManagement-release-${{ github.sha }}
+          path: release-files
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="$(find release-files -maxdepth 1 -type f -name 'VoucherManagement-*-Windows-x64.zip' -print -quit)"
+          if [ -z "$archive" ]; then
+            echo "Release archive not found"
+            exit 1
+          fi
+          base="$(basename "$archive")"
+          version="${base#VoucherManagement-}"
+          version="${version%-Windows-x64.zip}"
+          tag="v$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists; refusing to replace published assets"
+            exit 1
+          fi
+          gh release create "$tag"             "$archive"             release-files/SHA256SUMS.txt             --repo "$GITHUB_REPOSITORY"             --target "$GITHUB_SHA"             --title "Voucher Management $version"             --notes "First public stable release of Voucher Management 4.2.0. Built and verified by the public GitHub Actions workflow."
 
