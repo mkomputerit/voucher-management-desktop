@@ -39,7 +39,14 @@ def _remove_block(text: str, start_marker: str, end_marker: str, *, label: str) 
 
     start = text.find(start_marker)
     end = text.find(end_marker)
-    if start == -1 or end == -1 or end <= start:
+
+    # The exporter also runs in the already-sanitized public repository CI.
+    # If both markers are absent, the block has already been removed and the
+    # operation is intentionally idempotent. A partial marker pair still
+    # indicates a malformed workflow and must fail closed.
+    if start == -1:
+        return text
+    if end == -1 or end <= start:
         raise RuntimeError(f"Impossibile isolare {label}")
     return text[:start] + text[end:]
 
@@ -96,13 +103,24 @@ def _sanitize_public_workflow(destination: Path) -> None:
         ' --markers-file "$env:PRIVACY_MARKERS_FILE" --require-markers',
         "",
     )
-    text = text.replace(
+    base_publish_condition = (
         "if: github.event_name == 'workflow_dispatch' || "
-        "github.ref == 'refs/heads/main'",
-        "if: github.event_name == 'workflow_dispatch' || "
-        "github.ref == 'refs/heads/main' || "
-        "startsWith(github.ref, 'refs/heads/release/')",
+        "github.ref == 'refs/heads/main'"
     )
+    public_publish_condition = (
+        base_publish_condition
+        + " || startsWith(github.ref, 'refs/heads/release/')"
+    )
+    if public_publish_condition not in text:
+        if base_publish_condition not in text:
+            raise RuntimeError(
+                "Impossibile individuare la condizione di pubblicazione pubblica"
+            )
+        text = text.replace(
+            base_publish_condition,
+            public_publish_condition,
+            1,
+        )
 
     forbidden_public_workflow_tokens = (
         "PUBLIC_PRIVACY_MARKERS",

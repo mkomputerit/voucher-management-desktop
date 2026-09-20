@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.2.0-rc.12 - 2026-09-20
+
+- Made public snapshot export idempotent when run inside an already-sanitized
+  public repository.
+- Prevented repeated export from duplicating the public release-branch workflow
+  condition.
+- Added a regression test requiring three consecutive public exports to be
+  byte-for-byte identical.
+- No application behavior changed from rc.10.
+
 ## 4.2.0-rc.10 - 2026-09-20
 
 - Fixed backup-test placement so the restore trust-reset, history

@@ -84,3 +84,38 @@ def test_public_export_excludes_internal_readiness_checklist(tmp_path: Path):
     output = export_snapshot(tmp_path / "public")
 
     assert not (output / "docs" / "PUBLIC_RELEASE_READINESS.md").exists()
+
+def test_exporting_an_already_public_snapshot_is_idempotent(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import tools.export_public_snapshot as exporter
+
+    def snapshot_bytes(root: Path) -> dict[str, bytes]:
+        return {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+
+    first = export_snapshot(tmp_path / "first-public")
+    monkeypatch.setattr(exporter, "ROOT", first)
+
+    second = exporter.export_snapshot(tmp_path / "second-public")
+    monkeypatch.setattr(exporter, "ROOT", second)
+
+    third = exporter.export_snapshot(tmp_path / "third-public")
+
+    assert snapshot_bytes(second) == snapshot_bytes(first)
+    assert snapshot_bytes(third) == snapshot_bytes(first)
+
+    workflow = (
+        third / ".github" / "workflows" / "build-windows.yml"
+    ).read_text(encoding="utf-8")
+    assert workflow.count(
+        "startsWith(github.ref, 'refs/heads/release/')"
+    ) == 1
+
+    for relative in PRIVATE_ONLY_PATHS:
+        assert not (third / relative).exists()
+

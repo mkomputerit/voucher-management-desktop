@@ -20,12 +20,12 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'Voucher Management contributors'),
             StringStruct('FileDescription', 'Voucher Management'),
-            StringStruct('FileVersion', '4.2.0-rc.10'),
+            StringStruct('FileVersion', '4.2.0-rc.12'),
             StringStruct('InternalName', 'VoucherManagement'),
             StringStruct('LegalCopyright', 'Copyright (c) 2026 Voucher Management contributors'),
             StringStruct('OriginalFilename', 'VoucherManagement.exe'),
             StringStruct('ProductName', 'Voucher Management'),
-            StringStruct('ProductVersion', '4.2.0-rc.10')
+            StringStruct('ProductVersion', '4.2.0-rc.12')
           ]
         )
       ]
