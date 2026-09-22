@@ -32,11 +32,31 @@ DEFAULT_SETTINGS = {
     "ui_theme": "system",
     "history_key_fingerprint": "",
     "log_retention_days": 30,
+    "print_retention_days": 0,
+}
+
+
+_INT_SETTING_RANGES = {
+    "log_retention_days": (1, 3650),
+    "print_retention_days": (0, 3650),
 }
 
 
 class SettingsStore:
     """Atomic JSON settings store with neutral, non-operational defaults."""
+
+    @staticmethod
+    def _validated_value(key: str, value):
+        """Return a schema-safe value, rejecting bools and out-of-range ints."""
+
+        bounds = _INT_SETTING_RANGES.get(key)
+        if bounds is None:
+            return value, False
+
+        minimum, maximum = bounds
+        if type(value) is int and minimum <= value <= maximum:
+            return value, False
+        return DEFAULT_SETTINGS[key], True
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -71,6 +91,7 @@ class SettingsStore:
         return warning
 
     def load(self) -> dict:
+        self.last_load_warning = ""
         settings = deepcopy(DEFAULT_SETTINGS)
         if not self.path.exists():
             return settings
@@ -99,9 +120,24 @@ class SettingsStore:
             # unknown legacy keys so an accidentally persisted credential-like
             # value can never be carried forward into a new settings save or
             # application backup.
+            invalid_keys: list[str] = []
             for key in DEFAULT_SETTINGS:
                 if key in payload:
-                    settings[key] = payload[key]
+                    value, invalid = self._validated_value(
+                        key,
+                        payload[key],
+                    )
+                    settings[key] = value
+                    if invalid:
+                        invalid_keys.append(key)
+
+            if invalid_keys:
+                self.last_load_warning = (
+                    "Alcune impostazioni numeriche non erano valide e sono "
+                    "state ripristinate a valori sicuri: "
+                    + ", ".join(sorted(invalid_keys))
+                    + "."
+                )
 
             # Private betas stored only the controller host/IP. Import it once
             # into the new official-API field; save() then writes only the new
@@ -121,7 +157,11 @@ class SettingsStore:
         # extended dictionary.
         for key in DEFAULT_SETTINGS:
             if key in settings:
-                payload[key] = settings[key]
+                value, _invalid = self._validated_value(
+                    key,
+                    settings[key],
+                )
+                payload[key] = value
         temp_name = None
         try:
             with NamedTemporaryFile(
@@ -156,6 +196,8 @@ class SettingsStore:
                 + ", ".join(sorted(unknown))
             )
         settings = self.load()
-        settings.update(changes)
+        for key, value in changes.items():
+            validated, _invalid = self._validated_value(key, value)
+            settings[key] = validated
         self.save(settings)
         return settings

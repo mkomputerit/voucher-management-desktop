@@ -1,5 +1,113 @@
 # Changelog
 
+## 4.3.1 - 2026-09-22
+
+- Consolidated the Tk architecture without changing operator behavior:
+  guarded creation, controller/TLS connection, deletion/recovery and
+  backup/history maintenance now live in focused UI adapters composed by
+  `VoucherApp` / `ModernVoucherApp`; the main shell no longer accumulates
+  those unrelated workflows.
+- Added a durable anti-repeat guard around voucher creation. The marker is
+  persisted before the non-idempotent controller POST, survives process
+  interruption and contains no API key, voucher code, controller address or
+  operator-entered creation data.
+- Classify transport failures, server-side 408/5xx responses and malformed or
+  incomplete successful create responses as an uncertain mutation. Voucher
+  Management never replays the POST automatically; it performs only a safe
+  controller refresh and blocks further creation until the operator completes
+  a successful manual synchronization.
+- Block backup creation and restore while a voucher-create outcome is unresolved
+  so portable state changes cannot erase the anti-repeat boundary.
+- Added stable random `event_id` values to new PDF-generation history rows.
+  Manual multi-workstation history exchange now merges these events by stable
+  identity, preventing independent but otherwise identical generation events
+  from collapsing during convergence while preserving legacy multiset behavior.
+- Serialize history-export snapshots with the same cross-process lock used by
+  audit writers so exported packages cannot observe a partially appended local
+  history.
+- Moved definitive PDF-preview rasterization and thumbnailing off the Tk main
+  thread. Each worker opens its own PDFium document; stale resize/page results
+  and stale worker failures are discarded before Tk image updates.
+- Completed the durable physical-print lifecycle introduced during review:
+  print intent is persisted before entering the Windows printer API, successful
+  submission is marked explicitly, and ambiguous prepared jobs require an
+  operator decision without automatically reprinting the document.
+- Preserved compatibility for callers that omit `record_print(audit_id=...)`
+  by generating a valid random print-job ID internally.
+- Removed the Pillow `Image.getdata()` deprecation from icon verification
+  tests.
+- Expanded Windows regression coverage for uncertain controller mutations,
+  crash-persistent create guards, backup/restore blocking, asynchronous PDF
+  preview, physical-print recovery and modern/legacy workstation convergence.
+
+## 4.3.0 - 2026-09-21
+
+- Hardened settings loading against malformed numeric retention values. PDF
+  retention accepts only integer 0..3650, log retention only integer 1..3650,
+  booleans/strings/out-of-range values fall back to safe defaults, and startup
+  cleanup failures are contained rather than terminating the console-less app.
+- Added a fatal startup dialog so unexpected initialization failures are visible
+  to the operator instead of closing the executable silently.
+- Fully decode bounded PNG/JPEG logos during validation so truncated JPEG pixel
+  data is rejected before rendering.
+- Truncate oversized structure names inside the PDF label, matching the existing
+  title and recipient width protections.
+- Strengthened executable icon verification to require the first
+  RT_GROUP_ICON/RT_ICON group to match the generated project icon and added
+  direct PE-verifier regression tests.
+- Corrected the bundled Noto Sans Italic copyright year to 2015-2022.
+
+- Replaced ReportLab's standard Helvetica text with bundled Noto Sans
+  Regular/Bold/Italic fonts so voucher PDFs render extended Latin, Greek,
+  Cyrillic and Vietnamese text consistently on every workstation.
+- Added pre-render glyph checks for operator-entered PDF text. Unsupported
+  scripts or symbols now stop generation with an explicit Unicode warning
+  instead of disappearing silently from the document.
+- Normalize title, structure and recipient text to NFC before validation and
+  rendering so decomposed accents pasted from macOS/web sources render
+  predictably.
+- Made PDF publication atomic: render to a same-directory temporary file,
+  verify the PDF signature and replace the final archive path only after a
+  complete render. Failed rendering leaves an existing final PDF untouched.
+- Added conservative full-path handling for Windows: generated PDF paths are
+  bounded to 240 characters, long recipient filename components use a stable
+  hash suffix, and long visible recipient/Wi-Fi title text is truncated with an
+  ellipsis rather than crossing the label boundary.
+- Added configurable PDF archive retention under `Print/YYYY/MM`. Retention is
+  disabled by default (`0`) so upgrades from 4.2.x never delete archived PDFs
+  automatically; cleanup only removes expired files that also appear in valid
+  audit history.
+- Added startup cleanup for managed `.Voucher_*.tmp` renderer files older than
+  24 hours and exclude those scratch files from backups, preventing sensitive
+  crash leftovers from becoming permanent archive data.
+- Bundled the Noto Sans OFL notice, documented the font copyright attribution,
+  and added CI checks that the fonts and license material are present in the
+  Windows distribution.
+- Synchronized package and Windows executable metadata to 4.3.0.
+
+## 4.2.1 - 2026-09-21
+
+- Moved create, delete and print orchestration into the Tk-independent
+  `workflows.py` application layer and added regression coverage for
+  successful controller mutations followed by refresh failures.
+- Hardened the public release workflow: stable publication now accepts only
+  `X.Y.Z` versions, release notes follow the archive version, release write
+  permissions are isolated to the publication job, and the Windows ZIP checksum
+  is re-verified immediately before publishing.
+- Updated Pillow from 11.3.0 to 12.3.0 and added a pinned `pip-audit` gate to
+  the Windows CI. The Windows build also instantiates `ImageWin.Dib` so the
+  Pillow integration used by native printing is exercised, not merely imported.
+- Restricted custom-logo decoding to PNG/JPEG and validate logo content during
+  selection, legacy migration, backup restore and PDF rendering. Render-time
+  validation is cached by path, modification timestamp and file size.
+- Set custom-logo limits to 8192 pixels per side, 40 megapixels and 25 MiB.
+  These limits preserve legitimate large logos accepted by 4.2.0 while still
+  bounding decompression and rendering cost. A valid restored logo above the
+  current limits is omitted with an operator warning; corrupt or disguised
+  image content still rejects the backup.
+- Added documentation for the custom-logo security boundary and synchronized
+  package/Windows version metadata for the 4.2.1 release.
+
 ## 4.2.0 - 2026-09-20
 
 - First public stable release.

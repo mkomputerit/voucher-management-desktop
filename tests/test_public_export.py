@@ -16,6 +16,12 @@ def test_public_export_keeps_publishable_project_files(tmp_path: Path):
         output / "src" / "voucher_management" / "unifi_api.py"
     ).is_file()
     assert (output / "tools" / "check_public_tree.py").is_file()
+    assert (output / "assets" / "fonts" / "NotoSans-Regular.ttf").is_file()
+    assert (output / "assets" / "fonts" / "NotoSans-Bold.ttf").is_file()
+    assert (output / "assets" / "fonts" / "NotoSans-Italic.ttf").is_file()
+    assert (
+        output / "third_party_licenses" / "noto-sans" / "OFL.txt"
+    ).is_file()
 
 
 def test_public_export_strips_private_workflow_steps(tmp_path: Path):
@@ -30,10 +36,28 @@ def test_public_export_strips_private_workflow_steps(tmp_path: Path):
     test_job, release_job = workflow.split("\n  release:\n", 1)
     assert "contents: write" not in test_job
     assert "contents: write" in release_job
-    assert "PUBLIC_PRIVACY_MARKERS" not in workflow
-    assert "PRIVACY_MARKERS_FILE" not in workflow
+    assert "PUBLIC_PRIVACY_MARKERS" in workflow
+    assert "PRIVACY_MARKERS_FILE" in workflow
+    assert "--require-markers" in workflow
+    assert "Prepare privacy markers" in workflow
+    assert "Check deployment markers in source tree" in workflow
+    assert "Check deployment markers in public snapshot" in workflow
+    assert "Prepare private privacy markers" not in workflow
+    assert "voucher-management-private-markers.txt" not in workflow
     assert "PRIVATE_REPOSITORY_IDENTITY" not in workflow
-    assert "--require-markers" not in workflow
+
+
+
+
+def test_public_export_requires_runtime_privacy_markers(tmp_path: Path):
+    output = export_snapshot(tmp_path / "public")
+    workflow = (
+        output / ".github" / "workflows" / "build-windows.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "PUBLIC_PRIVACY_MARKERS: ${{ secrets.PUBLIC_PRIVACY_MARKERS }}" in workflow
+    assert workflow.count("--require-markers") == 2
+    assert "voucher-management-privacy-markers.txt" in workflow
 
 
 def test_public_export_excludes_beta_engineering_records(tmp_path: Path):
@@ -143,6 +167,25 @@ def test_public_workflow_release_permissions_are_isolated(tmp_path: Path):
     assert "Download verified release files" in workflow
     assert "Publish GitHub release" in workflow
     assert "SHA256SUMS.txt" in workflow
+    assert "sha256sum -c SHA256SUMS.txt" in workflow
+    assert "-notmatch '^\\d+\\.\\d+\\.\\d+$'" in workflow
+    assert '[[ ! "$version" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+$ ]]' in workflow
+    assert '--notes "Voucher Management $version.' in workflow
+    assert "First public stable release of Voucher Management 4.2.0" not in workflow
     assert "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in workflow
     assert "github.event.repository.private == false" in workflow
+
+
+def test_public_release_notes_follow_archive_version(tmp_path: Path):
+    output = export_snapshot(tmp_path / "public")
+    workflow = (
+        output / ".github" / "workflows" / "build-windows.yml"
+    ).read_text(encoding="utf-8")
+
+    release_job = workflow.split("\n  release:\n", 1)[1]
+    assert 'version="${base#VoucherManagement-}"' in release_job
+    assert 'tag="v$version"' in release_job
+    assert '--title "Voucher Management $version"' in release_job
+    assert '--notes "Voucher Management $version.' in release_job
+    assert "CHANGELOG.md" in release_job
 

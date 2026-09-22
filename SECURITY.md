@@ -11,16 +11,22 @@ The project follows these rules:
 - no authentication secrets in settings, logs, print history or backups;
 - voucher codes are not stored in clear text in `history.jsonl`;
 - no controller address in diagnostic logs;
+- non-idempotent voucher creation is protected by a crash-persistent
+  anti-repeat marker; uncertain POST outcomes are never replayed automatically;
 - destructive voucher deletion requires explicit confirmation;
 - vouchers are not deletable by the application after their first recorded
   physical print;
 - backup extraction rejects traversal paths and unsupported archive content;
+- custom logos are decoded only as PNG/JPEG and are bounded by file size,
+  dimensions and pixel count before PDF rendering;
 - release binaries are built automatically rather than from a maintainer
-  workstation.
+  workstation;
+- the reviewed Windows dependency set is version-pinned and SHA-256 pinned;
+  CI installs it with pip `--require-hashes --no-deps` before testing/building.
 
 ## Authentication
 
-Voucher Management 4.2.0 uses the documented UniFi Network API and X-API-Key
+Voucher Management 4.3.1 uses the documented UniFi Network API and X-API-Key
 authentication.
 
 The API key is accepted only for the active connection. It is never persisted
@@ -62,6 +68,14 @@ Generated files under `Print/` contain the actual printable voucher codes.
 Application backups can include those PDFs together with history/key data, so a
 backup must be protected as sensitive operational data.
 
+After Windows accepts a physical print job, the application persists a local
+`pending_print_audit.json` descriptor before updating `history.jsonl`. The
+descriptor contains HMAC voucher identifiers rather than clear voucher codes.
+It supports idempotent recovery after interruption and is deleted only after the
+print event verifies successfully. While it exists, new physical prints,
+backup/restore and history exchange are blocked to prevent lifecycle state from
+moving backwards. This descriptor is excluded from portable backups.
+
 ## Diagnostic logs
 
 Application logs contain timestamps, severity, OS family/architecture and
@@ -74,15 +88,61 @@ not the traceback or exception text. Logs must not contain:
 - recipients unless explicitly required for an error report;
 - passwords, API keys, cookies or CSRF tokens.
 
+## Custom logo validation
+
+Custom logos are treated as untrusted image input. Voucher Management accepts
+only PNG and JPEG content and does not trust the filename extension to select a
+decoder. A file renamed from another image format is therefore rejected.
+
+The current limits are 8192 pixels per side, 40 megapixels and 25 MiB. Logo
+content is validated when selected, when legacy settings are migrated, while a
+backup is still in restore staging, and immediately before ReportLab renders
+the image into a PDF. Render-time validation and the reusable ReportLab image
+object are cached using file path, modification timestamp and size so repeated
+labels do not repeatedly validate/decode the same unchanged logo. A configured
+logo rejected during startup migration is cleared with an explicit operator
+warning rather than disappearing silently.
+
+For compatibility with older releases, a syntactically valid PNG/JPEG found in
+a backup but exceeding the current limits does not block restoration of
+settings, audit history or the portable history key. That logo is omitted and
+the operator is warned. Corrupt, unsupported or disguised image content still
+causes the restore to fail closed.
+
 ## Backup/restore
 
 Backups contain application-managed settings, audit data, the portable history
 key, generated PDFs and custom logos. They can therefore contain recipient
-labels and voucher codes in the generated PDFs. Backups must be protected as
-sensitive operational data.
+labels and voucher codes in the generated PDFs.
 
-Backups never intentionally contain controller passwords or API keys.
+Voucher Management can create an optional password-protected `.vmbk` container.
+The logical ZIP snapshot is streamed directly into AES-256-GCM rather than
+being written to a plaintext intermediate archive. The 256-bit AES key is derived
+from the operator password with Scrypt (random 16-byte salt, N=131072, r=8,
+p=1). The container header is authenticated as additional data. A wrong
+password or modified encrypted file fails authentication before restore staging
+or rollback creation begins. The password is never persisted.
 
+Unencrypted ZIP backups remain supported for backward compatibility and
+explicit operator choice; they must still be protected as sensitive operational
+data. Encrypted backup validation and restore decrypt into an OS-managed
+anonymous/auto-delete seekable temporary file because ZIP validation needs
+random access; no named decrypted ZIP is created below the application-data
+tree. Authentication/validation complete before live application data or the
+rollback state is changed.
+
+Backups never intentionally contain controller passwords or API keys. The
+transient `pending_create_guard` contains no controller/voucher data and is
+excluded from backups; backup creation and restore fail closed while that marker
+exists so an unresolved controller mutation cannot be forgotten by moving local
+state backwards.
+
+Manual multi-workstation history exchange uses a separate encrypted `.vmhx`
+package. It carries audit rows plus the portable HMAC history identity so another
+workstation can verify or, only when it has no audit rows, explicitly adopt that
+identity. The package never carries generated PDFs, logos, controller settings,
+API keys or TLS certificate trust. Import refuses identity mismatch behind
+existing history and blocks conflicting modern print-job identities.
 
 On restore, Voucher Management clears the saved controller API root and
 certificate fingerprint before the restored data becomes active. The operator

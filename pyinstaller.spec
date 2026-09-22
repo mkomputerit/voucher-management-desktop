@@ -15,12 +15,16 @@ icon_path = ensure_app_icon(
     root / ".generated-assets" / "VoucherManagement.ico"
 )
 app_assets = [(str(icon_path), "assets")]
+font_assets = [
+    (str(path), "assets/fonts")
+    for path in sorted((root / "assets" / "fonts").glob("*.ttf"))
+]
 
 a = Analysis(
     [str(root / "launcher.py")],
     pathex=[str(root / "src")],
     binaries=[],
-    datas=theme_assets + app_assets,
+    datas=theme_assets + app_assets + font_assets,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

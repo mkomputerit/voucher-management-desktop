@@ -3,6 +3,7 @@ from pathlib import Path
 from voucher_management.utils import (
     MAX_FILENAME_COMPONENT_LENGTH,
     find_file_by_exact_name,
+    format_fingerprint,
     sanitize_filename_component,
     unique_output_path,
 )
@@ -40,3 +41,12 @@ def test_exact_name_lookup_treats_square_brackets_literally(tmp_path: Path):
 def test_sanitized_filename_component_is_bounded_for_windows_paths():
     result = sanitize_filename_component("A" * 500)
     assert len(result) <= MAX_FILENAME_COMPONENT_LENGTH
+
+
+def test_fingerprint_formatting_is_consistent_and_idempotent():
+    raw = "a1b2c3d4e5f60708"
+    formatted = "A1:B2:C3:D4:E5:F6:07:08"
+
+    assert format_fingerprint(raw) == formatted
+    assert format_fingerprint(formatted) == formatted
+    assert format_fingerprint(" A1 B2 C3 D4 E5 F6 07 08 ") == formatted

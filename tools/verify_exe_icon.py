@@ -142,19 +142,20 @@ def _icon_payloads_by_id(pe) -> dict[int, tuple[bytes, ...]]:
     return result
 
 
-def _group_payloads(pe) -> tuple[bytes, ...]:
+def _first_group_payload(pe) -> bytes | None:
+    """Return the first RT_GROUP_ICON payload Windows will consider."""
+
     group_type = _resource_type_entry(pe, RT_GROUP_ICON)
     if group_type is None:
-        return ()
+        return None
 
-    payloads: list[bytes] = []
     for group_entry in group_type.directory.entries:
         if not hasattr(group_entry, "directory"):
             continue
         for language_entry in group_entry.directory.entries:
             if hasattr(language_entry, "data"):
-                payloads.append(_resource_payload(pe, language_entry))
-    return tuple(payloads)
+                return _resource_payload(pe, language_entry)
+    return None
 
 
 def verify_exe_icon(exe_path: Path, ico_path: Path) -> None:
@@ -180,40 +181,38 @@ def verify_exe_icon(exe_path: Path, ico_path: Path) -> None:
             ]
         )
         icon_payloads = _icon_payloads_by_id(pe)
-        groups = _group_payloads(pe)
+        group_payload = _first_group_payload(pe)
+        if group_payload is None:
+            raise ValueError("Executable does not contain an RT_GROUP_ICON resource")
 
-        for group_payload in groups:
-            try:
-                entries = parse_group_icon(group_payload)
-            except ValueError:
-                continue
+        entries = parse_group_icon(group_payload)
+        group_sizes = {(width, height) for width, height, _, _ in entries}
+        if group_sizes != set(expected_by_size):
+            raise ValueError(
+                "The first executable icon group does not expose the expected sizes"
+            )
+        if len(entries) != len(expected_by_size):
+            raise ValueError(
+                "The first executable icon group contains duplicate frame sizes"
+            )
 
-            group_sizes = {(width, height) for width, height, _, _ in entries}
-            if group_sizes != set(expected_by_size):
-                continue
-            if len(entries) != len(expected_by_size):
-                continue
+        for width, height, byte_count, resource_id in entries:
+            expected = expected_by_size[(width, height)]
+            if byte_count != len(expected):
+                raise ValueError(
+                    "The first executable icon group has an unexpected payload size"
+                )
+            candidates = icon_payloads.get(resource_id, ())
+            if expected not in candidates:
+                raise ValueError(
+                    "The first executable icon group does not match "
+                    "the generated VoucherManagement.ico"
+                )
 
-            matched = True
-            for width, height, byte_count, resource_id in entries:
-                expected = expected_by_size[(width, height)]
-                if byte_count != len(expected):
-                    matched = False
-                    break
-                candidates = icon_payloads.get(resource_id, ())
-                if expected not in candidates:
-                    matched = False
-                    break
-
-            if matched:
-                return
+        return
     finally:
         pe.close()
 
-    raise ValueError(
-        "Executable RT_GROUP_ICON/RT_ICON resources do not match "
-        "the generated VoucherManagement.ico"
-    )
 
 
 def main() -> int:

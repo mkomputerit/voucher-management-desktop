@@ -36,6 +36,18 @@ class UniFiApiError(RuntimeError):
     """Raised when the documented controller API cannot complete an operation."""
 
 
+class UniFiMutationUncertain(UniFiApiError):
+    """Raised when a non-idempotent request may have reached the controller."""
+
+    def __init__(self, operation: str):
+        self.operation = operation
+        super().__init__(
+            "La connessione si è interrotta durante "
+            f"{operation}. Il controller potrebbe aver completato "
+            "l'operazione: non ripeterla prima di sincronizzare l'elenco."
+        )
+
+
 class UniFiCertificateTrustRequired(UniFiApiError):
     """Raised when a self-signed/untrusted certificate needs explicit trust."""
 
@@ -332,6 +344,8 @@ class UniFiClient:
                     not_found_message
                     or "Endpoint UniFi non disponibile: verificare l'URL API in Network > Integrations"
                 ) from exc
+            if method.upper() == "POST" and (exc.code == 408 or exc.code >= 500):
+                raise UniFiMutationUncertain("la creazione dei voucher") from exc
             raise UniFiApiError(f"Errore HTTP UniFi {exc.code}") from exc
         except URLError as exc:
             reason = getattr(exc, "reason", None)
@@ -343,11 +357,17 @@ class UniFiClient:
             if isinstance(reason, ssl.SSLCertVerificationError):
                 fingerprint = self._server_certificate_sha256()
                 raise UniFiCertificateTrustRequired(fingerprint) from exc
+            if method.upper() == "POST":
+                raise UniFiMutationUncertain("la creazione dei voucher") from exc
             raise UniFiApiError("Controller UniFi non raggiungibile") from exc
-        except (TimeoutError, OSError) as exc:
+        except (TimeoutError, OSError, http.client.HTTPException) as exc:
+            if method.upper() == "POST":
+                raise UniFiMutationUncertain("la creazione dei voucher") from exc
             raise UniFiApiError("Controller UniFi non raggiungibile") from exc
 
         if status not in expected:
+            if method.upper() == "POST":
+                raise UniFiMutationUncertain("la creazione dei voucher")
             raise UniFiApiError(f"Risposta HTTP UniFi inattesa: {status}")
 
         if not raw.strip():
@@ -355,8 +375,12 @@ class UniFiClient:
         try:
             result = json.loads(raw)
         except json.JSONDecodeError as exc:
+            if method.upper() == "POST":
+                raise UniFiMutationUncertain("la creazione dei voucher") from exc
             raise UniFiApiError("Il controller UniFi non ha restituito JSON valido") from exc
         if not isinstance(result, dict):
+            if method.upper() == "POST":
+                raise UniFiMutationUncertain("la creazione dei voucher")
             raise UniFiApiError("Formato risposta UniFi non valido")
         return result
 
@@ -634,14 +658,24 @@ class UniFiClient:
             payload,
             expected=(201,),
         )
-        vouchers = result.get("vouchers")
-        if not isinstance(vouchers, list):
-            raise UniFiApiError("Creazione voucher: risposta priva di vouchers")
-        if len(vouchers) != int(quantity):
-            raise UniFiApiError(
-                f"Creazione voucher: attesi {quantity}, ricevuti {len(vouchers)}"
-            )
-        return [self._voucher_from_json(item) for item in vouchers]
+        try:
+            vouchers = result.get("vouchers")
+            if not isinstance(vouchers, list):
+                raise UniFiApiError(
+                    "Creazione voucher: risposta priva di vouchers"
+                )
+            if len(vouchers) != int(quantity):
+                raise UniFiApiError(
+                    f"Creazione voucher: attesi {quantity}, "
+                    f"ricevuti {len(vouchers)}"
+                )
+            return [self._voucher_from_json(item) for item in vouchers]
+        except UniFiApiError as exc:
+            # HTTP 201 has already crossed the mutation boundary. If its body
+            # cannot prove exactly what was created, replaying the POST is unsafe.
+            raise UniFiMutationUncertain(
+                "la creazione dei voucher"
+            ) from exc
 
     def delete_vouchers(
         self,

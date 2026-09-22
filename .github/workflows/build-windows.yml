@@ -10,6 +10,7 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'assets/**'
       - 'launcher.py'
       - 'tools/**'
       - 'third_party_licenses/**'
@@ -53,8 +54,25 @@ jobs:
         run: |
           python -m venv .venv
           .\.venv\Scripts\python.exe -m pip install pip==26.2.1
-          .\.venv\Scripts\python.exe -m pip install --no-deps -r requirements-lock.txt
+          .\.venv\Scripts\python.exe -m pip install --require-hashes --no-deps -r requirements-lock.txt
           .\.venv\Scripts\python.exe -m pip check
+
+      - name: Verify Pillow Windows integrations
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe -c "from PIL import Image, ImageTk, ImageWin; image=Image.new('RGB',(2,2),'white'); ImageWin.Dib(image); print('Pillow', Image.__version__, 'ImageTk/ImageWin.Dib OK')"
+
+      - name: Audit locked dependencies
+        shell: pwsh
+        run: |
+          $auditVenv = Join-Path $env:RUNNER_TEMP "voucher-management-audit"
+          python -m venv $auditVenv
+          $auditPython = Join-Path $auditVenv "Scripts\python.exe"
+          $auditExe = Join-Path $auditVenv "Scripts\pip-audit.exe"
+          & $auditPython -m pip install pip-audit==2.10.1
+          # CVE-2025-71176 affects pytest tmpdir handling on Unix. This
+          # workflow runs the reviewed test/build environment on Windows.
+          & $auditExe -r requirements-lock.txt --no-deps --disable-pip --ignore-vuln CVE-2025-71176
 
       - name: Compile source
         env:
@@ -74,6 +92,25 @@ jobs:
         env:
           PYTHONPATH: src
         run: .\.venv\Scripts\python.exe -m pytest -q
+
+      - name: Prepare privacy markers
+        shell: pwsh
+        env:
+          PUBLIC_PRIVACY_MARKERS: ${{ secrets.PUBLIC_PRIVACY_MARKERS }}
+        run: |
+          $markerFile = Join-Path $env:RUNNER_TEMP "voucher-management-privacy-markers.txt"
+          [System.IO.File]::WriteAllText($markerFile, $env:PUBLIC_PRIVACY_MARKERS)
+          "PRIVACY_MARKERS_FILE=$markerFile" >> $env:GITHUB_ENV
+
+      - name: Check deployment markers in source tree
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe tools\check_public_tree.py --markers-file "$env:PRIVACY_MARKERS_FILE" --require-markers
+
+      - name: Check deployment markers in public snapshot
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe tools\check_public_tree.py --root build\public-snapshot --public-export --markers-file "$env:PRIVACY_MARKERS_FILE" --require-markers
 
       - name: Validate PowerShell diagnostics
         shell: pwsh
@@ -128,6 +165,17 @@ jobs:
 
           .\.venv\Scripts\python.exe tools\verify_exe_icon.py --exe dist\VoucherManagement\VoucherManagement.exe --ico $bundleIcon
 
+          $fontRoot = "dist\VoucherManagement\_internal\assets\fonts"
+          foreach ($font in @("NotoSans-Regular.ttf", "NotoSans-Bold.ttf", "NotoSans-Italic.ttf")) {
+            $fontPath = Join-Path $fontRoot $font
+            if (-not (Test-Path -LiteralPath $fontPath -PathType Leaf)) {
+              throw "Bundled Unicode PDF font is missing: $fontPath"
+            }
+            if ((Get-Item -LiteralPath $fontPath).Length -le 0) {
+              throw "Bundled Unicode PDF font is empty: $fontPath"
+            }
+          }
+
       - name: Add release documentation and dependency inventory
         shell: pwsh
         run: |
@@ -143,6 +191,8 @@ jobs:
           .\.venv\Scripts\python.exe tools\collect_dependency_licenses.py dist\VoucherManagement\THIRD_PARTY_LICENSES
           New-Item -ItemType Directory -Force dist\VoucherManagement\THIRD_PARTY_LICENSES\pypdfium2 | Out-Null
           Copy-Item third_party_licenses\pypdfium2\* dist\VoucherManagement\THIRD_PARTY_LICENSES\pypdfium2\ -Force
+          New-Item -ItemType Directory -Force dist\VoucherManagement\THIRD_PARTY_LICENSES\noto-sans | Out-Null
+          Copy-Item third_party_licenses\noto-sans\OFL.txt dist\VoucherManagement\THIRD_PARTY_LICENSES\noto-sans\OFL.txt -Force
           Get-FileHash dist\VoucherManagement\VoucherManagement.exe -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLower())  VoucherManagement.exe" } |
             Out-File -Encoding ascii dist\VoucherManagement\SHA256SUMS.txt
@@ -152,8 +202,8 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content version.txt -Raw).Trim()
-          if ($version -match "-rc") {
-            throw "Public stable release cannot use a release-candidate version: $version"
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Public stable release requires a stable SemVer X.Y.Z version: $version"
           }
           $archive = "VoucherManagement-$version-Windows-x64.zip"
           Compress-Archive -Path dist\VoucherManagement\* -DestinationPath $archive -CompressionLevel Optimal
@@ -213,10 +263,24 @@ jobs:
           base="$(basename "$archive")"
           version="${base#VoucherManagement-}"
           version="${version%-Windows-x64.zip}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid stable release version: $version"
+            exit 1
+          fi
+          (
+            cd release-files
+            sha256sum -c SHA256SUMS.txt
+          )
           tag="v$version"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $tag already exists; refusing to replace published assets"
             exit 1
           fi
-          gh release create "$tag"             "$archive"             release-files/SHA256SUMS.txt             --repo "$GITHUB_REPOSITORY"             --target "$GITHUB_SHA"             --title "Voucher Management $version"             --notes "First public stable release of Voucher Management 4.2.0. Built and verified by the public GitHub Actions workflow."
+          gh release create "$tag" \
+            "$archive" \
+            release-files/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Voucher Management $version" \
+            --notes "Voucher Management $version. See CHANGELOG.md in the repository for release details. Built and verified by the public GitHub Actions workflow."
 

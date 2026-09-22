@@ -267,3 +267,228 @@ def test_codes_for_output_marks_every_linked_voucher_and_keeps_multiplicity(tmp_
     )
 
     assert linked == [code_a, code_b, code_b]
+
+
+def test_generated_output_names_are_audited_and_portable(tmp_path):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    first = tmp_path / "Print" / "2026" / "09" / "Voucher_First.pdf"
+    second = tmp_path / "other" / "Voucher_Second.pdf"
+
+    history.record_batch(
+        VoucherBatch(
+            tmp_path / "source.pdf",
+            [VoucherRecord("11111-22222", recipient="First")],
+            recipient="First",
+        ),
+        first,
+        settings,
+        reprint=False,
+    )
+    history.record_batch(
+        VoucherBatch(
+            tmp_path / "source.pdf",
+            [VoucherRecord("33333-44444", recipient="Second")],
+            recipient="Second",
+        ),
+        second,
+        settings,
+        reprint=False,
+    )
+
+    assert history.generated_output_names() == {
+        first.name,
+        second.name,
+    }
+
+
+
+def test_existing_history_with_missing_fingerprint_can_adopt_present_key(
+    tmp_path,
+):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    code = "45454-56565"
+    output = tmp_path / "Print" / "Voucher_Adopt.pdf"
+    history.record_batch(
+        VoucherBatch(
+            tmp_path / "source.pdf",
+            [VoucherRecord(code, duration_minutes=60, recipient="Adopt")],
+            recipient="Adopt",
+        ),
+        output,
+        settings,
+        reprint=False,
+    )
+    local_fingerprint = history.fingerprint(
+        history.secret_store.get()
+    )
+
+    settings = settings_store.load()
+    settings["history_key_fingerprint"] = ""
+    settings_store.save(settings)
+
+    state = history.identity_state()
+    assert state.ready is False
+    assert state.reason == "missing_fingerprint"
+    assert state.local_fingerprint == local_fingerprint
+    assert state.can_adopt_local_key is True
+
+    adopted = history.adopt_present_secret(local_fingerprint.upper())
+
+    assert adopted == local_fingerprint
+    assert (
+        settings_store.load()["history_key_fingerprint"]
+        == local_fingerprint
+    )
+    assert history.identity_state().ready is True
+    stats = history.stats_for_codes(
+        [code],
+        settings_store.load(),
+    )[code]
+    assert stats.generated_documents == 1
+
+
+def test_history_key_adoption_requires_exact_typed_fingerprint(tmp_path):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    history.record_batch(
+        VoucherBatch(
+            tmp_path / "source.pdf",
+            [VoucherRecord("12121-56565", recipient="Confirm")],
+            recipient="Confirm",
+        ),
+        tmp_path / "Print" / "Voucher_Confirm.pdf",
+        settings,
+        reprint=False,
+    )
+    settings = settings_store.load()
+    settings["history_key_fingerprint"] = ""
+    settings_store.save(settings)
+
+    try:
+        history.adopt_present_secret("wrong-fingerprint")
+    except ValueError as exc:
+        assert "non corrisponde" in str(exc)
+    else:
+        raise AssertionError("Wrong adoption confirmation was accepted")
+
+    assert settings_store.load()["history_key_fingerprint"] == ""
+    assert history.identity_state().ready is False
+
+
+def test_history_key_mismatch_cannot_be_adopted_over_known_identity(tmp_path):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    history.record_batch(
+        VoucherBatch(
+            tmp_path / "source.pdf",
+            [VoucherRecord("34343-78787", recipient="Mismatch")],
+            recipient="Mismatch",
+        ),
+        tmp_path / "Print" / "Voucher_Mismatch_Adopt.pdf",
+        settings,
+        reprint=False,
+    )
+    expected = settings_store.load()["history_key_fingerprint"]
+    history.secret_store.set("different-present-history-secret")
+    state = history.identity_state()
+
+    assert state.reason == "key_mismatch"
+    assert state.expected_fingerprint == expected
+    assert state.can_adopt_local_key is False
+
+    try:
+        history.adopt_present_secret(state.local_fingerprint)
+    except ValueError as exc:
+        assert "Ripristinare la chiave corretta" in str(exc)
+    else:
+        raise AssertionError("Mismatched key was adopted over known identity")
+
+    assert settings_store.load()["history_key_fingerprint"] == expected
+
+
+def test_missing_history_key_requires_backup_instead_of_adoption(tmp_path):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    history.record_batch(
+        VoucherBatch(
+            tmp_path / "source.pdf",
+            [VoucherRecord("98989-67676", recipient="Missing")],
+            recipient="Missing",
+        ),
+        tmp_path / "Print" / "Voucher_Missing_Key.pdf",
+        settings,
+        reprint=False,
+    )
+    expected = settings_store.load()["history_key_fingerprint"]
+    history.secret_store.clear()
+
+    state = history.identity_state()
+    assert state.reason == "missing_local_key"
+    assert state.expected_fingerprint == expected
+    assert state.can_adopt_local_key is False
+
+    try:
+        history.adopt_present_secret(expected)
+    except ValueError as exc:
+        assert "backup completo" in str(exc)
+    else:
+        raise AssertionError("Missing key was recoverable without backup")
+
+
+def test_record_print_without_explicit_audit_id_generates_recoverable_job_id(
+    tmp_path,
+):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    code = "70707-80808"
+    output = tmp_path / "Print" / "Voucher_Auto_Audit.pdf"
+
+    history.record_print([code], output, 1, settings)
+
+    rows = [
+        __import__("json").loads(line)
+        for line in history.history_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    print_rows = [row for row in rows if row.get("event") == "print"]
+    assert len(print_rows) == 1
+    audit_id = print_rows[0].get("print_job_id", "")
+    assert len(audit_id) == 32
+    assert all(ch in "0123456789abcdef" for ch in audit_id)
+    assert not history.pending_print_path.exists()
+
+
+def test_generated_events_receive_unique_stable_event_ids(tmp_path):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    batch = VoucherBatch(
+        tmp_path / "source.pdf",
+        [
+            VoucherRecord(
+                "12345-67890",
+                duration_minutes=60,
+                recipient="Repeated",
+            )
+            for _ in range(3)
+        ],
+        recipient="Repeated",
+    )
+
+    history.record_batch(
+        batch,
+        tmp_path / "Print" / "Voucher_Repeated.pdf",
+        settings,
+        reprint=False,
+    )
+
+    rows = list(history._items())
+    event_ids = [str(row.get("event_id", "")) for row in rows]
+    assert len(event_ids) == 3
+    assert len(set(event_ids)) == 3
+    assert all(len(value) == 32 for value in event_ids)
+    assert all(
+        all(ch in "0123456789abcdef" for ch in value)
+        for value in event_ids
+    )

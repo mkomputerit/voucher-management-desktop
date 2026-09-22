@@ -1,5 +1,7 @@
 import json
 
+from PIL import Image
+
 from voucher_management import paths as paths_module
 from voucher_management.paths import AppPaths
 
@@ -23,7 +25,7 @@ def test_legacy_user_data_is_migrated_without_overwrite(tmp_path, monkeypatch):
     )
     (legacy / "data" / "history_secret.key").write_bytes(b"legacy-key")
     (legacy / "Print" / "2026" / "voucher.pdf").write_bytes(b"PDF")
-    (legacy / "Loghi" / "logo.png").write_bytes(b"PNG")
+    Image.new("RGB", (8, 8), "white").save(legacy / "Loghi" / "logo.png", format="PNG")
 
     paths = AppPaths()
     paths.ensure_writable()
@@ -66,14 +68,14 @@ def test_external_configured_logo_is_imported_into_persistent_library(
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "profile"))
     external = tmp_path / "external" / "venue.png"
     external.parent.mkdir(parents=True)
-    external.write_bytes(b"PNG")
+    Image.new("RGB", (8, 8), "white").save(external, format="PNG")
 
     paths = AppPaths()
     paths.ensure_writable()
     migrated = paths.persist_configured_logo(str(external))
 
     assert migrated == str(paths.logos / "venue.png")
-    assert (paths.logos / "venue.png").read_bytes() == b"PNG"
+    assert (paths.logos / "venue.png").is_file()
 
 
 def test_already_migrated_logo_is_reused_when_original_is_missing(
@@ -83,13 +85,67 @@ def test_already_migrated_logo_is_reused_when_original_is_missing(
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "profile"))
     paths = AppPaths()
     paths.ensure_writable()
-    (paths.logos / "legacy.png").write_bytes(b"PNG")
+    Image.new("RGB", (8, 8), "white").save(paths.logos / "legacy.png", format="PNG")
 
     migrated = paths.persist_configured_logo(
         str(tmp_path / "missing-share" / "legacy.png")
     )
 
     assert migrated == str(paths.logos / "legacy.png")
+
+
+def test_large_4_2_0_logo_is_preserved_during_startup_migration(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "profile"))
+    external = tmp_path / "external" / "legacy-large.png"
+    external.parent.mkdir(parents=True)
+    Image.new("1", (6000, 4000), 1).save(external, format="PNG")
+
+    paths = AppPaths()
+    paths.ensure_writable()
+
+    migrated = paths.persist_configured_logo(str(external))
+
+    assert migrated == str(paths.logos / "legacy-large.png")
+    assert (paths.logos / "legacy-large.png").is_file()
+
+
+def test_disguised_legacy_logo_is_not_persisted(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "profile"))
+    external = tmp_path / "external" / "venue.png"
+    external.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "white").save(external, format="GIF")
+
+    paths = AppPaths()
+    paths.ensure_writable()
+
+    migrated = paths.persist_configured_logo(str(external))
+
+    assert migrated == ""
+    assert not (paths.logos / "venue.png").exists()
+
+
+def test_invalid_configured_logo_exposes_one_time_warning(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "profile"))
+    external = tmp_path / "external" / "venue.png"
+    external.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "white").save(
+        external,
+        format="GIF",
+    )
+
+    paths = AppPaths()
+    paths.ensure_writable()
+
+    assert paths.persist_configured_logo(str(external)) == ""
+    warning = paths.consume_logo_warning()
+    assert "non è più valido" in warning
+    assert paths.consume_logo_warning() == ""
 
 
 def test_unavailable_legacy_logo_does_not_break_startup_migration(
@@ -99,7 +155,7 @@ def test_unavailable_legacy_logo_does_not_break_startup_migration(
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "profile"))
     external = tmp_path / "external" / "venue.png"
     external.parent.mkdir(parents=True)
-    external.write_bytes(b"PNG")
+    Image.new("RGB", (8, 8), "white").save(external, format="PNG")
 
     paths = AppPaths()
     paths.ensure_writable()

@@ -11,12 +11,17 @@ accessible. Only the PDF viewport is allowed to grow/shrink with the window.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
+from queue import Empty
 import tkinter as tk
+from uuid import uuid4
 from tkinter import messagebox, ttk
 
 import pypdfium2 as pdfium
 from PIL import Image, ImageTk, ImageWin
+
+from .background_tasks import start_background_task
 
 try:
     import win32con
@@ -31,6 +36,7 @@ class PdfPreview(tk.Toplevel):
 
     def __init__(self, parent, pdf_path: Path, codes: list[str], history, settings: dict, on_print=None):
         super().__init__(parent)
+        self.app = parent
         self.pdf_path = Path(pdf_path)
         self.codes = list(codes)
         self.history = history
@@ -40,7 +46,12 @@ class PdfPreview(tk.Toplevel):
         self.page_index = 0
         self.photo = None
         self._render_after = None
+        self._render_results = None
+        self._render_poll_after = None
+        self._render_generation = 0
+        self._render_active_generation = 0
         self._printing = False
+        self._pending_print_audit = None
         try:
             self.document = pdfium.PdfDocument(str(self.pdf_path))
         except Exception as exc:
@@ -102,6 +113,17 @@ class PdfPreview(tk.Toplevel):
             command=self.print_document,
         )
         self.print_button.grid(row=0, column=4, padx=(14, 5))
+        self.register_print_button = ttk.Button(
+            bottom,
+            text="REGISTRA STAMPA",
+            command=self.register_print_audit,
+        )
+        self.register_print_button.grid(
+            row=0,
+            column=5,
+            padx=(8, 0),
+        )
+        self.register_print_button.grid_remove()
 
     def _maximize_window(self):
         """Maximise on Windows without entering borderless/full-screen mode."""
@@ -135,32 +157,110 @@ class PdfPreview(tk.Toplevel):
         self._render_after = self.after(120, self.render_page)
 
     def render_page(self):
-        """Render the definitive PDF and fit the *entire* page in the canvas.
+        """Rasterise the definitive PDF off Tk and fit the entire A4 page."""
 
-        Image.thumbnail() preserves aspect ratio and constrains both dimensions,
-        so neither the top/bottom nor left/right edge of the A4 sheet can be
-        clipped by normal window resizing. A small fixed margin keeps the white
-        page visually separated from the grey preview background.
-        """
         self._render_after = None
         if self.document is None or not len(self.document):
             return
-        page = self.document[self.page_index]
-        try:
-            image = page.render(scale=2.0).to_pil().convert("RGB")
-        finally:
-            page.close()
+
+        self._render_generation += 1
+        generation = self._render_generation
+
+        # If a previous raster is still running, do not fan out threads during
+        # resize. Its completion notices the newer generation and immediately
+        # schedules one render for the latest page/viewport instead.
+        if self._render_results is not None:
+            return
+
+        page_index = self.page_index
+        page_count = len(self.document)
+        pdf_path = self.pdf_path
         canvas_w = max(1, self.canvas.winfo_width())
         canvas_h = max(1, self.canvas.winfo_height())
         margin = 20
         available_w = max(1, canvas_w - margin * 2)
         available_h = max(1, canvas_h - margin * 2)
-        image.thumbnail((available_w, available_h), Image.Resampling.LANCZOS)
+
+        def worker():
+            document = pdfium.PdfDocument(str(pdf_path))
+            try:
+                if page_index >= len(document):
+                    raise RuntimeError("Pagina PDF non disponibile")
+                page = document[page_index]
+                try:
+                    image = page.render(scale=2.0).to_pil().convert("RGB")
+                finally:
+                    page.close()
+            finally:
+                document.close()
+
+            image.thumbnail(
+                (available_w, available_h),
+                Image.Resampling.LANCZOS,
+            )
+            return (
+                generation,
+                page_index,
+                page_count,
+                canvas_w,
+                canvas_h,
+                image,
+            )
+
+        self._render_active_generation = generation
+        self._render_results = start_background_task(worker)
+        self._render_poll_after = self.after(20, self._poll_render)
+
+    def _poll_render(self) -> None:
+        """Apply worker-owned raster results only from the Tk thread."""
+
+        self._render_poll_after = None
+        results = self._render_results
+        if results is None:
+            return
+
+        try:
+            result = results.get_nowait()
+        except Empty:
+            self._render_poll_after = self.after(20, self._poll_render)
+            return
+
+        self._render_results = None
+        active_generation = self._render_active_generation
+        self._render_active_generation = 0
+
+        if active_generation != self._render_generation:
+            self._render_after = self.after(0, self.render_page)
+            return
+
+        if result.error is not None:
+            self.page_var.set("Anteprima non disponibile")
+            return
+
+        (
+            generation,
+            page_index,
+            page_count,
+            canvas_w,
+            canvas_h,
+            image,
+        ) = result.value
+
+        if generation != self._render_generation:
+            self._render_after = self.after(0, self.render_page)
+            return
 
         self.photo = ImageTk.PhotoImage(image)
         self.canvas.delete("all")
-        self.canvas.create_image(canvas_w / 2, canvas_h / 2, image=self.photo, anchor="center")
-        self.page_var.set(f"Pagina {self.page_index + 1} / {len(self.document)}")
+        self.canvas.create_image(
+            canvas_w / 2,
+            canvas_h / 2,
+            image=self.photo,
+            anchor="center",
+        )
+        self.page_var.set(
+            f"Pagina {page_index + 1} / {page_count}"
+        )
 
     def previous(self):
         if self.page_index > 0:
@@ -173,6 +273,8 @@ class PdfPreview(tk.Toplevel):
             self.render_page()
 
     def print_document(self):
+        """Submit/rasterise on the shared worker without blocking Tk."""
+
         if self._printing:
             return
         printer = self.printer_var.get().strip()
@@ -190,39 +292,88 @@ class PdfPreview(tk.Toplevel):
 
         self._printing = True
         self.print_button.state(["disabled"])
-        try:
-            try:
-                self._print_windows(printer, copies)
-            except Exception as exc:
-                messagebox.showerror(
-                    "Stampa",
-                    f"Impossibile inviare il documento alla stampante.\n\n{exc}",
-                    parent=self,
-                )
-                return
+        self.register_print_button.state(["disabled"])
 
-            # From this point the print job has already been submitted. Audit
-            # failure must never be reported as a print failure, otherwise an
-            # operator may submit an accidental duplicate.
+        pdf_path = self.pdf_path
+        codes = list(self.codes)
+        history = self.history
+        settings = dict(self.settings)
+
+        def worker():
+            history.assert_no_pending_print_audit()
+            pending = {
+                "copies": copies,
+                "audit_id": uuid4().hex,
+                "submitted_at": datetime.now(timezone.utc).isoformat(
+                    timespec="seconds"
+                ),
+            }
+
+            # Persist the exact audit descriptor before entering the Windows
+            # printing API. If the process stops during submission, startup can
+            # distinguish an ambiguous "prepared" job from one known to have
+            # been submitted instead of silently losing the lifecycle boundary.
+            history.prepare_print_audit(
+                codes,
+                pdf_path,
+                copies,
+                settings,
+                audit_id=pending["audit_id"],
+                submitted_at=pending["submitted_at"],
+            )
+
+            self._print_windows(printer, copies)
+
             try:
-                self.history.record_print(
-                    self.codes,
-                    self.pdf_path,
+                history.mark_print_submitted(pending["audit_id"])
+                history.record_print(
+                    codes,
+                    pdf_path,
                     copies,
-                    self.settings,
+                    settings,
+                    audit_id=pending["audit_id"],
+                    submitted_at=pending["submitted_at"],
                 )
             except Exception as exc:
+                # Physical submission has already returned successfully. Keep
+                # the durable descriptor and expose audit-only recovery; never
+                # ask the operator to resend the document.
+                return pending, exc
+            return pending, None
+
+        def finish_controls() -> bool:
+            self._printing = False
+            try:
+                alive = bool(self.winfo_exists())
+            except tk.TclError:
+                alive = False
+            if alive:
+                self.print_button.state(["!disabled"])
+                self.register_print_button.state(["!disabled"])
+            return alive
+
+        def completed(result) -> None:
+            pending, audit_error = result
+            if not finish_controls():
+                return
+            if audit_error is not None:
+                self._pending_print_audit = pending
+                self.register_print_button.grid()
                 if self.on_print:
                     self.on_print()
                 messagebox.showwarning(
                     "Stampa inviata - storico non aggiornato",
                     f"Il documento è stato inviato a {printer}, ma lo storico "
-                    f"locale non è stato aggiornato.\n\n{exc}\n\n"
-                    "Non ristampare automaticamente il voucher.",
+                    "locale non è stato aggiornato.\n\n"
+                    f"{audit_error}\n\n"
+                    "Non ristampare il voucher. Usare REGISTRA STAMPA per "
+                    "ritentare soltanto la registrazione nello storico.",
                     parent=self,
                 )
                 return
 
+            self._pending_print_audit = None
+            self.register_print_button.grid_remove()
             if self.on_print:
                 self.on_print()
             messagebox.showinfo(
@@ -230,10 +381,118 @@ class PdfPreview(tk.Toplevel):
                 f"Documento inviato a {printer}.",
                 parent=self,
             )
-        finally:
+
+        def failed(exc: Exception) -> None:
+            if not finish_controls():
+                return
+            try:
+                pending_state = history.pending_print_state()
+            except Exception:
+                pending_state = ""
+
+            if pending_state == "prepared":
+                if self.on_print:
+                    self.on_print()
+                messagebox.showwarning(
+                    "Esito stampa da verificare",
+                    "L'invio alla stampante si è interrotto dopo aver "
+                    "preparato la registrazione di sicurezza. Non è possibile "
+                    "stabilire automaticamente se Windows abbia ricevuto il "
+                    "documento.\n\n"
+                    f"{exc}\n\n"
+                    "Non ristampare finché la stampa pendente non viene "
+                    "risolta da Impostazioni > Recupera stampa pendente.",
+                    parent=self,
+                )
+                return
+
+            messagebox.showerror(
+                "Stampa",
+                "Impossibile inviare il documento alla stampante.\n\n"
+                f"{exc}",
+                parent=self,
+            )
+
+        started = self.app._run_background_task(
+            "Rasterizzazione e invio alla stampante…",
+            worker,
+            completed,
+            failed,
+        )
+        if not started:
+            finish_controls()
+
+    def register_print_audit(self) -> None:
+        """Retry only the audit write for an already-submitted print job."""
+
+        pending = self._pending_print_audit
+        if not pending or self._printing:
+            return
+
+        self._printing = True
+        self.print_button.state(["disabled"])
+        self.register_print_button.state(["disabled"])
+
+        history = self.history
+        codes = list(self.codes)
+        pdf_path = self.pdf_path
+        settings = dict(self.settings)
+        stable_pending = dict(pending)
+
+        def worker():
+            history.record_print(
+                codes,
+                pdf_path,
+                int(stable_pending["copies"]),
+                settings,
+                audit_id=str(stable_pending["audit_id"]),
+                submitted_at=str(stable_pending["submitted_at"]),
+            )
+
+        def finish_controls() -> bool:
             self._printing = False
-            if self.winfo_exists():
+            try:
+                alive = bool(self.winfo_exists())
+            except tk.TclError:
+                alive = False
+            if alive:
                 self.print_button.state(["!disabled"])
+                self.register_print_button.state(["!disabled"])
+            return alive
+
+        def completed(_result) -> None:
+            if not finish_controls():
+                return
+            self._pending_print_audit = None
+            self.register_print_button.grid_remove()
+            if self.on_print:
+                self.on_print()
+            messagebox.showinfo(
+                "Registrazione stampa",
+                "La stampa già inviata è stata registrata correttamente "
+                "nello storico.",
+                parent=self,
+            )
+
+        def failed(exc: Exception) -> None:
+            if not finish_controls():
+                return
+            messagebox.showerror(
+                "Registrazione stampa",
+                "Lo storico non è stato aggiornato. La stampa fisica "
+                "risulta già inviata: non ristampare il voucher.\n\n"
+                f"{exc}",
+                parent=self,
+            )
+
+        started = self.app._run_background_task(
+            "Registrazione stampa…",
+            worker,
+            completed,
+            failed,
+        )
+        if not started:
+            finish_controls()
 
     def _print_windows(self, printer: str, copies: int):
         """Rasterise with PDFium and send pages directly to a Windows printer DC.
@@ -253,41 +512,42 @@ class PdfPreview(tk.Toplevel):
             dc.StartDoc(self.pdf_path.name)
             document_started = True
 
-            if self.document is None:
-                raise RuntimeError("Documento PDF non disponibile")
+            # Printing runs on a worker. Open a worker-owned PDFium
+            # document instead of sharing the preview document with Tk.
+            document = pdfium.PdfDocument(str(self.pdf_path))
+            try:
+                for page_index in range(len(document)):
+                    # Render each PDF page once, then reuse the raster for all
+                    # requested copies. Voucher sheets are independent pages.
+                    page = document[page_index]
+                    try:
+                        image = (
+                            page.render(scale=300 / 72)
+                            .to_pil()
+                            .convert("RGB")
+                        )
+                    finally:
+                        page.close()
 
-            for page_index in range(len(self.document)):
-                # Render each PDF page once, then reuse the raster for all
-                # requested copies. Voucher sheets are independent pages, so
-                # page-major output avoids repeated PDFium work without
-                # changing page contents or print scaling.
-                page = self.document[page_index]
-                try:
-                    image = (
-                        page.render(scale=300 / 72)
-                        .to_pil()
-                        .convert("RGB")
+                    scale = min(
+                        printable_w / image.width,
+                        printable_h / image.height,
                     )
-                finally:
-                    page.close()
+                    w = max(1, int(image.width * scale))
+                    h = max(1, int(image.height * scale))
+                    x = (printable_w - w) // 2
+                    y = (printable_h - h) // 2
+                    dib = ImageWin.Dib(image)
 
-                scale = min(
-                    printable_w / image.width,
-                    printable_h / image.height,
-                )
-                w = max(1, int(image.width * scale))
-                h = max(1, int(image.height * scale))
-                x = (printable_w - w) // 2
-                y = (printable_h - h) // 2
-                dib = ImageWin.Dib(image)
-
-                for _copy in range(copies):
-                    dc.StartPage()
-                    dib.draw(
-                        dc.GetHandleOutput(),
-                        (x, y, x + w, y + h),
-                    )
-                    dc.EndPage()
+                    for _copy in range(copies):
+                        dc.StartPage()
+                        dib.draw(
+                            dc.GetHandleOutput(),
+                            (x, y, x + w, y + h),
+                        )
+                        dc.EndPage()
+            finally:
+                document.close()
 
             dc.EndDoc()
             document_started = False
@@ -310,6 +570,15 @@ class PdfPreview(tk.Toplevel):
             except tk.TclError:
                 pass
             self._render_after = None
+        if self._render_poll_after is not None:
+            try:
+                self.after_cancel(self._render_poll_after)
+            except tk.TclError:
+                pass
+            self._render_poll_after = None
+        self._render_generation += 1
+        self._render_active_generation = 0
+        self._render_results = None
         document = self.document
         self.document = None
         if document is not None:

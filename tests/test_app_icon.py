@@ -66,7 +66,7 @@ def test_16_and_24_px_frames_use_dedicated_high_contrast_artwork(tmp_path: Path)
             assert frame.tobytes() != reduced_master.tobytes()
 
             # Require visible dark-blue structure in addition to the green badge.
-            pixels = list(frame.getdata())
+            pixels = list(frame.get_flattened_data())
             dark_blue_pixels = sum(
                 1
                 for red, green, blue, alpha in pixels

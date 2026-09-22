@@ -28,8 +28,6 @@ EXCLUDED_DIRECTORY_NAMES = {
     "__pycache__", ".pytest_cache",
 }
 
-PRIVATE_MARKERS_START = "      - name: Prepare private privacy markers\n"
-PRIVATE_MARKERS_END = "      - name: Validate PowerShell diagnostics\n"
 PRIVATE_WORKFLOW_START = "      - name: Package private engineering prerelease\n"
 PRIVATE_WORKFLOW_END = "      - name: Upload portable build\n"
 
@@ -81,12 +79,6 @@ def _sanitize_public_workflow(destination: Path) -> None:
 
     text = _remove_block(
         text,
-        PRIVATE_MARKERS_START,
-        PRIVATE_MARKERS_END,
-        label="il passaggio dei marker privacy privati",
-    )
-    text = _remove_block(
-        text,
         PRIVATE_WORKFLOW_START,
         PRIVATE_WORKFLOW_END,
         label="i passaggi prerelease privati",
@@ -101,8 +93,16 @@ def _sanitize_public_workflow(destination: Path) -> None:
         "",
     )
     text = text.replace(
-        ' --markers-file "$env:PRIVACY_MARKERS_FILE" --require-markers',
-        "",
+        "      - name: Prepare private privacy markers\n",
+        "      - name: Prepare privacy markers\n",
+    )
+    text = text.replace(
+        "voucher-management-private-markers.txt",
+        "voucher-management-privacy-markers.txt",
+    )
+    text = text.replace(
+        "      - name: Check deployment markers in engineering tree\n",
+        "      - name: Check deployment markers in source tree\n",
     )
     base_publish_condition = (
         "if: github.event_name == 'workflow_dispatch' || "
@@ -123,11 +123,24 @@ def _sanitize_public_workflow(destination: Path) -> None:
             1,
         )
 
-    forbidden_public_workflow_tokens = (
+    required_public_marker_tokens = (
         "PUBLIC_PRIVACY_MARKERS",
         "PRIVACY_MARKERS_FILE",
-        "PRIVATE_REPOSITORY_IDENTITY",
         "--require-markers",
+        "Prepare privacy markers",
+        "Check deployment markers in source tree",
+        "Check deployment markers in public snapshot",
+    )
+    for token in required_public_marker_tokens:
+        if token not in text:
+            raise RuntimeError(
+                f"Il workflow pubblico non applica il gate privacy richiesto: {token}"
+            )
+
+    forbidden_public_workflow_tokens = (
+        "Prepare private privacy markers",
+        "voucher-management-private-markers.txt",
+        "PRIVATE_REPOSITORY_IDENTITY",
         "Package private engineering prerelease",
         "Publish private engineering prerelease",
     )
