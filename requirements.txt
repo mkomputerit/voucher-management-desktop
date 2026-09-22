@@ -1,7 +1,7 @@
 # Exact versions captured from a successful Windows GitHub Actions build.
 # Update deliberately and rerun the full Windows build/test pipeline.
 reportlab==4.5.1
-Pillow==11.3.0
+Pillow==12.3.0
 pypdfium2==4.30.0
 pywin32==311
 sv-ttk==2.6.1
