@@ -12,6 +12,22 @@ INVALID_WINDOWS_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 MAX_FILENAME_COMPONENT_LENGTH = 96
 
 
+def format_fingerprint(value: str) -> str:
+    """Format a hexadecimal fingerprint consistently for operator display."""
+
+    compact = (
+        str(value or "")
+        .replace(":", "")
+        .replace(" ", "")
+        .strip()
+        .upper()
+    )
+    return ":".join(
+        compact[index:index + 2]
+        for index in range(0, len(compact), 2)
+    )
+
+
 def sanitize_filename_component(
     value: str,
     fallback: str = "Voucher",

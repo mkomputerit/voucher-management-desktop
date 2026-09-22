@@ -16,7 +16,22 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+from .backup_crypto import (
+    MIN_PASSWORD_CHARS,
+    ProtectedBackupAuthenticationError,
+    ProtectedBackupError,
+    ProtectedBackupWriter,
+    decrypt_backup_file,
+    decrypt_backup_to_file,
+    is_protected_backup,
+    validate_backup_password,
+)
 from .identity import PRODUCT_DIR_NAME, PRODUCT_NAME
+from .logo_validation import (
+    LogoLimitError,
+    LogoValidationError,
+    validate_logo_image,
+)
 from .security.history_key import HistoryKeyStore
 from .settings import SettingsStore
 
@@ -55,6 +70,99 @@ class BackupService:
 
     def __init__(self, paths):
         self.paths = paths
+        self._restore_warnings: list[str] = []
+
+    def consume_restore_warnings(self) -> tuple[str, ...]:
+        """Return and clear non-fatal compatibility warnings from restore."""
+
+        warnings = tuple(self._restore_warnings)
+        self._restore_warnings.clear()
+        return warnings
+
+    def _assert_no_pending_print_audit(self) -> None:
+        pending = self.paths.data / "pending_print_audit.json"
+        if pending.exists():
+            raise BackupError(
+                "Esiste una stampa fisica ancora da registrare nello storico. "
+                "Recuperare la stampa pendente prima di creare o ripristinare "
+                "un backup."
+            )
+
+    def _assert_no_pending_create(self) -> None:
+        pending = getattr(
+            self.paths,
+            "pending_create",
+            self.paths.data / "pending_create_guard",
+        )
+        if Path(pending).exists():
+            raise BackupError(
+                "Esiste una creazione voucher con esito ancora da verificare. "
+                "Sincronizzare l'elenco prima di creare o ripristinare un backup."
+            )
+
+    @staticmethod
+    def is_encrypted_backup(source: Path) -> bool:
+        """Return True for a Voucher Management protected backup container."""
+
+        return is_protected_backup(Path(source))
+
+    @staticmethod
+    def _validated_backup_password(password: str) -> str:
+        try:
+            return validate_backup_password(password)
+        except ValueError as exc:
+            raise BackupError(str(exc)) from exc
+
+    @staticmethod
+    def _decrypt_to_zip(
+        source: Path,
+        destination_zip: Path,
+        password: str,
+    ) -> None:
+        """Decrypt/authenticate through the single backup-crypto implementation."""
+
+        try:
+            decrypt_backup_file(
+                Path(source),
+                Path(destination_zip),
+                password,
+            )
+        except ProtectedBackupAuthenticationError as exc:
+            raise BackupError(
+                "Password non valida oppure backup cifrato alterato"
+            ) from exc
+        except (ProtectedBackupError, ValueError) as exc:
+            raise BackupError(str(exc)) from exc
+
+    @staticmethod
+    def _decrypt_to_stream(
+        source: Path,
+        target,
+        password: str,
+    ) -> None:
+        """Decrypt/authenticate into an anonymous seekable temporary file."""
+
+        try:
+            decrypt_backup_to_file(
+                Path(source),
+                target,
+                password,
+            )
+        except ProtectedBackupAuthenticationError as exc:
+            raise BackupError(
+                "Password non valida oppure backup cifrato alterato"
+            ) from exc
+        except (ProtectedBackupError, ValueError) as exc:
+            raise BackupError(str(exc)) from exc
+
+    @staticmethod
+    def _zip_source(source):
+        """Reset file-like ZIP sources while leaving path inputs untouched."""
+
+        if hasattr(source, "read") and hasattr(source, "seek"):
+            source.seek(0)
+            return source
+        return Path(source)
 
     @staticmethod
     def _portable_basename(value: str) -> str:
@@ -133,21 +241,65 @@ class BackupService:
             payload += "\n"
         return payload.encode("utf-8")
 
-    def create(self, destination: Path) -> Path:
-        """Write a validated ZIP snapshot and return its final path."""
+    def create(
+        self,
+        destination: Path,
+        *,
+        password: str | None = None,
+    ) -> Path:
+        """Create a legacy ZIP or an optional password-protected .vmbk backup."""
+
         destination = Path(destination)
+        self._assert_no_pending_print_audit()
+        self._assert_no_pending_create()
+        if password is None:
+            return self._create_zip(destination)
+
+        password = self._validated_backup_password(password)
+        self._ensure_destination_outside_data_root(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
 
+        encrypted_temp = destination.with_suffix(destination.suffix + ".tmp")
+        encrypted_temp.unlink(missing_ok=True)
+
         try:
-            inside_data_root = destination.resolve().is_relative_to(
-                self.paths.user_root.resolve()
-            )
-        except (OSError, RuntimeError):
-            inside_data_root = False
-        if inside_data_root:
+            # zipfile supports unseekable writers. Feed the logical ZIP stream
+            # directly into AES-GCM so encrypted backup creation never writes a
+            # plaintext archive to disk.
+            try:
+                with ProtectedBackupWriter(
+                    encrypted_temp,
+                    password,
+                ) as protected:
+                    with zipfile.ZipFile(
+                        protected,
+                        "w",
+                        compression=zipfile.ZIP_DEFLATED,
+                    ) as archive:
+                        self._write_archive_contents(archive)
+            except (ProtectedBackupError, ValueError) as exc:
+                raise BackupError(str(exc)) from exc
+
+            with tempfile.TemporaryFile(mode="w+b") as check_zip:
+                self._decrypt_to_stream(
+                    encrypted_temp,
+                    check_zip,
+                    password,
+                )
+                self.validate(check_zip)
+
+            os.replace(encrypted_temp, destination)
+            return destination
+        except Exception as exc:
+            encrypted_temp.unlink(missing_ok=True)
+            if isinstance(exc, BackupError):
+                raise
             raise BackupError(
-                "Salvare il backup fuori dalla cartella dati dell'applicazione"
-            )
+                "Creazione backup cifrato non riuscita"
+            ) from exc
+
+    def _write_archive_contents(self, archive: zipfile.ZipFile) -> None:
+        """Write the portable logical backup into an already-open ZIP."""
 
         manifest = {
             "format": BACKUP_FORMAT,
@@ -158,45 +310,83 @@ class BackupService:
                 self.paths.data / "history_secret.key"
             ).is_file(),
         }
+        archive.writestr(
+            self.MANIFEST,
+            json.dumps(manifest, indent=2, ensure_ascii=False),
+        )
+        for dirname in self.DATA_DIRS:
+            root = self.paths.user_root / dirname
+            if not root.exists():
+                continue
+            for source in root.rglob("*"):
+                if not source.is_file() or source.is_symlink():
+                    continue
+                if source.name in {
+                    "history.lock",
+                    "pending_print_audit.json",
+                    "pending_print_audit.json.tmp",
+                    "pending_create_guard",
+                }:
+                    continue
+                if (
+                    dirname == "Print"
+                    and source.name.startswith(".Voucher_")
+                    and source.suffix.lower() == ".tmp"
+                ):
+                    continue
+                if (
+                    dirname == "config"
+                    and source.name.startswith("settings.json.corrupt-")
+                ):
+                    continue
+
+                relative = source.relative_to(
+                    self.paths.user_root
+                ).as_posix()
+                if relative == "config/settings.json":
+                    archive.writestr(
+                        relative,
+                        self._sanitized_settings_bytes(source),
+                    )
+                elif relative == "data/history.jsonl":
+                    archive.writestr(
+                        relative,
+                        self._sanitized_history_bytes(source),
+                    )
+                else:
+                    archive.write(source, relative)
+
+    def _ensure_destination_outside_data_root(
+        self,
+        destination: Path,
+    ) -> None:
+        """Reject backup destinations inside application-managed data."""
+
+        try:
+            inside_data_root = Path(destination).resolve().is_relative_to(
+                self.paths.user_root.resolve()
+            )
+        except (OSError, RuntimeError):
+            inside_data_root = False
+        if inside_data_root:
+            raise BackupError(
+                "Salvare il backup fuori dalla cartella dati dell'applicazione"
+            )
+
+    def _create_zip(self, destination: Path) -> Path:
+        """Write a validated ZIP snapshot and return its final path."""
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_destination_outside_data_root(destination)
+
         temp = destination.with_suffix(destination.suffix + ".tmp")
         try:
             with zipfile.ZipFile(
-                temp, "w", compression=zipfile.ZIP_DEFLATED
+                temp,
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
             ) as archive:
-                archive.writestr(
-                    self.MANIFEST,
-                    json.dumps(manifest, indent=2, ensure_ascii=False),
-                )
-                for dirname in self.DATA_DIRS:
-                    root = self.paths.user_root / dirname
-                    if not root.exists():
-                        continue
-                    for source in root.rglob("*"):
-                        if not source.is_file() or source.is_symlink():
-                            continue
-                        if source.name == "history.lock":
-                            continue
-                        if (
-                            dirname == "config"
-                            and source.name.startswith("settings.json.corrupt-")
-                        ):
-                            continue
-
-                        relative = source.relative_to(
-                            self.paths.user_root
-                        ).as_posix()
-                        if relative == "config/settings.json":
-                            archive.writestr(
-                                relative,
-                                self._sanitized_settings_bytes(source),
-                            )
-                        elif relative == "data/history.jsonl":
-                            archive.writestr(
-                                relative,
-                                self._sanitized_history_bytes(source),
-                            )
-                        else:
-                            archive.write(source, relative)
+                self._write_archive_contents(archive)
             # Validate the newly written temporary archive *before* replacing
             # an existing backup. A failed validation must never destroy the
             # last known-good backup at the destination path.
@@ -241,9 +431,24 @@ class BackupService:
                 raise BackupError("Il backup contiene un nome Windows riservato")
         return path
 
+    def validate_encrypted(
+        self,
+        source: Path,
+        password: str,
+    ) -> dict:
+        """Authenticate/decrypt into an anonymous temp file, then validate."""
+
+        with tempfile.TemporaryFile(mode="w+b") as decrypted:
+            self._decrypt_to_stream(
+                source,
+                decrypted,
+                password,
+            )
+            return self.validate(decrypted)
+
     def validate(self, source: Path) -> dict:
         """Validate structure, supported format and extraction limits."""
-        source = Path(source)
+        source = self._zip_source(source)
         try:
             with zipfile.ZipFile(source, "r") as archive:
                 infos = archive.infolist()
@@ -314,8 +519,9 @@ class BackupService:
                 "Backup danneggiato o non riconosciuto"
             ) from exc
 
-    def _extract_validated(self, source: Path, staging: Path) -> dict:
+    def _extract_validated(self, source, staging: Path) -> dict:
         manifest = self.validate(source)
+        source = self._zip_source(source)
         with zipfile.ZipFile(source, "r") as archive:
             for info in archive.infolist():
                 relative = self._validated_member_name(info.filename)
@@ -327,6 +533,44 @@ class BackupService:
                 with archive.open(info, "r") as src, target.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
         return manifest
+
+    def _validate_staged_logos(self, staging: Path) -> None:
+        """Validate restored logos before any live application data is changed.
+
+        A valid PNG/JPEG that only exceeds the current size policy is omitted
+        for backward compatibility. Unsupported, disguised or corrupt image
+        data still invalidates the backup.
+        """
+
+        logos = staging / "Loghi"
+        if not logos.is_dir():
+            return
+
+        settings_path = staging / "config" / "settings.json"
+        settings = SettingsStore(settings_path).load()
+        configured = self._portable_basename(
+            str(settings.get("logo_path", "") or "").strip()
+        ).casefold()
+        settings_changed = False
+
+        for logo in logos.rglob("*"):
+            if not logo.is_file() or logo.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+                continue
+            try:
+                validate_logo_image(logo)
+            except LogoLimitError as exc:
+                logo.unlink(missing_ok=True)
+                self._restore_warnings.append(f"{logo.name}: {exc}")
+                if configured and configured == logo.name.casefold():
+                    settings["logo_path"] = ""
+                    settings_changed = True
+            except LogoValidationError as exc:
+                raise BackupError(
+                    f"Il backup contiene un logo non valido: {logo.name}"
+                ) from exc
+
+        if settings_changed:
+            SettingsStore(settings_path).save(settings)
 
     @staticmethod
     def _validate_staged_history_identity(staging: Path) -> None:
@@ -389,7 +633,34 @@ class BackupService:
             # Windows profile that can decrypt them.
             (target_root / "history_secret.bin").write_bytes(payload)
 
-    def restore(self, source: Path) -> Path:
+    def restore(
+        self,
+        source: Path,
+        *,
+        password: str | None = None,
+    ) -> Path:
+        """Restore either a legacy ZIP or an authenticated encrypted backup."""
+
+        source = Path(source)
+        self._assert_no_pending_print_audit()
+        self._assert_no_pending_create()
+        if not self.is_encrypted_backup(source):
+            return self._restore_zip(source)
+        if password is None:
+            raise BackupError("Il backup cifrato richiede una password")
+
+        with tempfile.TemporaryFile(mode="w+b") as decrypted:
+            self._decrypt_to_stream(
+                source,
+                decrypted,
+                password,
+            )
+            # Structural validation occurs before _restore_zip creates the
+            # rollback snapshot or touches live application data.
+            self.validate(decrypted)
+            return self._restore_zip(decrypted)
+
+    def _restore_zip(self, source) -> Path:
         """Restore a validated snapshot with a *complete* rollback prerequisite.
 
         The live data tree is never modified until a full rollback snapshot has
@@ -398,7 +669,7 @@ class BackupService:
         completes. A disk-full/interrupted rollback copy therefore cannot be
         mistaken for a usable rollback source.
         """
-        source = Path(source)
+        self._restore_warnings.clear()
         parent = self.paths.user_root.parent
         rollback = parent / (
             f"{PRODUCT_DIR_NAME}-rollback-"
@@ -426,6 +697,7 @@ class BackupService:
 
             if manifest.get("format") == 1:
                 self._restore_v1_history_key(staging, staging)
+            self._validate_staged_logos(staging)
             self._validate_staged_history_identity(staging)
 
             if had_existing_root:

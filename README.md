@@ -8,21 +8,44 @@ The current development line is field-tested with Ubiquiti UniFi Network. **Vouc
 
 The application currently provides:
 
-- direct voucher listing and creation;
+- direct voucher listing and creation, with a durable anti-repeat barrier for
+  controller-create requests whose remote outcome cannot be proven;
+- serialized background execution for controller calls, PDF generation,
+  high-resolution printing, backup/restore, print-audit recovery and manual
+  history exchange, with visible progress while the Tk interface remains
+  responsive;
+- Tk-independent validation and print/PDF resolution workflows, keeping the UI
+  layer focused on operator input, presentation and scheduling;
 - single-use, multi-use and unlimited voucher workflows;
 - task-oriented views for vouchers to print, active and expired vouchers;
 - recipient search;
-- A4 PDF generation with automatic pagination;
+- A4 PDF generation with automatic pagination and bundled Unicode Noto Sans fonts;
+- pre-render checks that stop with an operator warning when entered text uses
+  characters not covered by the bundled font;
+- atomic PDF publication through same-directory temporary files;
+- managed `Print/YYYY/MM` archive with configurable PDF retention;
 - embedded PDF preview and direct Windows printing;
 - persistent print/PDF audit history without storing voucher codes in clear text in `history.jsonl`;
-- portable backup/restore of application-managed data;
+- manual idempotent recovery when a document was sent to Windows printing but
+  the corresponding local print-audit event could not be recorded;
+- workstation-local history and print counters with encrypted manual history
+  export/import for deliberate idempotent merging between compatible stations;
+  new generation events carry stable IDs so independent identical events from
+  separate stations remain distinct during convergence;
+- portable backup/restore of application-managed data, with optional
+  password-protected authenticated `.vmbk` backups and legacy ZIP support;
 - persistent custom logo library;
 - Windows 11 light/dark themes.
 
-Voucher Management 4.2.0 uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
+Voucher Management 4.3.1 uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
 
 ## Current limitations
 
+- print history, generated-document counters and physical-print counters remain
+  local to each workstation and are not synchronized automatically. Operators
+  can manually export/import an encrypted history package between stations that
+  share the same audit identity; an empty station can explicitly adopt the
+  imported identity. This is deliberate merge/transfer, not live synchronization;
 - the current operator UI requires UniFi site discovery to be unambiguous; a
   controller exposing multiple sites is rejected rather than selecting one
   automatically;
@@ -30,13 +53,14 @@ Voucher Management 4.2.0 uses Ubiquiti's documented Network integration API with
   collation behavior therefore depends on the selected printer/driver;
 - voucher creation is intentionally limited to batches of 50 in the operator
   UI and adapter.
-- current PDF templates use ReportLab's standard Helvetica fonts; characters
-  outside the supported WinAnsi repertoire may not render correctly. Embedded
-  Unicode font support is planned for a 4.2.x update.
+- custom logos are limited to PNG or JPEG files, at most 8192 pixels per
+  side, 40 megapixels and 25 MiB. A valid oversized logo found during restore
+  is omitted with an operator warning; corrupt or disguised image content is
+  rejected;
 
 ## Public release
 
-Voucher Management 4.2.0:
+Voucher Management 4.3.1:
 
 1. use the neutral **Voucher Management** product identity;
 2. use the MIT License;
@@ -100,11 +124,60 @@ delete settings, audit history, generated PDFs or custom logos. Users who also
 want to remove their local data can delete the Voucher Management application
 data directory after making any desired backup.
 
+Generated PDFs are archived below `Print/YYYY/MM`. Retention is disabled by
+default (`0`) so an upgrade never removes an existing PDF unless the operator
+explicitly enables a retention period in Settings. Cleanup uses audit history as
+a whitelist and never deletes unrelated files. Removing an expired PDF does not
+remove its audit/print history.
+
+A hard interruption during rendering can leave a hidden `.Voucher_*.tmp`
+working file containing printable voucher data. At startup, Voucher Management
+removes only managed renderer temp files older than 24 hours; these scratch
+files are also excluded from application backups.
+
+
+Encrypted backups use a password supplied only for the active operation. The
+application derives an AES-256 key with Scrypt and authenticates the complete
+container with AES-GCM. Wrong passwords and modified encrypted files are
+rejected before live application data is changed. Legacy unencrypted ZIP
+backups remain supported for compatibility and explicit operator choice.
 
 After restoring a backup, the saved controller API root and TLS certificate pin
 are intentionally cleared. Re-enter the controller API root and independently
 verify/approve the certificate fingerprint before reconnecting. This prevents a
 backup from carrying controller trust to another installation.
+
+## Manual history exchange between workstations
+
+History exchange is designed for deliberate synchronization between
+workstations; it is not live synchronization.
+
+A typical two-workstation procedure is:
+
+1. On workstation A, use the history export command and protect the `.vmhx`
+   package with a password of at least 12 characters.
+2. Transfer the package to workstation B through a trusted channel.
+3. On workstation B, start history import and verify the fingerprint displayed
+   by the application before approving the merge.
+4. If workstation B has no useful history yet, it may explicitly adopt the
+   portable audit identity contained in the package. An installation that
+   already contains history with another identity is rejected instead of being
+   overwritten.
+5. After both workstations have produced new events independently, repeat the
+   exchange in the opposite direction as needed. Imports are merges: stable
+   generation-event IDs and print-job IDs prevent already imported modern
+   events from being duplicated.
+6. Re-importing the same merged package is safe and becomes a no-op once both
+   histories contain the same events.
+
+Export/import is blocked while a print audit is pending. Resolve the pending
+print state first so an ambiguous physical-print result cannot be propagated to
+another workstation.
+
+The exchange package contains audit history and the portable history identity,
+but not controller credentials, controller TLS trust, PDFs, logos or controller
+settings. Treat the package and its password as operationally sensitive
+because the history identity is intentionally portable.
 
 ## Code signing policy
 
@@ -123,7 +196,7 @@ reviewable by a wider open-source audience.
 ## Development
 
 
-Windows builds are produced through GitHub Actions using PyInstaller. The reviewed Windows environment is fully pinned in `requirements-lock.txt`, installed in an isolated virtual environment, and checked before every build. Automated tests cover the official API adapter/mapping, persistent history, backup/restore, lifecycle policy, migration and core voucher workflow behavior.
+Windows builds are produced through GitHub Actions using PyInstaller. The reviewed Windows environment is fully pinned in `requirements-lock.txt`, installed in an isolated virtual environment, audited with `pip-audit`, and checked before every build. Automated tests cover the official API adapter/mapping, persistent history, backup/restore, lifecycle policy, migration and core voucher workflow behavior.
 
 
 The application icon is original project artwork generated reproducibly from

@@ -7,16 +7,23 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from PIL import Image
+
 from voucher_management.backup import (
     BACKUP_FORMAT,
     BackupError,
     BackupService,
 )
+from voucher_management.backup_crypto import PROTECTED_BACKUP_MAGIC
 from voucher_management.security.history_key import HistoryKeyStore
 
 
 class BackupServiceTests(unittest.TestCase):
     """Regression tests for portable, self-contained user-data backups."""
+
+    @staticmethod
+    def _backup_passphrase(marker: str = "a") -> str:
+        return marker * 24
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -48,7 +55,7 @@ class BackupServiceTests(unittest.TestCase):
             encoding="utf-8",
         )
         (root / "Print" / "voucher.pdf").write_bytes(b"PDF")
-        (root / "Loghi" / "logo.png").write_bytes(b"PNG")
+        Image.new("RGB", (8, 8), "white").save(root / "Loghi" / "logo.png", format="PNG")
 
         self.secret_store = HistoryKeyStore(root)
         self.secret_store.set(history_secret)
@@ -100,6 +107,249 @@ class BackupServiceTests(unittest.TestCase):
             self.assertNotIn(
                 "security/history_secret.bin", archive.namelist()
             )
+
+    def test_encrypted_backup_roundtrip_restores_complete_data(self):
+        backup = Path(self.temp.name) / "backup.vmbk"
+        passphrase = self._backup_passphrase()
+
+        self.service.create(backup, password=passphrase)
+
+        self.assertTrue(self.service.is_encrypted_backup(backup))
+        self.assertTrue(backup.read_bytes().startswith(PROTECTED_BACKUP_MAGIC))
+        self.assertNotIn(
+            b"0123456789abcdef0123456789abcdef",
+            backup.read_bytes(),
+        )
+        manifest = self.service.validate_encrypted(backup, passphrase)
+        self.assertEqual(manifest["format"], BACKUP_FORMAT)
+
+        (self.paths.user_root / "config" / "settings.json").write_text(
+            "changed",
+            encoding="utf-8",
+        )
+        (self.paths.user_root / "Print" / "voucher.pdf").unlink()
+        self.secret_store.set("fedcba9876543210fedcba9876543210")
+
+        rollback = self.service.restore(backup, password=passphrase)
+
+        settings = json.loads(
+            (self.paths.user_root / "config" / "settings.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(settings["structure_name"], "Test")
+        self.assertTrue(
+            (self.paths.user_root / "Print" / "voucher.pdf").exists()
+        )
+        self.assertEqual(
+            HistoryKeyStore(self.paths.user_root).get(),
+            "0123456789abcdef0123456789abcdef",
+        )
+        self.assertTrue(rollback.exists())
+
+    def test_encrypted_backup_creation_does_not_build_plaintext_zip(self):
+        backup = Path(self.temp.name) / "backup.vmbk"
+
+        with patch.object(
+            self.service,
+            "_create_zip",
+            side_effect=AssertionError(
+                "encrypted backup must stream directly into encryption"
+            ),
+        ):
+            self.service.create(
+                backup,
+                password=self._backup_passphrase(),
+            )
+
+        self.assertTrue(backup.exists())
+        self.assertTrue(self.service.is_encrypted_backup(backup))
+
+    def test_encrypted_backup_rejects_destination_inside_live_data_root(self):
+        backup = self.paths.user_root / "data" / "backup.vmbk"
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "fuori dalla cartella dati",
+        ):
+            self.service.create(
+                backup,
+                password=self._backup_passphrase(),
+            )
+
+        self.assertFalse(backup.exists())
+
+    def test_encrypted_backup_wrong_password_does_not_touch_live_data(self):
+        backup = Path(self.temp.name) / "backup.vmbk"
+        self.service.create(
+            backup,
+            password=self._backup_passphrase(),
+        )
+        settings_path = self.paths.user_root / "config" / "settings.json"
+        before = settings_path.read_bytes()
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "Password non valida oppure backup cifrato alterato",
+        ):
+            self.service.restore(
+                backup,
+                password=self._backup_passphrase("b"),
+            )
+
+        self.assertEqual(settings_path.read_bytes(), before)
+        self.assertEqual(
+            list(self.paths.user_root.parent.glob("VoucherManagement-rollback-*")),
+            [],
+        )
+
+    def test_encrypted_backup_tampering_is_detected_before_restore(self):
+        backup = Path(self.temp.name) / "backup.vmbk"
+        passphrase = self._backup_passphrase()
+        self.service.create(backup, password=passphrase)
+
+        payload = bytearray(backup.read_bytes())
+        self.assertGreater(len(payload), len(PROTECTED_BACKUP_MAGIC) + 40)
+        payload[len(payload) // 2] ^= 0x01
+        backup.write_bytes(payload)
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "Password non valida oppure backup cifrato alterato",
+        ):
+            self.service.validate_encrypted(backup, passphrase)
+
+    def test_encrypted_backup_requires_real_password_not_empty_string(self):
+        backup = Path(self.temp.name) / "backup.vmbk"
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "tra 12 e 1024 caratteri",
+        ):
+            self.service.create(backup, password="")
+
+        self.assertFalse(backup.exists())
+
+    def test_legacy_zip_remains_readable_without_password(self):
+        backup = Path(self.temp.name) / "legacy.zip"
+
+        self.service.create(backup)
+
+        self.assertFalse(self.service.is_encrypted_backup(backup))
+        manifest = self.service.validate(backup)
+        self.assertEqual(manifest["format"], BACKUP_FORMAT)
+
+    def test_backup_excludes_renderer_temp_files(self):
+        temp_dir = self.paths.user_root / "Print" / "2026" / "09"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        orphan = temp_dir / ".Voucher_Test_20260921_120000-deadbeef.tmp"
+        orphan.write_bytes(b"%PDF-sensitive-voucher-code")
+        managed_pdf = temp_dir / "Voucher_Test_20260921_120000.pdf"
+        managed_pdf.write_bytes(b"%PDF")
+
+        backup = Path(self.temp.name) / "backup.zip"
+        self.service.create(backup)
+
+        with zipfile.ZipFile(backup, "r") as archive:
+            names = set(archive.namelist())
+
+        self.assertIn(
+            "Print/2026/09/Voucher_Test_20260921_120000.pdf",
+            names,
+        )
+        self.assertNotIn(
+            "Print/2026/09/.Voucher_Test_20260921_120000-deadbeef.tmp",
+            names,
+        )
+
+
+    def test_backup_is_blocked_while_print_audit_is_pending(self):
+        pending = self.paths.user_root / "data" / "pending_print_audit.json"
+        pending.write_text(
+            '{"format":1,"audit_id":"synthetic"}\n',
+            encoding="utf-8",
+        )
+        backup = Path(self.temp.name) / "backup.zip"
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "stampa fisica ancora da registrare",
+        ):
+            self.service.create(backup)
+
+        self.assertFalse(backup.exists())
+
+    def test_backup_is_blocked_while_create_outcome_is_unresolved(self):
+        pending = self.paths.user_root / "data" / "pending_create_guard"
+        pending.write_text("pending\n", encoding="ascii")
+        backup = Path(self.temp.name) / "backup.zip"
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "creazione voucher con esito ancora da verificare",
+        ):
+            self.service.create(backup)
+
+        self.assertFalse(backup.exists())
+
+    def test_restore_is_blocked_while_create_outcome_is_unresolved(self):
+        backup = Path(self.temp.name) / "backup.zip"
+        self.service.create(backup)
+        pending = self.paths.user_root / "data" / "pending_create_guard"
+        pending.write_text("pending\n", encoding="ascii")
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "creazione voucher con esito ancora da verificare",
+        ):
+            self.service.restore(backup)
+
+
+    def test_encrypted_validation_does_not_use_named_decrypted_zip(self):
+        backup = Path(self.temp.name) / "backup.vmbk"
+        passphrase = self._backup_passphrase()
+        self.service.create(backup, password=passphrase)
+
+        with patch.object(
+            self.service,
+            "_decrypt_to_zip",
+            side_effect=AssertionError(
+                "named plaintext ZIP path must not be used"
+            ),
+        ):
+            manifest = self.service.validate_encrypted(
+                backup,
+                passphrase,
+            )
+
+        self.assertEqual(manifest["format"], BACKUP_FORMAT)
+
+    def test_encrypted_restore_does_not_use_named_decrypted_zip(self):
+        backup = Path(self.temp.name) / "backup.vmbk"
+        passphrase = self._backup_passphrase()
+        self.service.create(backup, password=passphrase)
+
+        with patch.object(
+            self.service,
+            "_decrypt_to_zip",
+            side_effect=AssertionError(
+                "named plaintext ZIP path must not be used"
+            ),
+        ):
+            rollback = self.service.restore(
+                backup,
+                password=passphrase,
+            )
+
+        self.assertTrue(rollback.exists())
+        self.assertEqual(
+            list(
+                self.paths.user_root.parent.glob(
+                    "voucher-management-decrypted-*.zip"
+                )
+            ),
+            [],
+        )
 
     def test_create_preserves_previous_backup_until_new_archive_validates(self):
         destination = Path(self.temp.name) / "backup.zip"
@@ -344,6 +594,34 @@ class BackupServiceTests(unittest.TestCase):
             self.service.validate(bad)
 
 
+    def test_restore_sanitizes_out_of_range_numeric_settings(self):
+        backup = Path(self.temp.name) / "backup.zip"
+        self.service.create(backup)
+
+        tampered = Path(self.temp.name) / "tampered-settings.zip"
+        with zipfile.ZipFile(backup, "r") as src, zipfile.ZipFile(
+            tampered, "w", compression=zipfile.ZIP_DEFLATED
+        ) as dst:
+            for info in src.infolist():
+                payload = src.read(info.filename)
+                if info.filename == "config/settings.json":
+                    settings = json.loads(payload.decode("utf-8"))
+                    settings["print_retention_days"] = True
+                    settings["log_retention_days"] = "abc"
+                    payload = json.dumps(settings).encode("utf-8")
+                dst.writestr(info, payload)
+
+        self.service.restore(tampered)
+
+        restored = json.loads(
+            (
+                self.paths.user_root / "config" / "settings.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(restored["print_retention_days"], 0)
+        self.assertEqual(restored["log_retention_days"], 30)
+
+
     def test_restore_clears_controller_target_and_pin(self):
         backup = Path(self.temp.name) / "backup.zip"
         self.service.create(backup)
@@ -384,6 +662,79 @@ class BackupServiceTests(unittest.TestCase):
             (self.paths.user_root / "config" / "settings.json").read_bytes(),
             live_settings,
         )
+
+    def test_restore_rejects_disguised_non_png_logo_before_live_change(self):
+        backup = Path(self.temp.name) / "backup.zip"
+        self.service.create(backup)
+        live_settings = (
+            self.paths.user_root / "config" / "settings.json"
+        ).read_bytes()
+
+        tampered = Path(self.temp.name) / "tampered-logo.zip"
+        with zipfile.ZipFile(backup, "r") as src, zipfile.ZipFile(
+            tampered, "w", compression=zipfile.ZIP_DEFLATED
+        ) as dst:
+            for info in src.infolist():
+                payload = src.read(info.filename)
+                if info.filename == "Loghi/logo.png":
+                    payload = b"8BPS\x00\x01synthetic-psd-payload"
+                dst.writestr(info, payload)
+
+        with self.assertRaisesRegex(BackupError, "logo non valido"):
+            self.service.restore(tampered)
+
+        self.assertEqual(
+            (self.paths.user_root / "config" / "settings.json").read_bytes(),
+            live_settings,
+        )
+
+
+    def test_restore_quarantines_oversized_legacy_logo(self):
+        settings_path = self.paths.user_root / "config" / "settings.json"
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        settings["logo_path"] = str(
+            self.paths.user_root / "Loghi" / "logo.png"
+        )
+        settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+        backup = Path(self.temp.name) / "backup.zip"
+        self.service.create(backup)
+
+        oversized = Path(self.temp.name) / "oversized.png"
+        Image.new("1", (7000, 6000), 1).save(oversized, format="PNG")
+        oversized_payload = oversized.read_bytes()
+
+        tampered = Path(self.temp.name) / "oversized-logo.zip"
+        with zipfile.ZipFile(backup, "r") as src, zipfile.ZipFile(
+            tampered, "w", compression=zipfile.ZIP_DEFLATED
+        ) as dst:
+            for info in src.infolist():
+                payload = src.read(info.filename)
+                if info.filename == "Loghi/logo.png":
+                    payload = oversized_payload
+                dst.writestr(info, payload)
+
+        self.service.restore(tampered)
+        warnings = self.service.consume_restore_warnings()
+
+        restored_settings = json.loads(
+            settings_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(restored_settings["logo_path"], "")
+        self.assertFalse(
+            (self.paths.user_root / "Loghi" / "logo.png").exists()
+        )
+        self.assertTrue(
+            (self.paths.user_root / "data" / "history.jsonl").exists()
+        )
+        self.assertEqual(
+            HistoryKeyStore(self.paths.user_root).get(),
+            "0123456789abcdef0123456789abcdef",
+        )
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("logo.png", warnings[0])
+        self.assertIn("40 megapixel", warnings[0])
+
 
     def test_rejects_oversized_manifest_without_reading_it(self):
         bad = Path(self.temp.name) / "large-manifest.zip"

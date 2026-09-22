@@ -48,6 +48,26 @@ class PrintStats:
     first_print_utc: str = ""
 
 
+@dataclass(frozen=True)
+class HistoryIdentityState:
+    """Describe whether the local audit identity can be used or recovered."""
+
+    ready: bool
+    reason: str
+    expected_fingerprint: str = ""
+    local_fingerprint: str = ""
+    can_adopt_local_key: bool = False
+
+
+@dataclass(frozen=True)
+class PendingPrintAudit:
+    """Durable state for one physical print that is not fully audited yet."""
+
+    state: str
+    audit_id: str
+    records: tuple[dict, ...]
+
+
 class HistoryService:
     """Persist PDF/print audit data using privacy-preserving HMAC identifiers.
 
@@ -63,6 +83,9 @@ class HistoryService:
         self.lock_path = lock_path
         self.settings_store = settings_store
         self.secret_store = secret_store or HistoryKeyStore()
+        self.pending_print_path = (
+            self.history_path.parent / "pending_print_audit.json"
+        )
         self.recovered_key = False
         self.ensure_ready()
 
@@ -122,17 +145,109 @@ class HistoryService:
         self.recovered_key = bool(expected)
         return True
 
-    def status(self, settings: dict | None = None) -> tuple[bool, str]:
+    def identity_state(self) -> HistoryIdentityState:
+        """Return explicit recovery state without changing persistent identity."""
+
         current = self.settings_store.load()
-        expected = current.get("history_key_fingerprint", "")
+        expected = str(
+            current.get("history_key_fingerprint", "") or ""
+        ).strip().lower()
         secret = self.secret_store.get()
-        if not expected:
-            return False, "Cronologia stampe: fingerprint mancante"
+        local = self.fingerprint(secret) if secret else ""
+        has_rows = self._history_has_rows()
+
+        if expected and local and local == expected:
+            return HistoryIdentityState(
+                ready=True,
+                reason="ready",
+                expected_fingerprint=expected,
+                local_fingerprint=local,
+            )
         if not secret:
+            return HistoryIdentityState(
+                ready=False,
+                reason="missing_local_key",
+                expected_fingerprint=expected,
+            )
+        if not expected:
+            return HistoryIdentityState(
+                ready=False,
+                reason="missing_fingerprint",
+                local_fingerprint=local,
+                can_adopt_local_key=has_rows,
+            )
+        return HistoryIdentityState(
+            ready=False,
+            reason="key_mismatch",
+            expected_fingerprint=expected,
+            local_fingerprint=local,
+        )
+
+    def status(self) -> tuple[bool, str]:
+        state = self.identity_state()
+        if state.ready:
+            return True, "Cronologia stampe: disponibile"
+        if state.reason == "missing_fingerprint":
+            return False, "Cronologia stampe: fingerprint mancante"
+        if state.reason == "missing_local_key":
             return False, "Cronologia stampe: chiave locale mancante"
-        if self.fingerprint(secret) != expected:
-            return False, "Cronologia stampe: chiave locale non corrispondente"
-        return True, "Cronologia stampe: disponibile"
+        return False, "Cronologia stampe: chiave locale non corrispondente"
+
+    def adopt_present_secret(self, confirmation: str) -> str:
+        """Adopt the present portable key only when no fingerprint is recorded.
+
+        This recovery path never accepts arbitrary key material and never
+        overrides a known, different fingerprint. The operator must type the
+        exact displayed fingerprint so adoption cannot happen accidentally.
+        """
+
+        state = self.identity_state()
+        if state.ready:
+            return state.local_fingerprint
+        if state.reason == "missing_local_key":
+            raise ValueError(
+                "La chiave locale della cronologia non è presente. "
+                "Ripristinare un backup completo che contenga la chiave."
+            )
+        if state.reason == "key_mismatch":
+            raise ValueError(
+                "La chiave locale non corrisponde al fingerprint già "
+                "associato alla cronologia. Ripristinare la chiave corretta "
+                "da un backup invece di sostituire l'identità."
+            )
+        if not state.can_adopt_local_key or not state.local_fingerprint:
+            raise ValueError(
+                "Non esiste una cronologia da associare alla chiave locale."
+            )
+
+        typed = (
+            str(confirmation)
+            .replace(":", "")
+            .replace(" ", "")
+            .strip()
+            .lower()
+        )
+        if typed != state.local_fingerprint:
+            raise ValueError(
+                "La conferma non corrisponde al fingerprint della chiave "
+                "presente."
+            )
+
+        current = self.settings_store.load()
+        if current.get("history_key_fingerprint"):
+            raise ValueError(
+                "Il fingerprint della cronologia è già stato configurato."
+            )
+        current["history_key_fingerprint"] = state.local_fingerprint
+        self.settings_store.save(current)
+
+        verified = self.identity_state()
+        if not verified.ready:
+            raise HistoryError(
+                "Impossibile verificare l'identità della cronologia dopo "
+                "l'adozione"
+            )
+        return verified.local_fingerprint
 
     def configure_secret(self, secret: str, settings: dict, *, replace: bool = False) -> None:
         """Configure an explicit audit key without replacing a valid key by default."""
@@ -251,6 +366,19 @@ class HistoryService:
             stat.generated_documents = len(docs[code])
         return result
 
+    def generated_output_names(self) -> set[str]:
+        """Return generated PDF filenames only when audit identity is valid."""
+
+        self._secret()
+        names: set[str] = set()
+        for item in self._items() or ():
+            if item.get("event", "generate") != "generate":
+                continue
+            value = str(item.get("output_file", "") or "").strip()
+            if value:
+                names.add(Path(value).name)
+        return names
+
     def codes_for_output(
         self,
         candidate_codes: list[str],
@@ -292,6 +420,7 @@ class HistoryService:
         records = [
             {
                 "event": "generate",
+                "event_id": secrets.token_hex(16),
                 "voucher_id": self._digest(v.code, secret),
                 "recipient": v.recipient or batch.recipient,
                 "duration_minutes": v.duration_minutes,
@@ -305,25 +434,480 @@ class HistoryService:
         self._append(records)
         self._verify_event(records, "generate")
 
-    def record_print(self, codes: list[str], output_path: Path, document_copies: int, settings: dict) -> None:
-        """Record a print command only after it has been submitted to Windows."""
+    @staticmethod
+    def _canonical_print_records(records: list[dict]) -> str:
+        return json.dumps(
+            records,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _load_pending_print(self) -> PendingPrintAudit | None:
+        path = self.pending_print_path
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise HistoryError(
+                "Registrazione stampa pendente danneggiata"
+            ) from exc
+        if (
+            not isinstance(payload, dict)
+            or payload.get("format") not in {1, 2}
+            or not isinstance(payload.get("records"), list)
+        ):
+            raise HistoryError(
+                "Registrazione stampa pendente non valida"
+            )
+
+        # Format 1 was written only after Windows submission, so it is
+        # equivalent to the explicit "submitted" state introduced by format 2.
+        state = (
+            "submitted"
+            if payload.get("format") == 1
+            else str(payload.get("state", "") or "").strip()
+        )
+        if state not in {"prepared", "submitted"}:
+            raise HistoryError(
+                "Stato della registrazione stampa pendente non valido"
+            )
+
+        audit_id = str(payload.get("audit_id", "") or "").strip()
+        records = payload["records"]
+        if (
+            not audit_id
+            or len(audit_id) > 128
+            or any(
+                ch not in "0123456789abcdef-"
+                for ch in audit_id.lower()
+            )
+            or not records
+        ):
+            raise HistoryError(
+                "Registrazione stampa pendente incompleta"
+            )
+        normalized: list[dict] = []
+        for item in records:
+            if (
+                not isinstance(item, dict)
+                or item.get("event") != "print"
+                or item.get("print_job_id") != audit_id
+            ):
+                raise HistoryError(
+                    "Registrazione stampa pendente incoerente"
+                )
+            voucher_id = str(item.get("voucher_id", "") or "")
+            if (
+                len(voucher_id) != 64
+                or any(
+                    ch not in "0123456789abcdef"
+                    for ch in voucher_id.lower()
+                )
+            ):
+                raise HistoryError(
+                    "Registrazione stampa pendente con voucher non valido"
+                )
+            timestamp = str(item.get("timestamp", "") or "").strip()
+            output_file = str(item.get("output_file", "") or "")
+            document_copies = item.get("document_copies")
+            physical_copies = item.get("physical_copies")
+            if (
+                not timestamp
+                or not output_file
+                or Path(output_file).name != output_file
+                or type(document_copies) is not int
+                or document_copies < 1
+                or type(physical_copies) is not int
+                or physical_copies < 1
+            ):
+                raise HistoryError(
+                    "Registrazione stampa pendente con metadati non validi"
+                )
+            normalized.append(dict(item))
+        return PendingPrintAudit(
+            state=state,
+            audit_id=audit_id,
+            records=tuple(normalized),
+        )
+
+    def pending_print_state(self) -> str:
+        """Return "", "prepared" or "submitted" for local recovery state."""
+
+        pending = self._load_pending_print()
+        return pending.state if pending is not None else ""
+
+    def has_pending_print_audit(self) -> bool:
+        """Return whether an unresolved physical-print audit exists."""
+
+        return self._load_pending_print() is not None
+
+    def assert_no_pending_print_audit(self) -> None:
+        """Block a new physical print until an earlier audit is resolved."""
+
+        if self.has_pending_print_audit():
+            raise HistoryError(
+                "Esiste una stampa precedente ancora da risolvere nello "
+                "storico. Usare RECUPERA STAMPA PENDENTE prima di inviare "
+                "un nuovo documento."
+            )
+
+    def _write_pending_print(
+        self,
+        records: list[dict],
+        audit_id: str,
+        state: str,
+    ) -> None:
+        if state not in {"prepared", "submitted"}:
+            raise ValueError("Stato stampa pendente non valido")
+
+        self.pending_print_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        temp = self.pending_print_path.with_suffix(
+            self.pending_print_path.suffix + ".tmp"
+        )
+        payload = {
+            "format": 2,
+            "state": state,
+            "audit_id": audit_id,
+            "records": records,
+        }
+        try:
+            with temp.open(
+                "w",
+                encoding="utf-8",
+                newline="\n",
+            ) as handle:
+                json.dump(
+                    payload,
+                    handle,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, self.pending_print_path)
+        except OSError as exc:
+            raise HistoryError(
+                "Impossibile salvare la registrazione stampa pendente"
+            ) from exc
+        finally:
+            temp.unlink(missing_ok=True)
+
+    def _persist_pending_print(
+        self,
+        records: list[dict],
+        audit_id: str,
+        *,
+        state: str = "submitted",
+    ) -> None:
+        current = self._load_pending_print()
+        if current is not None:
+            same_job = (
+                current.audit_id == audit_id
+                and self._canonical_print_records(list(current.records))
+                == self._canonical_print_records(records)
+            )
+            if not same_job:
+                raise HistoryError(
+                    "Esiste già una diversa registrazione stampa pendente"
+                )
+            # Never downgrade a job already known to have been submitted.
+            if current.state == "submitted" or current.state == state:
+                return
+        self._write_pending_print(records, audit_id, state)
+
+    def _clear_pending_print(self, audit_id: str) -> None:
+        current = self._load_pending_print()
+        if current is None:
+            return
+        if current.audit_id != audit_id:
+            raise HistoryError(
+                "La registrazione stampa pendente è cambiata durante il recupero"
+            )
+        try:
+            self.pending_print_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise HistoryError(
+                "Stampa registrata, ma impossibile cancellare lo stato pendente"
+            ) from exc
+
+    def _build_print_records(
+        self,
+        codes: list[str],
+        output_path: Path,
+        document_copies: int,
+        settings: dict,
+        *,
+        audit_id: str,
+        submitted_at: str,
+    ) -> list[dict]:
         secret = self._secret(settings)
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if document_copies < 1:
+            raise ValueError(
+                "Il numero di copie documento deve essere positivo"
+            )
+        if (
+            not audit_id
+            or len(audit_id) > 128
+            or any(
+                ch not in "0123456789abcdef-"
+                for ch in audit_id.lower()
+            )
+        ):
+            raise ValueError("Identificativo audit stampa non valido")
+        timestamp = str(submitted_at or "").strip()
+        if not timestamp:
+            raise ValueError("Timestamp audit stampa non valido")
+
         counts = Counter(codes)
         output_name = Path(output_path).name
-        records = [
+        return [
             {
                 "event": "print",
                 "voucher_id": self._digest(code, secret),
-                "timestamp": now,
+                "timestamp": timestamp,
                 "output_file": output_name,
                 "document_copies": document_copies,
                 "physical_copies": labels * document_copies,
+                "print_job_id": audit_id,
             }
             for code, labels in counts.items()
         ]
-        self._append(records)
-        self._verify_event(records, "print")
+
+    def prepare_print_audit(
+        self,
+        codes: list[str],
+        output_path: Path,
+        document_copies: int,
+        settings: dict,
+        *,
+        audit_id: str,
+        submitted_at: str,
+    ) -> None:
+        """Persist print intent before entering the OS printer submission."""
+
+        self.assert_no_pending_print_audit()
+        records = self._build_print_records(
+            codes,
+            output_path,
+            document_copies,
+            settings,
+            audit_id=audit_id,
+            submitted_at=submitted_at,
+        )
+        self._persist_pending_print(
+            records,
+            audit_id,
+            state="prepared",
+        )
+
+    def mark_print_submitted(self, audit_id: str) -> None:
+        """Transition a prepared print to known-submitted durable state."""
+
+        pending = self._load_pending_print()
+        if pending is None or pending.audit_id != audit_id:
+            raise HistoryError(
+                "Registrazione stampa preparata non disponibile"
+            )
+        if pending.state == "submitted":
+            return
+        self._write_pending_print(
+            list(pending.records),
+            pending.audit_id,
+            "submitted",
+        )
+
+    def discard_prepared_print_audit(self) -> bool:
+        """Clear an ambiguous prepared job only after operator says not printed."""
+
+        pending = self._load_pending_print()
+        if pending is None:
+            return False
+        if pending.state != "prepared":
+            raise HistoryError(
+                "Una stampa già confermata come inviata non può essere annullata"
+            )
+        self._clear_pending_print(pending.audit_id)
+        return True
+
+    def _record_print_records(
+        self,
+        records: list[dict],
+        audit_id: str,
+    ) -> None:
+        missing = records
+        if audit_id:
+            expected_by_voucher = {
+                record["voucher_id"]: record
+                for record in records
+            }
+            existing_by_voucher: dict[str, dict] = {}
+            for item in self._items() or ():
+                if (
+                    item.get("event", "generate") == "print"
+                    and item.get("print_job_id") == audit_id
+                ):
+                    voucher_id = str(
+                        item.get("voucher_id", "") or ""
+                    )
+                    if voucher_id in existing_by_voucher:
+                        raise HistoryError(
+                            "Cronologia stampa incoerente per il job di recupero"
+                        )
+                    existing_by_voucher[voucher_id] = item
+
+            for voucher_id, item in existing_by_voucher.items():
+                expected = expected_by_voucher.get(voucher_id)
+                if expected is None:
+                    raise HistoryError(
+                        "Identificativo audit già usato per un’altra stampa"
+                    )
+                comparable = (
+                    "timestamp",
+                    "output_file",
+                    "document_copies",
+                    "physical_copies",
+                )
+                if any(
+                    item.get(key) != expected.get(key)
+                    for key in comparable
+                ):
+                    raise HistoryError(
+                        "Identificativo audit già usato con dati di stampa diversi"
+                    )
+
+            missing = [
+                record
+                for record in records
+                if record["voucher_id"] not in existing_by_voucher
+            ]
+
+        self._append(missing)
+        self._verify_print_job(records, audit_id)
+
+    def recover_pending_print_audit(
+        self,
+        *,
+        assume_submitted: bool = False,
+    ) -> bool:
+        """Complete a pending print audit without voucher plaintext.
+
+        A "prepared" descriptor means the process may have stopped while the
+        operating system was receiving the print job. It is intentionally not
+        auto-promoted because that would guess whether physical printing
+        occurred. The operator can explicitly confirm it via assume_submitted.
+        """
+
+        pending = self._load_pending_print()
+        if pending is None:
+            return False
+        self._secret()
+        if pending.state == "prepared":
+            if not assume_submitted:
+                raise HistoryError(
+                    "L'esito della stampa pendente è incerto. Confermare "
+                    "esplicitamente se il documento è stato stampato oppure "
+                    "annullare la registrazione pendente."
+                )
+            self.mark_print_submitted(pending.audit_id)
+            pending = self._load_pending_print()
+            if pending is None:
+                raise HistoryError(
+                    "Registrazione stampa pendente scomparsa durante il recupero"
+                )
+
+        self._record_print_records(
+            list(pending.records),
+            pending.audit_id,
+        )
+        self._clear_pending_print(pending.audit_id)
+        return True
+
+    def record_print(
+        self,
+        codes: list[str],
+        output_path: Path,
+        document_copies: int,
+        settings: dict,
+        *,
+        audit_id: str | None = None,
+        submitted_at: str | None = None,
+    ) -> None:
+        """Record a print already known to have been submitted to Windows."""
+
+        normalized_audit_id = (
+            secrets.token_hex(16)
+            if audit_id is None
+            else str(audit_id).strip()
+        )
+        timestamp = (
+            str(submitted_at).strip()
+            if submitted_at
+            else datetime.now(timezone.utc).isoformat(timespec="seconds")
+        )
+        records = self._build_print_records(
+            codes,
+            output_path,
+            document_copies,
+            settings,
+            audit_id=normalized_audit_id,
+            submitted_at=timestamp,
+        )
+        self._persist_pending_print(
+            records,
+            normalized_audit_id,
+            state="submitted",
+        )
+        self._record_print_records(
+            records,
+            normalized_audit_id,
+        )
+        self._clear_pending_print(normalized_audit_id)
+
+    def _verify_print_job(
+        self,
+        records: list[dict],
+        audit_id: str,
+    ) -> None:
+        """Verify a print event, including recovery IDs when present."""
+
+        if not audit_id:
+            self._verify_event(records, "print")
+            return
+
+        wanted = {
+            (
+                record.get("voucher_id"),
+                record.get("output_file"),
+                record.get("document_copies"),
+                record.get("physical_copies"),
+            )
+            for record in records
+        }
+        found = set()
+        for item in self._items() or ():
+            if (
+                item.get("event", "generate") != "print"
+                or item.get("print_job_id") != audit_id
+            ):
+                continue
+            found.add(
+                (
+                    item.get("voucher_id"),
+                    item.get("output_file"),
+                    item.get("document_copies"),
+                    item.get("physical_copies"),
+                )
+            )
+        if found != wanted:
+            raise HistoryError(
+                "Verifica cronologia non riuscita dopo registrazione stampa"
+            )
 
     def _append(self, records: list[dict]) -> None:
         if not records:
@@ -345,11 +929,22 @@ class HistoryService:
         """Verify that the just-written event is readable from persistent history."""
         if not records:
             return
-        wanted = {(r.get("voucher_id"), r.get("timestamp"), r.get("output_file")) for r in records}
+        def identity(item: dict):
+            event_id = str(item.get("event_id", "") or "").strip()
+            if event_id:
+                return ("event_id", event_id)
+            return (
+                "legacy",
+                item.get("voucher_id"),
+                item.get("timestamp"),
+                item.get("output_file"),
+            )
+
+        wanted = {identity(record) for record in records}
         found = set()
         for item in self._items() or ():
             if item.get("event", "generate") == event:
-                key = (item.get("voucher_id"), item.get("timestamp"), item.get("output_file"))
+                key = identity(item)
                 if key in wanted:
                     found.add(key)
         if found != wanted:

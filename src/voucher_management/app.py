@@ -1,33 +1,48 @@
 """Shared application workflow used by the Windows operator UI.
 
-This module deliberately owns voucher creation, PDF generation and print/audit
-workflow while presentation lives in modern_app.py. Keeping that boundary
-isolates the official controller API from the tested print path.
+This module owns shared application state plus PDF generation and print/audit
+workflow. Voucher creation and the concrete Windows presentation are composed
+through focused UI adapters, keeping controller mutation handling isolated from
+the stable print path.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from queue import Empty
 import sys
 import tkinter as tk
-from tkinter import messagebox, ttk
+from typing import Callable
+from tkinter import messagebox
 
 from . import __version__
+from .background_tasks import BackgroundResult, start_background_task
+from .dialogs import PrintCopiesDialog
 from .history import HistoryError, HistoryService
 from .identity import PRODUCT_NAME
 from .logging_utils import configure_logging
-from .models import VoucherBatch, VoucherRecord
+from .mutation_guard import CreateMutationGuard
 from .paths import AppPaths
+from .pdf_fonts import UnsupportedPdfTextError
 from .pdf_preview import PdfPreview
-from .pdf_render import VOUCHERS_PER_PAGE, render_batch_pdf
+from .pdf_render import render_batch_pdf
+from .print_archive import (
+    DEFAULT_PRINT_RETENTION_DAYS,
+    cleanup_orphan_pdf_temps,
+    cleanup_print_archive,
+)
 from .settings import SettingsStore
+from .voucher_creation_ui import VoucherCreationMixin
 from .security.history_key import HistoryKeyStore
 from .unifi_api import ApiVoucher, UniFiApiError
-from .utils import (
-    find_file_by_exact_name,
-    sanitize_filename_component,
-    unique_output_path,
+from .workflows import (
+    ExistingPdfResolutionError,
+    execute_print_job,
+    prepare_print_job,
+    refresh_vouchers,
+    resolve_existing_pdf,
+    verify_print_history_ready,
 )
 
 
@@ -59,121 +74,7 @@ def time_label(ts: int) -> str:
     return datetime.fromtimestamp(ts).strftime("%d/%m/%Y %H:%M") if ts else "-"
 
 
-class CreateDialog(tk.Toplevel):
-    """Collect the controller parameters required to create a voucher batch."""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.title("Aggiungi nuovo voucher")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-        self.result = None
-        self.name = tk.StringVar()
-        self.qty = tk.IntVar(value=1)
-        self.mode = tk.StringVar(value="Monouso")
-        self.quota = tk.IntVar(value=2)
-        self.expire = tk.IntVar(value=24)
-        self.unit = tk.StringVar(value="Ore")
-        self.data = tk.StringVar()
-        self.down = tk.StringVar()
-        self.up = tk.StringVar()
-        f = ttk.Frame(self, padding=16)
-        f.pack(fill="both", expand=True)
-        for r, (label, widget) in enumerate((("Nome", ttk.Entry(f, textvariable=self.name, width=34)), ("Quantità", ttk.Spinbox(f, from_=1, to=50, textvariable=self.qty, width=8)))):
-            ttk.Label(f, text=label).grid(row=r, column=0, sticky="w", pady=4)
-            widget.grid(row=r, column=1, sticky="ew", pady=4)
-        ttk.Label(f, text="Utilizzo").grid(row=2, column=0, sticky="w", pady=4)
-        ttk.Combobox(f, textvariable=self.mode, state="readonly", values=("Monouso", "Multiuso", "Multiuso illimitato"), width=22).grid(row=2, column=1, sticky="w")
-        ttk.Label(f, text="Numero utilizzi (Multiuso)").grid(row=3, column=0, sticky="w", pady=4)
-        ttk.Spinbox(f, from_=2, to=999, textvariable=self.quota, width=8).grid(row=3, column=1, sticky="w")
-        ttk.Label(f, text="Scadenza").grid(row=4, column=0, sticky="w", pady=4)
-        ef = ttk.Frame(f)
-        ef.grid(row=4, column=1, sticky="w")
-        ttk.Spinbox(ef, from_=1, to=9999, textvariable=self.expire, width=8).pack(side="left")
-        ttk.Combobox(ef, textvariable=self.unit, state="readonly", values=("Minuti", "Ore", "Giorni"), width=10).pack(side="left", padx=6)
-        for r, (label, var) in enumerate((("Limite dati MB (vuoto = illimitato)", self.data), ("Download Mbps (vuoto = illimitato)", self.down), ("Upload Mbps (vuoto = illimitato)", self.up)), 5):
-            ttk.Label(f, text=label).grid(row=r, column=0, sticky="w", pady=4)
-            ttk.Entry(f, textvariable=var, width=12).grid(row=r, column=1, sticky="w")
-        b = ttk.Frame(f)
-        b.grid(row=8, column=0, columnspan=2, sticky="e", pady=(14, 0))
-        ttk.Button(b, text="Annulla", command=self.destroy).pack(side="left", padx=5)
-        ttk.Button(b, text="Aggiungi", command=self.accept).pack(side="left")
-        self.wait_window(self)
-
-    def accept(self):
-        try:
-            name = self.name.get().strip()
-            qty = int(self.qty.get())
-            exp = int(self.expire.get())
-            if not name or not 1 <= qty <= 50 or exp < 1:
-                raise ValueError
-            mode = self.mode.get()
-            quota = 1 if mode == "Monouso" else (0 if mode == "Multiuso illimitato" else int(self.quota.get()))
-            if mode == "Multiuso" and not 2 <= quota <= 999:
-                raise ValueError
-            unit = {"Minuti": 1, "Ore": 60, "Giorni": 1440}[self.unit.get()]
-            def opt(v):
-                s = v.get().strip()
-                return None if not s else int(s)
-            data, down, up = opt(self.data), opt(self.down), opt(self.up)
-            if any(x is not None and x <= 0 for x in (data, down, up)):
-                raise ValueError
-            # Official Network API rate limits are documented in Kbps with a
-            # maximum of 100,000, therefore the UI's Mbps values stop at 100.
-            if down is not None and down > 100:
-                raise ValueError
-            if up is not None and up > 100:
-                raise ValueError
-            if data is not None and data > 1_048_576:
-                raise ValueError
-            self.result = dict(recipient=name, quantity=qty, expire_number=exp, expire_unit=unit, quota=quota, data_mb=data, down_mbps=down, up_mbps=up)
-        except (KeyError, TypeError, ValueError, tk.TclError):
-            messagebox.showerror(
-                "Voucher",
-                "Controllare i valori inseriti",
-                parent=self,
-            )
-            return
-        self.destroy()
-
-
-class PrintCopiesDialog(tk.Toplevel):
-    """Ask how many physical labels to place in the PDF for one unlimited code."""
-
-    def __init__(self, parent, voucher: ApiVoucher):
-        super().__init__(parent)
-        self.title("Copie voucher")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-        self.result = None
-        self.copies = tk.IntVar(value=1)
-        f = ttk.Frame(self, padding=16)
-        f.pack(fill="both", expand=True)
-        ttk.Label(f, text=f"Voucher {voucher.code_formatted} - utilizzo illimitato").pack(anchor="w")
-        ttk.Label(f, text="Numero di copie fisiche da preparare:").pack(anchor="w", pady=(10, 4))
-        ttk.Spinbox(f, from_=1, to=999, textvariable=self.copies, width=8).pack(anchor="w")
-        ttk.Label(f, text=f"Massimo {VOUCHERS_PER_PAGE} voucher per pagina; le pagine aggiuntive sono automatiche.", foreground="#666").pack(anchor="w", pady=(8, 0))
-        b = ttk.Frame(f)
-        b.pack(anchor="e", pady=(14, 0))
-        ttk.Button(b, text="Annulla", command=self.destroy).pack(side="left", padx=4)
-        ttk.Button(b, text="Continua", command=self.accept).pack(side="left")
-        self.wait_window(self)
-
-    def accept(self):
-        try:
-            n = int(self.copies.get())
-            if not 1 <= n <= 999:
-                raise ValueError("copies out of range")
-        except (TypeError, ValueError, tk.TclError):
-            messagebox.showerror("Copie", "Inserire un numero tra 1 e 999", parent=self)
-            return
-        self.result = n
-        self.destroy()
-
-
-class VoucherApp(tk.Tk):
+class VoucherApp(VoucherCreationMixin, tk.Tk):
     """Shared application state and stable voucher/print workflow methods."""
 
     def __init__(self):
@@ -196,6 +97,7 @@ class VoucherApp(tk.Tk):
             messagebox.showerror("Avvio impossibile", f"Cartella dell'applicazione non scrivibile.\n\n{exc}")
             self.destroy()
             return
+        self.create_guard = CreateMutationGuard(self.paths.pending_create)
         self.settings_store = SettingsStore(self.paths.settings)
         self.settings = self.settings_store.load()
         settings_warning = self.settings_store.consume_warning()
@@ -203,6 +105,7 @@ class VoucherApp(tk.Tk):
         migrated_logo = self.paths.persist_configured_logo(
             self.settings.get("logo_path", "")
         )
+        logo_warning = self.paths.consume_logo_warning()
         if migrated_logo != self.settings.get("logo_path", ""):
             self.settings["logo_path"] = migrated_logo
             self.settings_store.save(self.settings)
@@ -211,6 +114,7 @@ class VoucherApp(tk.Tk):
             self.paths.logs,
             int(self.settings.get("log_retention_days", 30)),
         )
+        self._cleanup_orphan_pdf_temps()
         self.history = HistoryService(
             self.paths.history,
             self.paths.history_lock,
@@ -223,6 +127,19 @@ class VoucherApp(tk.Tk):
         # HistoryService can initialize or repair the fingerprint on disk.
         # Keep the UI copy synchronized so later saves cannot erase it.
         self.settings = self.settings_store.load()
+
+        pending_print_recovery_error = None
+        try:
+            if self.history.recover_pending_print_audit():
+                self.logger.info("pending_print_audit_recovered")
+        except HistoryError as exc:
+            pending_print_recovery_error = str(exc)
+            self.logger.warning(
+                "pending_print_audit_recovery_failed type=%s",
+                type(exc).__name__,
+            )
+
+        self._cleanup_print_archive()
         if settings_warning:
             messagebox.showwarning(
                 "Impostazioni ripristinate",
@@ -234,6 +151,10 @@ class VoucherApp(tk.Tk):
         self.by_iid = {}
         self.checked_ids = set()
         self.last_pdf = None
+        self._background_results = None
+        self._background_success = None
+        self._background_error = None
+        self._background_scope = None
         # Official API credentials are deliberately split from persistent
         # configuration: the API root/certificate pin may be saved, while the
         # API key lives only in this Tk variable and the connected client.
@@ -248,6 +169,78 @@ class VoucherApp(tk.Tk):
         self.count_var = tk.StringVar(value="0 voucher")
         self.action_var = tk.StringVar(value="PREPARA STAMPA")
         self._build_ui()
+        if logo_warning:
+            messagebox.showwarning(
+                "Logo rimosso",
+                logo_warning,
+                parent=self,
+            )
+        if pending_print_recovery_error:
+            messagebox.showwarning(
+                "Registrazione stampa pendente",
+                "Una stampa precedente risulta ancora da registrare nello "
+                "storico. Nuove stampe restano bloccate finché il recupero "
+                "non viene completato.\n\n"
+                f"{pending_print_recovery_error}",
+                parent=self,
+            )
+        if self.create_guard.pending:
+            messagebox.showwarning(
+                "Creazione da verificare",
+                "Una precedente creazione potrebbe essere stata inviata al "
+                "controller senza ricevere una risposta definitiva. Nuove "
+                "creazioni restano bloccate. Eseguire Aggiorna e verificare "
+                "l'elenco prima di creare altri voucher.",
+                parent=self,
+            )
+
+    def _cleanup_orphan_pdf_temps(self) -> None:
+        """Remove stale renderer temp files left behind by a hard crash."""
+
+        try:
+            removed = cleanup_orphan_pdf_temps(self.paths.prints)
+        except Exception as exc:
+            self.logger.warning(
+                "pdf_temp_cleanup_skipped type=%s",
+                type(exc).__name__,
+            )
+            return
+
+        if removed:
+            self.logger.info(
+                "pdf_temp_cleanup removed=%d",
+                len(removed),
+            )
+
+    def _cleanup_print_archive(self) -> None:
+        """Apply PDF retention without touching files outside the audit trail."""
+
+        try:
+            retention_days = int(
+                self.settings.get(
+                    "print_retention_days",
+                    DEFAULT_PRINT_RETENTION_DAYS,
+                )
+            )
+            managed_names = self.history.generated_output_names()
+            removed = cleanup_print_archive(
+                self.paths.prints,
+                retention_days,
+                managed_names,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "print_archive_cleanup_skipped type=%s",
+                type(exc).__name__,
+            )
+            return
+
+        if removed:
+            self.logger.info(
+                "print_archive_cleanup removed=%d retention_days=%d",
+                len(removed),
+                retention_days,
+            )
 
     def _build_ui(self) -> None:
         """Build the concrete UI.
@@ -305,15 +298,170 @@ class VoucherApp(tk.Tk):
         """Connect through the concrete network/UI adapter."""
         raise NotImplementedError
 
-    def refresh(self):
-        if not self.client:
-            messagebox.showinfo("UniFi", "Connettersi prima al controller UniFi", parent=self)
+    def _set_background_busy(self, busy: bool, label: str = "") -> None:
+        """Let the concrete UI expose one application-wide blocking operation."""
+
+    def _set_network_busy(self, busy: bool, label: str = "") -> None:
+        """Compatibility wrapper for older network-specific call sites."""
+
+        self._set_background_busy(busy, label)
+
+    def _show_network_error(
+        self,
+        title: str,
+        exc: Exception,
+        *,
+        prefix: str = "",
+    ) -> None:
+        """Show expected API errors verbatim and redact unexpected failures."""
+
+        if isinstance(exc, (UniFiApiError, ValueError)):
+            detail = str(exc)
+        else:
+            self.logger.error(
+                "network_task_failed type=%s",
+                type(exc).__name__,
+            )
+            detail = (
+                "Errore imprevisto durante la comunicazione con il controller."
+            )
+        messagebox.showerror(
+            title,
+            f"{prefix}{detail}",
+            parent=self,
+        )
+
+    def _run_background_task(
+        self,
+        label: str,
+        worker: Callable[[], object],
+        on_success: Callable[[object], None],
+        on_error: Callable[[Exception], None],
+        *,
+        busy_scope: Callable[[bool], None] | None = None,
+    ) -> bool:
+        """Run one blocking operation off Tk and marshal completion to Tk.
+
+        The application intentionally serializes background work. This avoids
+        overlapping controller changes, history mutations, backup/restore,
+        rendering and printer submission while still keeping Tk responsive.
+        Workers must not access Tk widgets.
+        """
+
+        if self._background_results is not None:
+            self.bell()
+            return False
+
+        self._background_success = on_success
+        self._background_error = on_error
+        self._background_scope = busy_scope
+        self._background_results = start_background_task(worker)
+        self._set_background_busy(True, label)
+        if busy_scope is not None:
+            busy_scope(True)
+        self.after(40, self._poll_background_task)
+        return True
+
+    def _poll_background_task(self) -> None:
+        """Consume one worker result from the Tk thread."""
+
+        results = self._background_results
+        if results is None:
             return
         try:
-            self.vouchers = self.client.list_vouchers()
+            outcome: BackgroundResult = results.get_nowait()
+        except Empty:
+            self.after(40, self._poll_background_task)
+            return
+
+        on_success = self._background_success
+        on_error = self._background_error
+        busy_scope = self._background_scope
+        self._background_results = None
+        self._background_success = None
+        self._background_error = None
+        self._background_scope = None
+
+        try:
+            ui_alive = bool(self.winfo_exists())
+        except tk.TclError:
+            ui_alive = False
+        if not ui_alive:
+            return
+
+        self._set_background_busy(False)
+        if busy_scope is not None:
+            busy_scope(False)
+
+        if outcome.error is not None:
+            if on_error is not None:
+                on_error(outcome.error)
+            return
+        if on_success is not None:
+            on_success(outcome.value)
+
+    def _run_network_task(
+        self,
+        label: str,
+        worker: Callable[[], object],
+        on_success: Callable[[object], None],
+        on_error: Callable[[Exception], None],
+    ) -> bool:
+        """Compatibility wrapper for controller-specific call sites."""
+
+        return self._run_background_task(
+            label,
+            worker,
+            on_success,
+            on_error,
+        )
+
+    def _poll_network_task(self) -> None:
+        """Compatibility wrapper for tests/callers from the network-only era."""
+
+        self._poll_background_task()
+
+    def refresh(self):
+        if not self.client:
+            messagebox.showinfo(
+                "UniFi",
+                "Connettersi prima al controller UniFi",
+                parent=self,
+            )
+            return
+
+        client = self.client
+
+        def completed(vouchers) -> None:
+            self.vouchers = list(vouchers)
+            try:
+                self.create_guard.clear()
+            except CreateMutationGuardError as exc:
+                self.logger.warning(
+                    "create_guard_clear_failed type=%s",
+                    type(exc).__name__,
+                )
+                messagebox.showwarning(
+                    "Creazione ancora sospesa",
+                    "L'elenco è stato aggiornato, ma non è stato possibile "
+                    "rimuovere il blocco anti-ripetizione. La creazione resta "
+                    "sospesa per sicurezza.",
+                    parent=self,
+                )
             self.populate()
-        except UniFiApiError as exc:
-            messagebox.showerror("Sincronizzazione", str(exc), parent=self)
+
+        def failed(exc: Exception) -> None:
+            self._show_network_error(
+                "Sincronizzazione",
+                exc,
+            )
+
+        self._run_network_task(
+            "Aggiornamento voucher…",
+            lambda: refresh_vouchers(client),
+            completed,
+            failed,
+        )
 
     def populate(self) -> None:
         """Render vouchers in the concrete operator UI."""
@@ -353,60 +501,22 @@ class VoucherApp(tk.Tk):
         # Defensive guard: printing/deletion must not rely only on UI checkbox state.
         return [v for v in self.vouchers if v.id in self.checked_ids and not self._is_expired(v)]
 
-    def create(self):
-        if not self.client:
-            messagebox.showinfo(
-                "UniFi",
-                "Connettersi prima al controller UniFi",
-                parent=self,
-            )
-            return
-        dialog = CreateDialog(self)
-        if not dialog.result:
-            return
-
-        try:
-            created = self.client.create_vouchers(**dialog.result)
-        except UniFiApiError as exc:
-            messagebox.showerror("Creazione voucher", str(exc), parent=self)
-            return
-
-        self.checked_ids = {v.id for v in created}
-        self.filter_var.set("Da stampare")
-
-        try:
-            self.vouchers = self.client.list_vouchers()
-        except UniFiApiError as exc:
-            existing = {voucher.id: voucher for voucher in self.vouchers}
-            for voucher in created:
-                existing[voucher.id] = voucher
-            self.vouchers = list(existing.values())
-            self.populate()
-            messagebox.showwarning(
-                "Voucher creati",
-                f"Creati {len(created)} voucher, ma l'aggiornamento "
-                f"dell'elenco non è riuscito. Non ripetere la creazione.\n\n{exc}",
-                parent=self,
-            )
-            return
-
-        self.populate()
-        messagebox.showinfo(
-            "Voucher",
-            f"Creati {len(created)} voucher. Sono già selezionati per la stampa.",
-            parent=self,
-        )
-
     def print_selected(self):
-        """Generate into Print automatically and immediately show the final PDF."""
+        """Collect operator input, then delegate print preparation/execution."""
         selected = self.selected()
         if not selected:
-            messagebox.showinfo("Stampa", "Selezionare uno o più voucher attivi dalla prima colonna", parent=self)
+            messagebox.showinfo(
+                "Stampa",
+                "Selezionare uno o più voucher attivi dalla prima colonna",
+                parent=self,
+            )
             return
+
         try:
-            self.history.stats_for_codes(
-                [v.code_formatted for v in selected],
-                self.settings,
+            verify_print_history_ready(
+                selected,
+                history=self.history,
+                settings=self.settings,
             )
         except HistoryError as exc:
             messagebox.showerror(
@@ -415,35 +525,73 @@ class VoucherApp(tk.Tk):
                 parent=self,
             )
             return
+
         copies = 1
         if len(selected) == 1 and selected[0].quota == 0:
             dialog = PrintCopiesDialog(self, selected[0])
             if dialog.result is None:
                 return
             copies = dialog.result
-        records = []
-        for voucher in selected:
-            repeat = copies if len(selected) == 1 and voucher.quota == 0 else 1
-            records.extend(VoucherRecord(code=voucher.code_formatted, duration_minutes=voucher.duration_minutes, recipient=voucher.recipient or "Guest") for _ in range(repeat))
-        batch = VoucherBatch(source_path=Path("CONTROLLER_API"), vouchers=records, recipient=records[0].recipient if records else "")
-        now = datetime.now()
-        folder = self.paths.prints / f"{now:%Y}" / f"{now:%m}"
-        folder.mkdir(parents=True, exist_ok=True)
-        base = sanitize_filename_component(batch.recipient or "Voucher") or "Voucher"
-        output = unique_output_path(folder / f"Voucher_{base}_{now:%Y%m%d_%H%M%S}.pdf")
-        try:
-            render_batch_pdf(batch, output, self.settings)
-            duplicates = bool(self.history.find_duplicates(batch.codes, self.settings))
-            self.history.record_batch(batch, output, self.settings, reprint=duplicates)
-            self.last_pdf = output
+
+        job = prepare_print_job(
+            selected,
+            self.paths.prints,
+            unlimited_copies=copies,
+            now=datetime.now(),
+        )
+        settings = dict(self.settings)
+        history = self.history
+
+        def worker():
+            return execute_print_job(
+                job,
+                history=history,
+                settings=settings,
+                render_pdf=render_batch_pdf,
+            )
+
+        def completed(outcome) -> None:
+            self.last_pdf = outcome.output
             self.populate()
-            self._preview(output, batch.codes)
-        except Exception as exc:
+            self._preview(
+                outcome.output,
+                list(outcome.codes),
+            )
+
+        def failed(exc: Exception) -> None:
+            if isinstance(exc, UnsupportedPdfTextError):
+                self.logger.warning(
+                    "pdf_generation_blocked unsupported_glyphs"
+                )
+                messagebox.showwarning(
+                    "Caratteri non supportati",
+                    str(exc),
+                    parent=self,
+                )
+                return
+            if isinstance(exc, HistoryError):
+                messagebox.showerror(
+                    "Cronologia non disponibile",
+                    str(exc),
+                    parent=self,
+                )
+                return
             self.logger.error(
                 "pdf_generation_failed type=%s",
                 type(exc).__name__,
             )
-            messagebox.showerror("Stampa", str(exc), parent=self)
+            messagebox.showerror(
+                "Stampa",
+                "Impossibile generare il PDF selezionato.",
+                parent=self,
+            )
+
+        self._run_background_task(
+            "Generazione PDF…",
+            worker,
+            completed,
+            failed,
+        )
 
     def _preview(self, path: Path, codes: list[str]):
         PdfPreview(self, path, codes, self.history, self.settings, on_print=self.populate)
@@ -451,45 +599,21 @@ class VoucherApp(tk.Tk):
     def open_existing_pdf(self):
         selected = self.selected()
         if len(selected) != 1:
-            messagebox.showinfo("Apri PDF", "Selezionare un solo voucher attivo.", parent=self)
+            messagebox.showinfo(
+                "Apri PDF",
+                "Selezionare un solo voucher attivo.",
+                parent=self,
+            )
             return
+
         voucher = selected[0]
         try:
-            stat = self.history.stats_for_codes(
-                [voucher.code_formatted],
-                self.settings,
-            ).get(voucher.code_formatted)
-        except HistoryError as exc:
-            messagebox.showerror(
-                "Cronologia non disponibile",
-                str(exc),
-                parent=self,
-            )
-            return
-        if not stat or not stat.latest_output_file:
-            messagebox.showinfo("Apri PDF", "Per questo voucher non risulta alcun PDF archiviato.", parent=self)
-            return
-        path = Path(stat.latest_output_file)
-        if not path.is_absolute() or not path.exists():
-            # New history stores only the portable archive filename. Older
-            # history may contain an absolute path from another PC/profile.
-            # In both cases resolve the definitive document inside Print.
-            matches = sorted(
-                find_file_by_exact_name(self.paths.prints, path.name),
-                key=lambda item: item.stat().st_mtime,
-            )
-            path = matches[-1] if matches else path
-        if not path.exists():
-            messagebox.showerror("Apri PDF", f"Il file registrato nello storico non è più disponibile:\n{path}", parent=self)
-            return
-        # Reopening one voucher may resolve to a PDF containing many voucher
-        # labels. Printing that PDF must mark every currently-known voucher
-        # linked to the file, not only the row that the operator selected.
-        try:
-            linked_codes = self.history.codes_for_output(
-                [item.code_formatted for item in self.vouchers],
-                path,
-                self.settings,
+            resolved = resolve_existing_pdf(
+                voucher,
+                self.vouchers,
+                history=self.history,
+                settings=self.settings,
+                prints_root=self.paths.prints,
             )
         except HistoryError as exc:
             messagebox.showerror(
@@ -498,18 +622,42 @@ class VoucherApp(tk.Tk):
                 parent=self,
             )
             return
-        if voucher.code_formatted not in linked_codes:
-            # Fail closed rather than opening a document whose audit linkage no
-            # longer matches the selected voucher.
-            messagebox.showerror(
-                "Apri PDF",
-                "Il collegamento tra voucher e PDF non è verificabile nello "
-                "storico locale.",
-                parent=self,
-            )
+        except ExistingPdfResolutionError as exc:
+            if exc.reason == "not_recorded":
+                messagebox.showinfo(
+                    "Apri PDF",
+                    "Per questo voucher non risulta alcun PDF archiviato.",
+                    parent=self,
+                )
+            elif exc.reason == "missing_file":
+                messagebox.showerror(
+                    "Apri PDF",
+                    "Il file registrato nello storico non è più disponibile. "
+                    "Potrebbe essere stato eliminato dalla retention PDF "
+                    "configurata oppure spostato manualmente.\n\n"
+                    f"{exc.path}",
+                    parent=self,
+                )
+            elif exc.reason == "linkage_mismatch":
+                messagebox.showerror(
+                    "Apri PDF",
+                    "Il collegamento tra voucher e PDF non è verificabile nello "
+                    "storico locale.",
+                    parent=self,
+                )
+            else:
+                messagebox.showerror(
+                    "Apri PDF",
+                    "Impossibile risolvere il PDF archiviato.",
+                    parent=self,
+                )
             return
+
         try:
-            self._preview(path, linked_codes)
+            self._preview(
+                resolved.path,
+                list(resolved.linked_codes),
+            )
         except Exception as exc:
             self.logger.error(
                 "pdf_preview_open_failed type=%s",

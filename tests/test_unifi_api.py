@@ -12,6 +12,7 @@ from voucher_management.unifi_api import (
     UniFiApiError,
     UniFiCertificateChanged,
     UniFiClient,
+    UniFiMutationUncertain,
     _NoRedirectHandler,
     _PinnedHTTPSConnection,
     normalize_api_root,
@@ -513,3 +514,91 @@ def test_generic_404_still_reports_api_root_configuration():
     with pytest.raises(UniFiApiError, match="URL API"):
         client._request("GET", "/info")
 
+
+
+def test_post_transport_failure_is_typed_as_uncertain_mutation():
+    client = connected_client()
+
+    class FailingOpener:
+        def open(self, request, timeout=None):
+            raise URLError(TimeoutError("synthetic timeout"))
+
+    client.opener = FailingOpener()
+
+    with pytest.raises(UniFiMutationUncertain, match="non ripeterla"):
+        client._request(
+            "POST",
+            f"/sites/{SITE_ID}/hotspot/vouchers",
+            {"count": 1},
+            expected=(201,),
+        )
+
+
+def test_get_transport_failure_remains_safe_to_retry():
+    client = connected_client()
+
+    class FailingOpener:
+        def open(self, request, timeout=None):
+            raise URLError(TimeoutError("synthetic timeout"))
+
+    client.opener = FailingOpener()
+
+    with pytest.raises(UniFiApiError, match="non raggiungibile") as excinfo:
+        client._request("GET", "/info")
+
+    assert not isinstance(excinfo.value, UniFiMutationUncertain)
+
+
+def test_post_server_error_is_conservatively_typed_as_uncertain():
+    client = connected_client()
+
+    class ServerErrorOpener:
+        def open(self, request, timeout=None):
+            raise HTTPError(
+                request.full_url,
+                503,
+                "Service Unavailable",
+                {},
+                None,
+            )
+
+    client.opener = ServerErrorOpener()
+
+    with pytest.raises(UniFiMutationUncertain):
+        client._request(
+            "POST",
+            f"/sites/{SITE_ID}/hotspot/vouchers",
+            {"count": 1},
+            expected=(201,),
+        )
+
+
+def test_create_malformed_201_body_is_uncertain_not_safe_to_replay(monkeypatch):
+    client = connected_client()
+    monkeypatch.setattr(client, "_request", lambda *args, **kwargs: {})
+
+    with pytest.raises(UniFiMutationUncertain):
+        client.create_vouchers("TEST", 1, 5, 1, 1)
+
+
+def test_create_wrong_201_voucher_count_is_uncertain(monkeypatch):
+    client = connected_client()
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda *args, **kwargs: {
+            "vouchers": [
+                voucher_json(
+                    voucher_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    code="1111122222",
+                ),
+                voucher_json(
+                    voucher_id="ffffffff-1111-2222-3333-444444444444",
+                    code="3333344444",
+                ),
+            ]
+        },
+    )
+
+    with pytest.raises(UniFiMutationUncertain):
+        client.create_vouchers("TEST", 1, 5, 1, 1)

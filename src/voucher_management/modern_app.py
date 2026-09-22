@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import logging
 import shutil
+import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import darkdetect
 import sv_ttk
 
 from .app import VoucherApp, duration_label, time_label
-from .backup import BackupError, BackupService
 from .history import HistoryError
 from .identity import (
     DEFAULT_STRUCTURE_NAME,
@@ -21,15 +20,13 @@ from .identity import (
     DEFAULT_WIFI_TITLE,
     PRODUCT_NAME,
 )
+from .logo_validation import LogoValidationError, validate_logo_image
 from .pdf_render import VOUCHERS_PER_PAGE
-from .policy import evaluate_delete_policy
-from .unifi_api import (
-    UniFiApiError,
-    UniFiCertificateChanged,
-    UniFiCertificateTrustRequired,
-    UniFiClient,
-    normalize_api_root,
-)
+from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
+from .utils import format_fingerprint
+from .data_maintenance_ui import DataMaintenanceMixin
+from .controller_connection_ui import ControllerConnectionMixin
+from .voucher_deletion_ui import VoucherDeletionMixin
 
 
 def audit_time_label(value: str) -> str:
@@ -78,6 +75,11 @@ class SettingsDialog(tk.Toplevel):
         self.preset = tk.StringVar(value=s.get("preset", "Classico"))
         self.logo = tk.StringVar(value=s.get("logo_path", ""))
         self.theme = tk.StringVar(value=s.get("ui_theme", "system"))
+        try:
+            retention_days = int(s.get("print_retention_days", DEFAULT_PRINT_RETENTION_DAYS))
+        except (TypeError, ValueError):
+            retention_days = DEFAULT_PRINT_RETENTION_DAYS
+        self.print_retention_days = tk.StringVar(value=str(retention_days))
 
         shell = ttk.Frame(self, padding=20)
         shell.pack(fill="both", expand=True)
@@ -157,12 +159,89 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(frame, text="Sistema segue il tema chiaro/scuro di Windows 11 all'avvio.", style="Muted.TLabel").pack(anchor="w", pady=(2, 8))
         ttk.Combobox(frame, textvariable=self.theme, state="readonly", values=("system", "light", "dark"), width=18).pack(anchor="w")
         ttk.Separator(frame).pack(fill="x", pady=22)
+        ttk.Label(frame, text="Archivio PDF", style="SectionTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "I PDF generati vengono conservati in Print/. "
+                "La retention elimina solo PDF riconosciuti dalla cronologia; "
+                "lo storico di stampa resta disponibile. 0 = conserva sempre."
+            ),
+            style="Muted.TLabel",
+            wraplength=560,
+        ).pack(anchor="w", pady=(3, 8))
+        retention_row = ttk.Frame(frame)
+        retention_row.pack(anchor="w")
+        ttk.Label(retention_row, text="Giorni di conservazione").pack(side="left")
+        ttk.Spinbox(
+            retention_row,
+            from_=0,
+            to=3650,
+            increment=30,
+            textvariable=self.print_retention_days,
+            width=8,
+        ).pack(side="left", padx=(10, 0))
+
+        ttk.Separator(frame).pack(fill="x", pady=22)
+        ttk.Label(
+            frame,
+            text="Cronologia di stampa",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "La chiave portabile e il fingerprint proteggono la continuità "
+                "dello storico. Se l'identità non è disponibile, stampa ed "
+                "eliminazione vengono bloccate finché il problema non è risolto."
+            ),
+            style="Muted.TLabel",
+            wraplength=560,
+        ).pack(anchor="w", pady=(3, 10))
+        identity_actions = ttk.Frame(frame)
+        identity_actions.pack(anchor="w")
+        ttk.Button(
+            identity_actions,
+            text="Verifica / recupera identità…",
+            command=lambda: HistoryRecoveryDialog(self.app),
+        ).pack(side="left")
+        ttk.Button(
+            identity_actions,
+            text="Recupera stampa pendente…",
+            command=lambda: self.app.recover_pending_print_audit(
+                parent=self,
+            ),
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            identity_actions,
+            text="Esporta cronologia…",
+            command=lambda: self.app.export_history_exchange(
+                parent=self,
+            ),
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            identity_actions,
+            text="Importa cronologia…",
+            command=lambda: self.app.import_history_exchange(
+                parent=self,
+            ),
+        ).pack(side="left", padx=(8, 0))
+
+        ttk.Separator(frame).pack(fill="x", pady=22)
         ttk.Label(frame, text="Backup e ripristino", style="SectionTitle.TLabel").pack(anchor="w")
         ttk.Label(frame, text="Il backup comprende configurazione, storico, PDF generati, loghi e la chiave portabile della cronologia. La API key UniFi non viene mai salvata.", style="Muted.TLabel", wraplength=560).pack(anchor="w", pady=(3, 12))
         actions = ttk.Frame(frame)
         actions.pack(anchor="w")
-        ttk.Button(actions, text="Crea backup…", command=self.app.create_backup).pack(side="left")
-        ttk.Button(actions, text="Ripristina backup…", command=self.app.restore_backup).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            actions,
+            text="Crea backup…",
+            command=lambda: self.app.create_backup(parent=self),
+        ).pack(side="left")
+        ttk.Button(
+            actions,
+            text="Ripristina backup…",
+            command=lambda: self.app.restore_backup(parent=self),
+        ).pack(side="left", padx=(8, 0))
 
     def _logo_files(self) -> list[Path]:
         return sorted((p for p in self.app.paths.logos.iterdir() if p.suffix.lower() in {".png", ".jpg", ".jpeg"}), key=lambda p: p.name.lower())
@@ -186,6 +265,12 @@ class SettingsDialog(tk.Toplevel):
         if not selected:
             return
         source = Path(selected)
+        try:
+            validate_logo_image(source)
+        except LogoValidationError as exc:
+            messagebox.showerror("Logo non valido", str(exc), parent=self)
+            return
+
         target = self.app.paths.logos / source.name
         counter = 2
         while target.exists() and target.resolve() != source.resolve():
@@ -201,7 +286,22 @@ class SettingsDialog(tk.Toplevel):
         self.logo_combo.set("Predefinito")
 
     def save(self) -> None:
+        try:
+            retention_days = int(self.print_retention_days.get())
+            if not 0 <= retention_days <= 3650:
+                raise ValueError
+        except (TypeError, ValueError, tk.TclError):
+            messagebox.showerror(
+                "Impostazioni",
+                "La conservazione PDF deve essere compresa tra 0 e 3650 giorni.",
+                parent=self,
+            )
+            return
+
         old_theme = self.app.settings.get("ui_theme", "system")
+        old_retention = int(
+            self.app.settings.get("print_retention_days", DEFAULT_PRINT_RETENTION_DAYS)
+        )
         self.app.settings = self.app.settings_store.update(
             structure_type=self.structure_type.get(),
             structure_name=self.structure_name.get().strip(),
@@ -209,13 +309,173 @@ class SettingsDialog(tk.Toplevel):
             preset=self.preset.get(),
             logo_path=self.logo.get().strip(),
             ui_theme=self.theme.get(),
+            print_retention_days=retention_days,
         )
         if old_theme != self.theme.get():
             self.app.apply_theme()
+        if old_retention != retention_days:
+            self.app._cleanup_print_archive()
         self.destroy()
 
 
-class ModernVoucherApp(VoucherApp):
+class HistoryRecoveryDialog(tk.Toplevel):
+    """Inspect and explicitly recover the portable print-history identity."""
+
+    def __init__(self, app: "ModernVoucherApp"):
+        super().__init__(app)
+        self.app = app
+        self.title("Identità cronologia")
+        self.transient(app)
+        self.grab_set()
+        self.confirmation = tk.StringVar()
+
+        shell = ttk.Frame(self, padding=20)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(
+            shell,
+            text="Identità cronologia di stampa",
+            style="PageTitle.TLabel",
+        ).pack(anchor="w")
+        self.state = app.history.identity_state()
+        self._build_state(shell)
+        fit_dialog(self, app, min_width=680, min_height=360)
+
+    @staticmethod
+    def _fingerprint(value: str) -> str:
+        return format_fingerprint(value)
+
+    def _build_state(self, shell: ttk.Frame) -> None:
+        state = self.state
+        if state.ready:
+            ttk.Label(
+                shell,
+                text="La cronologia è disponibile e la chiave locale corrisponde "
+                "al fingerprint registrato.",
+                style="Muted.TLabel",
+                wraplength=620,
+            ).pack(anchor="w", pady=(8, 16))
+            ttk.Label(
+                shell,
+                text=f"Fingerprint: {self._fingerprint(state.local_fingerprint)}",
+            ).pack(anchor="w")
+            ttk.Button(
+                shell,
+                text="Chiudi",
+                command=self.destroy,
+            ).pack(anchor="e", pady=(22, 0))
+            return
+
+        if state.reason == "missing_fingerprint" and state.can_adopt_local_key:
+            ttk.Label(
+                shell,
+                text=(
+                    "Esiste una cronologia con una chiave portabile locale, ma "
+                    "manca il fingerprint che la associa ai record esistenti. "
+                    "Adottare la chiave presente solo se questa cartella dati "
+                    "proviene dalla stessa installazione o da un backup completo."
+                ),
+                style="Muted.TLabel",
+                wraplength=620,
+            ).pack(anchor="w", pady=(8, 16))
+            fingerprint = self._fingerprint(state.local_fingerprint)
+            ttk.Label(
+                shell,
+                text=f"Fingerprint della chiave presente: {fingerprint}",
+            ).pack(anchor="w")
+            ttk.Label(
+                shell,
+                text=(
+                    "Per confermare, digitare esattamente il fingerprint "
+                    "visualizzato sopra:"
+                ),
+                style="Muted.TLabel",
+            ).pack(anchor="w", pady=(16, 5))
+            ttk.Entry(
+                shell,
+                textvariable=self.confirmation,
+                width=42,
+            ).pack(anchor="w")
+            actions = ttk.Frame(shell)
+            actions.pack(fill="x", pady=(22, 0))
+            ttk.Button(
+                actions,
+                text="Annulla",
+                command=self.destroy,
+            ).pack(side="right")
+            ttk.Button(
+                actions,
+                text="Adotta chiave presente",
+                command=self._adopt,
+                style="Accent.TButton",
+            ).pack(side="right", padx=(0, 8))
+            return
+
+        expected = self._fingerprint(state.expected_fingerprint)
+        local = self._fingerprint(state.local_fingerprint)
+        if state.reason == "missing_local_key":
+            detail = (
+                "La chiave portabile della cronologia non è presente. "
+                "Ripristinare un backup completo che contenga "
+                "data/history_secret.key."
+            )
+        elif state.reason == "key_mismatch":
+            detail = (
+                "La chiave locale non corrisponde al fingerprint già associato "
+                "alla cronologia. Per sicurezza non può essere adottata al posto "
+                "di quella attesa. Ripristinare la chiave corretta da un backup."
+            )
+        else:
+            detail = (
+                "L'identità della cronologia non può essere recuperata "
+                "automaticamente."
+            )
+        ttk.Label(
+            shell,
+            text=detail,
+            style="Muted.TLabel",
+            wraplength=620,
+        ).pack(anchor="w", pady=(8, 16))
+        if expected:
+            ttk.Label(
+                shell,
+                text=f"Fingerprint atteso: {expected}",
+            ).pack(anchor="w", pady=(0, 4))
+        if local:
+            ttk.Label(
+                shell,
+                text=f"Fingerprint chiave presente: {local}",
+            ).pack(anchor="w")
+        ttk.Button(
+            shell,
+            text="Chiudi",
+            command=self.destroy,
+        ).pack(anchor="e", pady=(22, 0))
+
+    def _adopt(self) -> None:
+        try:
+            self.app.history.adopt_present_secret(
+                self.confirmation.get()
+            )
+        except (HistoryError, ValueError) as exc:
+            messagebox.showerror(
+                "Identità cronologia",
+                str(exc),
+                parent=self,
+            )
+            return
+
+        self.app.settings = self.app.settings_store.load()
+        self.app._history_error_shown = False
+        messagebox.showinfo(
+            "Identità cronologia",
+            "La chiave locale è stata associata alla cronologia esistente.",
+            parent=self,
+        )
+        self.destroy()
+        self.app.populate()
+
+
+class ModernVoucherApp(DataMaintenanceMixin, ControllerConnectionMixin, VoucherDeletionMixin, VoucherApp):
     """Windows 11 operator shell around the stable voucher engine."""
 
     def _build_ui(self) -> None:
@@ -236,32 +496,33 @@ class ModernVoucherApp(VoucherApp):
         ttk.Label(connection, text="API root / Controller", style="Muted.TLabel").grid(
             row=0, column=0, sticky="w", padx=(0, 6)
         )
-        api_root_entry = ttk.Entry(
+        self.api_root_entry = ttk.Entry(
             connection,
             textvariable=self.api_root_var,
             width=46,
         )
-        api_root_entry.grid(row=0, column=1, sticky="ew", padx=(0, 16))
-        api_root_entry.bind("<Return>", lambda _event: self.connect())
+        self.api_root_entry.grid(row=0, column=1, sticky="ew", padx=(0, 16))
+        self.api_root_entry.bind("<Return>", lambda _event: self.connect())
 
         ttk.Label(connection, text="API key", style="Muted.TLabel").grid(
             row=0, column=2, sticky="w", padx=(0, 6)
         )
-        api_key_entry = ttk.Entry(
+        self.api_key_entry = ttk.Entry(
             connection,
             textvariable=self.api_key_var,
             show="•",
             width=32,
         )
-        api_key_entry.grid(row=0, column=3, sticky="ew", padx=(0, 16))
-        api_key_entry.bind("<Return>", lambda _event: self.connect())
+        self.api_key_entry.grid(row=0, column=3, sticky="ew", padx=(0, 16))
+        self.api_key_entry.bind("<Return>", lambda _event: self.connect())
 
-        ttk.Button(
+        self.connect_button = ttk.Button(
             connection,
             text="Connetti",
             command=self.connect,
             style="Accent.TButton",
-        ).grid(row=0, column=4)
+        )
+        self.connect_button.grid(row=0, column=4)
 
         ttk.Label(
             connection,
@@ -275,17 +536,75 @@ class ModernVoucherApp(VoucherApp):
             style="Muted.TLabel",
         ).grid(row=1, column=2, columnspan=3, sticky="w", pady=(8, 0))
 
+        self.background_operation_var = tk.StringVar()
+        self.background_progress = ttk.Progressbar(
+            connection,
+            mode="indeterminate",
+        )
+        self.background_progress.grid(
+            row=2,
+            column=0,
+            columnspan=5,
+            sticky="ew",
+            pady=(9, 0),
+        )
+        self.background_progress.grid_remove()
+        self.background_operation_label = ttk.Label(
+            connection,
+            textvariable=self.background_operation_var,
+            style="Muted.TLabel",
+        )
+        self.background_operation_label.grid(
+            row=3,
+            column=0,
+            columnspan=5,
+            sticky="w",
+            pady=(3, 0),
+        )
+        self.background_operation_label.grid_remove()
+
         connection.columnconfigure(1, weight=1)
         connection.columnconfigure(3, weight=1)
 
         actions = ttk.Frame(root)
         actions.pack(fill="x", pady=(2, 12))
-        ttk.Button(actions, text="＋  NUOVO VOUCHER", command=self.create, style="Hero.TButton").pack(side="left")
-        ttk.Button(actions, textvariable=self.action_var, command=self.print_selected, style="Hero.TButton").pack(side="left", padx=(10, 22))
-        ttk.Button(actions, text="Seleziona da stampare", command=self.select_unprinted).pack(side="left")
-        ttk.Button(actions, text="Aggiorna", command=self.refresh).pack(side="left", padx=8)
-        ttk.Button(actions, text="Apri PDF", command=self.open_existing_pdf).pack(side="left")
-        ttk.Button(actions, text="Elimina", command=self.delete_selected).pack(side="right")
+        self.create_button = ttk.Button(
+            actions,
+            text="＋  NUOVO VOUCHER",
+            command=self.create,
+            style="Hero.TButton",
+        )
+        self.create_button.pack(side="left")
+        self.print_button = ttk.Button(
+            actions,
+            textvariable=self.action_var,
+            command=self.print_selected,
+            style="Hero.TButton",
+        )
+        self.print_button.pack(side="left", padx=(10, 22))
+        ttk.Button(
+            actions,
+            text="Seleziona da stampare",
+            command=self.select_unprinted,
+        ).pack(side="left")
+        self.refresh_button = ttk.Button(
+            actions,
+            text="Aggiorna",
+            command=self.refresh,
+        )
+        self.refresh_button.pack(side="left", padx=8)
+        self.open_pdf_button = ttk.Button(
+            actions,
+            text="Apri PDF",
+            command=self.open_existing_pdf,
+        )
+        self.open_pdf_button.pack(side="left")
+        self.delete_button = ttk.Button(
+            actions,
+            text="Elimina",
+            command=self.delete_selected,
+        )
+        self.delete_button.pack(side="right")
 
         content = ttk.Frame(root)
         content.pack(fill="both", expand=True)
@@ -327,6 +646,36 @@ class ModernVoucherApp(VoucherApp):
         sy.pack(side="right", fill="y")
         ttk.Label(content, text="Elimina è disponibile solo prima della prima stampa. Un voucher stampato resta gestibile dall'amministratore UniFi.", style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
 
+    def _set_background_busy(self, busy: bool, label: str = "") -> None:
+        """Expose one serialized background operation in the main UI."""
+
+        state = ["disabled"] if busy else ["!disabled"]
+        for widget in (
+            self.connect_button,
+            self.create_button,
+            self.refresh_button,
+            self.delete_button,
+            self.print_button,
+            self.open_pdf_button,
+        ):
+            widget.state(state)
+
+        if busy:
+            self.background_operation_var.set(label)
+            self.background_progress.grid()
+            self.background_operation_label.grid()
+            self.background_progress.start(12)
+        else:
+            self.background_progress.stop()
+            self.background_progress.grid_remove()
+            self.background_operation_label.grid_remove()
+            self.background_operation_var.set("")
+
+    def _set_network_busy(self, busy: bool, label: str = "") -> None:
+        """Backward-compatible alias for the generalized busy indicator."""
+
+        self._set_background_busy(busy, label)
+
     def _maximize_window(self) -> None:
         try:
             self.state("zoomed")
@@ -350,157 +699,6 @@ class ModernVoucherApp(VoucherApp):
         style.configure("Treeview.Heading", font=("Segoe UI Variable Text", 9, "bold"), padding=(7, 9))
         self.minsize(1180, 700)
 
-    def _backup_service(self) -> BackupService:
-        return BackupService(self.paths)
-
-    def create_backup(self) -> None:
-        default = f"VoucherManagement-backup-{datetime.now().strftime('%Y%m%d-%H%M')}.zip"
-        target = filedialog.asksaveasfilename(parent=self, title="Crea backup", defaultextension=".zip", initialfile=default, filetypes=[("Backup Voucher Management", "*.zip")])
-        if not target:
-            return
-        try:
-            result = self._backup_service().create(Path(target))
-            messagebox.showinfo("Backup completato", f"Backup creato correttamente.\n\n{result}", parent=self)
-        except BackupError as exc:
-            messagebox.showerror("Backup", str(exc), parent=self)
-
-    def restore_backup(self) -> None:
-        source = filedialog.askopenfilename(parent=self, title="Ripristina backup", filetypes=[("Backup Voucher Management", "*.zip")])
-        if not source:
-            return
-        try:
-            manifest = self._backup_service().validate(Path(source))
-        except BackupError as exc:
-            messagebox.showerror("Ripristino", str(exc), parent=self)
-            return
-        created = manifest.get("created_utc", "data sconosciuta")
-        if not messagebox.askyesno("Ripristina backup", f"Ripristinare il backup creato il {created}?\n\nPrima della sostituzione verrà conservata automaticamente una copia di rollback dei dati attuali.\n\nDopo il ripristino il programma verrà chiuso.", parent=self):
-            return
-        try:
-            rollback = self._backup_service().restore(Path(source))
-            messagebox.showinfo("Ripristino completato", f"Dati ripristinati.\n\nCopia di sicurezza precedente:\n{rollback}\n\nRiavviare Voucher Management.", parent=self)
-            self.destroy()
-        except BackupError as exc:
-            messagebox.showerror("Ripristino", str(exc), parent=self)
-
-    @staticmethod
-    def _format_certificate_fingerprint(value: str) -> str:
-        compact = value.replace(":", "").strip().upper()
-        return ":".join(
-            compact[index:index + 2]
-            for index in range(0, len(compact), 2)
-        )
-
-    def connect(self) -> None:
-        """Connect through the official API without persisting the API key."""
-
-        api_root = self.api_root_var.get().strip()
-        api_key = self.api_key_var.get()
-        self.connection_var.set("Connessione in corso…")
-        self.update_idletasks()
-
-        try:
-            normalized = normalize_api_root(api_root)
-            # Always resolve persisted trust from the latest on-disk state.
-            self.settings = self.settings_store.load()
-            saved_root = str(self.settings.get("controller_api_root", "")).strip()
-            saved_pin = str(self.settings.get("controller_cert_sha256", "")).strip()
-            trusted_pin = saved_pin if saved_root == normalized else ""
-            client = UniFiClient(
-                normalized,
-                trusted_cert_sha256=trusted_pin or None,
-            )
-            try:
-                info = client.connect(api_key)
-                vouchers = client.list_vouchers()
-            except UniFiCertificateChanged as exc:
-                previous = self._format_certificate_fingerprint(
-                    exc.previous_fingerprint
-                )
-                current = self._format_certificate_fingerprint(
-                    exc.fingerprint
-                )
-                accepted = messagebox.askyesno(
-                    "Certificato TLS cambiato",
-                    "Il certificato del controller non corrisponde più "
-                    "all'impronta autorizzata.\n\n"
-                    f"Impronta precedente:\n{previous}\n\n"
-                    f"Nuova impronta:\n{current}\n\n"
-                    "La API key non è stata inviata al controller. "
-                    "Verificare la nuova impronta tramite una fonte attendibile "
-                    "prima di continuare.\n\n"
-                    "Sostituire l'impronta memorizzata e connettersi?",
-                    parent=self,
-                )
-                if not accepted:
-                    raise UniFiApiError(
-                        "Nuovo certificato TLS non autorizzato dall'operatore"
-                    )
-                client = UniFiClient(
-                    normalized,
-                    trusted_cert_sha256=exc.fingerprint,
-                )
-                info = client.connect(api_key)
-                vouchers = client.list_vouchers()
-            except UniFiCertificateTrustRequired as exc:
-                formatted = self._format_certificate_fingerprint(
-                    exc.fingerprint
-                )
-                accepted = messagebox.askyesno(
-                    "Certificato TLS non attendibile",
-                    "Il controller usa un certificato che Windows non considera "
-                    "attendibile.\n\nImpronta SHA-256:\n"
-                    f"{formatted}\n\n"
-                    "Confermare solo dopo aver verificato che l'impronta "
-                    "appartenga realmente al controller.\n\n"
-                    "Memorizzare e autorizzare questo certificato?",
-                    parent=self,
-                )
-                if not accepted:
-                    raise UniFiApiError(
-                        "Certificato TLS non autorizzato dall'operatore"
-                    )
-                client = UniFiClient(
-                    normalized,
-                    trusted_cert_sha256=exc.fingerprint,
-                )
-                info = client.connect(api_key)
-                vouchers = client.list_vouchers()
-        except (UniFiApiError, ValueError) as exc:
-            self.client = None
-            self.api_key_var.set("")
-            self.connection_var.set("Connessione non riuscita")
-            messagebox.showerror("UniFi", str(exc), parent=self)
-            return
-
-        self.api_key_var.set("")
-        self.client = client
-        self.vouchers = vouchers
-
-        self.api_root_var.set(client.base_url)
-        self.settings = self.settings_store.update(
-            controller_api_root=client.base_url,
-            controller_cert_sha256=client.trusted_cert_sha256,
-        )
-
-        tls_label = (
-            "TLS certificato fissato"
-            if client.trusted_cert_sha256
-            else "TLS verificato"
-        )
-        site_label = info.get("siteName") or "sito"
-        self.connection_var.set(
-            f"Connesso • Network {info['applicationVersion']} • "
-            f"{site_label} • {tls_label}"
-        )
-        self.checked_ids.clear()
-        self.populate()
-        self.logger.info(
-            "controller_api_connected network_version=%s tls_pinned=%s",
-            info["applicationVersion"],
-            bool(client.trusted_cert_sha256),
-        )
-
     def _history_stats_for(self, vouchers):
         """Return audit stats or block unsafe actions when history is unavailable."""
         try:
@@ -516,7 +714,10 @@ class ModernVoucherApp(VoucherApp):
                     "Cronologia non disponibile",
                     f"{exc}\n\n"
                     "Selezione, stampa ed eliminazione vengono sospese "
-                    "per evitare decisioni basate su dati incompleti.",
+                    "per evitare decisioni basate su dati incompleti.\n\n"
+                    "Aprire Impostazioni > Aspetto e dati > "
+                    "Verifica / recupera identità per diagnosticare o "
+                    "recuperare la chiave della cronologia.",
                     parent=self,
                 )
                 self._history_error_shown = True
@@ -584,123 +785,27 @@ class ModernVoucherApp(VoucherApp):
         self.filter_var.set("Da stampare")
         self.populate()
 
-    def delete_selected(self) -> None:
-        """Delete only vouchers that are still unused at deletion time."""
-        selected = self.selected()
-        if not selected:
-            messagebox.showinfo(
-                "Elimina da UniFi",
-                "Selezionare uno o più voucher attivi.",
-                parent=self,
-            )
-            return
-
-        # The table is only a cache. Re-read every selected voucher immediately
-        # before applying lifecycle policy so a guest authorized since the last
-        # refresh can never be revoked from stale UI state.
-        try:
-            current = [
-                self.client.get_voucher(voucher.id)
-                for voucher in selected
-            ]
-        except UniFiApiError as exc:
-            messagebox.showerror(
-                "Eliminazione",
-                "Impossibile verificare lo stato aggiornato dei voucher. "
-                f"Nessun voucher è stato eliminato.\n\n{exc}",
-                parent=self,
-            )
-            return
-
-        stats = self._history_stats_for(current)
-        if stats is None:
-            return
-
-        blocked = []
-        for voucher in current:
-            result = evaluate_delete_policy(
-                voucher,
-                stats.get(voucher.code_formatted),
-            )
-            if not result.allowed:
-                blocked.append((voucher, result))
-        if blocked:
-            reasons = {result.reason for _voucher, result in blocked}
-            if "in_use" in reasons:
-                detail = (
-                    "Almeno un voucher selezionato risulta già utilizzato o "
-                    "in uso sul controller."
-                )
-            elif "printed" in reasons:
-                detail = (
-                    "Almeno un voucher selezionato risulta già stampato."
-                )
-            else:
-                detail = (
-                    "Almeno un voucher selezionato non è eliminabile "
-                    "dall'applicazione."
-                )
-            messagebox.showwarning(
-                "Eliminazione non consentita",
-                f"{detail}\n\nVoucher Management consente solo la pulizia "
-                "dei voucher non ancora emessi. L'eventuale revoca resta di "
-                "competenza dell'amministratore IT.",
-                parent=self,
-            )
-            return
-
-        if not messagebox.askyesno(
-            "Elimina dal server UniFi",
-            f"Eliminare {len(current)} voucher dal server UniFi?\n\n"
-            "Questa operazione rimuove i voucher dal controller. Lo storico "
-            "locale e gli eventuali PDF già generati non verranno cancellati.",
-            parent=self,
-        ):
-            return
-
-        try:
-            self.client.delete_vouchers([v.id for v in current])
-        except UniFiApiError as exc:
-            # A multi-delete can partially complete. Refresh best-effort so the
-            # UI does not encourage a second action against stale rows.
-            try:
-                self.vouchers = self.client.list_vouchers()
-                self.checked_ids.clear()
-                self.populate()
-            except UniFiApiError:
-                pass
-            messagebox.showerror("Eliminazione", str(exc), parent=self)
-            return
-
-        self.checked_ids.clear()
-        try:
-            self.vouchers = self.client.list_vouchers()
-        except UniFiApiError as exc:
-            deleted_ids = {voucher.id for voucher in current}
-            self.vouchers = [
-                voucher for voucher in self.vouchers
-                if voucher.id not in deleted_ids
-            ]
-            self.populate()
-            messagebox.showwarning(
-                "Eliminazione completata",
-                f"Eliminati {len(current)} voucher, ma l'aggiornamento "
-                f"dell'elenco non è riuscito.\n\n{exc}",
-                parent=self,
-            )
-            return
-
-        self.populate()
-        messagebox.showinfo(
-            "Eliminazione",
-            f"Eliminati {len(current)} voucher dal server UniFi.",
-            parent=self,
-        )
 
 
 def main() -> int:
     logging.getLogger("PIL").setLevel(logging.WARNING)
-    app = ModernVoucherApp()
-    if app.winfo_exists():
-        app.mainloop()
-    return 0
+    try:
+        app = ModernVoucherApp()
+        if app.winfo_exists():
+            app.mainloop()
+        return 0
+    except Exception as exc:
+        logging.getLogger("voucher_management").error(
+            "startup_failed type=%s",
+            type(exc).__name__,
+        )
+        try:
+            messagebox.showerror(
+                "Avvio impossibile",
+                "Voucher Management non è riuscito ad avviarsi. "
+                "Controllare le impostazioni locali o ripristinare un backup "
+                "valido, quindi riprovare.",
+            )
+        except Exception:
+            pass
+        return 1

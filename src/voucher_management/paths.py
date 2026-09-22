@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .identity import LEGACY_PRODUCT_DIR_NAMES, PRODUCT_DIR_NAME
+from .logo_validation import LogoValidationError, validate_logo_image
 
 
 class AppPaths:
@@ -47,7 +48,9 @@ class AppPaths:
         self.assets = self.base / "assets"
         self.history = self.data / "history.jsonl"
         self.history_lock = self.data / "history.lock"
+        self.pending_create = self.data / "pending_create_guard"
         self.settings = self.config / "settings.json"
+        self._logo_warning = ""
 
     @staticmethod
     def _copy_file_if_missing(source: Path, target: Path) -> None:
@@ -112,14 +115,17 @@ class AppPaths:
                 if not target.exists():
                     shutil.copy2(source, target)
 
+    def consume_logo_warning(self) -> str:
+        warning = self._logo_warning
+        self._logo_warning = ""
+        return warning
+
     def persist_configured_logo(self, configured_path: str) -> str:
         """Import a configured logo into persistent application data.
 
         Older betas could point settings at the extracted program directory or
-        an external/network path. If that source is still reachable, copy it to
-        the persistent logo library. If migration already copied a file with the
-        same name, reuse that copy even when the original path is no longer
-        available.
+        an external/network path. Only logos that satisfy the current PNG/JPEG
+        validation policy are imported or reused.
         """
         value = str(configured_path or "").strip()
         if not value:
@@ -130,20 +136,42 @@ class AppPaths:
 
         if source.is_file() and not source.is_symlink():
             try:
+                validate_logo_image(source)
+
                 if source.resolve() == candidate.resolve():
                     return str(candidate)
 
-                if not candidate.exists():
-                    self.logos.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source, candidate)
+                if candidate.is_file():
+                    try:
+                        validate_logo_image(candidate)
+                        return str(candidate)
+                    except LogoValidationError:
+                        candidate.unlink(missing_ok=True)
+
+                self.logos.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, candidate)
                 return str(candidate)
+            except LogoValidationError:
+                self._logo_warning = (
+                    "Il logo configurato non è più valido o supera i limiti "
+                    "supportati ed è stato rimosso dalla configurazione."
+                )
+                return ""
             except OSError:
                 # A legacy logo may live on a temporarily unavailable share.
-                # Keep the configured value and let the user repair/select it
-                # later instead of making application startup fail.
+                # Keep the configured value; rendering will revalidate it
+                # before ReportLab can decode anything.
                 return value
 
         if candidate.is_file():
+            try:
+                validate_logo_image(candidate)
+            except LogoValidationError:
+                self._logo_warning = (
+                    "Il logo salvato nella libreria locale non è più valido "
+                    "ed è stato rimosso dalla configurazione."
+                )
+                return ""
             return str(candidate)
 
         return value

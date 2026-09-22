@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from voucher_management.settings import DEFAULT_SETTINGS, SettingsStore
 
 
@@ -8,9 +10,23 @@ def test_public_defaults_contain_no_operational_controller_address(tmp_path):
     assert DEFAULT_SETTINGS["controller_cert_sha256"] == ""
     assert DEFAULT_SETTINGS["structure_name"] == ""
     assert DEFAULT_SETTINGS["wifi_title"] == "Guest Wi-Fi"
+    assert DEFAULT_SETTINGS["print_retention_days"] == 0
 
     store = SettingsStore(tmp_path / "config" / "settings.json")
     assert store.load()["controller_api_root"] == ""
+
+
+def test_4_2_settings_without_retention_keep_pdfs_by_default(tmp_path):
+    path = tmp_path / "config" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"wifi_title": "Legacy 4.2"}),
+        encoding="utf-8",
+    )
+
+    loaded = SettingsStore(path).load()
+
+    assert loaded["print_retention_days"] == 0
 
 
 def test_malformed_settings_fall_back_to_safe_defaults(tmp_path):
@@ -167,3 +183,68 @@ def test_malformed_settings_preserve_only_one_copy_per_content(tmp_path):
     preserved = list(path.parent.glob("settings.json.corrupt-*"))
     assert len(preserved) == 2
 
+
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        ("print_retention_days", 10**6, 0),
+        ("print_retention_days", 10**9, 0),
+        ("print_retention_days", 10**12, 0),
+        ("print_retention_days", True, 0),
+        ("log_retention_days", "abc", 30),
+        ("log_retention_days", False, 30),
+        ("log_retention_days", 0, 30),
+        ("log_retention_days", 3651, 30),
+    ],
+)
+def test_invalid_numeric_settings_fall_back_to_safe_defaults(
+    tmp_path,
+    key,
+    value,
+    expected,
+):
+    path = tmp_path / "config" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({key: value}), encoding="utf-8")
+
+    store = SettingsStore(path)
+    loaded = store.load()
+
+    assert loaded[key] == expected
+    assert key in store.consume_warning()
+
+
+def test_numeric_settings_accept_only_real_ints_in_range(tmp_path):
+    path = tmp_path / "config" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "print_retention_days": 3650,
+                "log_retention_days": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = SettingsStore(path).load()
+
+    assert loaded["print_retention_days"] == 3650
+    assert loaded["log_retention_days"] == 1
+
+
+def test_update_sanitizes_invalid_numeric_values(tmp_path):
+    store = SettingsStore(tmp_path / "config" / "settings.json")
+
+    updated = store.update(
+        print_retention_days=True,
+        log_retention_days="abc",
+    )
+
+    assert updated["print_retention_days"] == 0
+    assert updated["log_retention_days"] == 30
+    persisted = json.loads(store.path.read_text(encoding="utf-8"))
+    assert persisted["print_retention_days"] == 0
+    assert persisted["log_retention_days"] == 30

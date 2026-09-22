@@ -1,30 +1,56 @@
-# Fully pinned environment captured from the successful Windows CI review.
+# Fully pinned and hash-verified Windows CI/release environment.
 #
-# The release workflow installs this file with --no-deps inside a fresh venv.
-# That means any newly introduced transitive dependency causes CI to fail
-# instead of being resolved silently at a different version.
+# Hashes below were derived on the reviewed Windows 2025 / Python 3.12.10
+# runner from the exact binary wheels installed by the project. CI installs
+# this file with --require-hashes --no-deps, so a package with the right
+# version but unexpected contents is rejected before installation.
 #
 # Runtime
-reportlab==4.5.1
-Pillow==11.3.0
-pypdfium2==4.30.0
-pywin32==311
-sv-ttk==2.6.1
-darkdetect==0.8.0
-charset-normalizer==3.5.1
+reportlab==4.5.1 \
+    --hash=sha256:06fce8cb56c83307cfa4909cdf4e6a2ddbb44e5d6ef4d2edca896d7e9769f091
+Pillow==12.3.0 \
+    --hash=sha256:a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09
+pypdfium2==4.30.0 \
+    --hash=sha256:90dbb2ac07be53219f56be09961eb95cf2473f834d01a42d901d13ccfad64b4c
+pywin32==311 \
+    --hash=sha256:b8c095edad5c211ff31c05223658e71bf7116daa0ecf3ad85f3201ea3190d067
+sv-ttk==2.6.1 \
+    --hash=sha256:8ca5944f95431a911986b00c54e7f44608f3f811382cd985fd14bb3e65f95d97
+darkdetect==0.8.0 \
+    --hash=sha256:a7509ccf517eaad92b31c214f593dbcf138ea8a43b2935406bbd565e15527a85
+charset-normalizer==3.5.1 \
+    --hash=sha256:3617ac3cfd8b9888f145ad89dd6e692285834b0201c6074a5eeaad3fd4d668c2
+cryptography==50.0.1 \
+    --hash=sha256:aed8db4f6d71c51efb89530e12d9464e7bf2923d46c3205dc794a2a93f8c0648
+cffi==2.1.1 \
+    --hash=sha256:f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a
+pycparser==3.0 \
+    --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
 
 # Tests
-pytest==8.4.2
-colorama==0.4.6
-iniconfig==2.3.0
-packaging==26.3
-pluggy==1.6.0
-Pygments==2.21.0
+pytest==8.4.2 \
+    --hash=sha256:872f880de3fc3a5bdc88a11b39c9710c3497a547cfa9320bc3c5e62fbf272e79
+colorama==0.4.6 \
+    --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
+iniconfig==2.3.0 \
+    --hash=sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12
+packaging==26.3 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+pluggy==1.6.0 \
+    --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+Pygments==2.21.0 \
+    --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
 
 # Windows packaging
-pyinstaller==6.22.3
-altgraph==0.17.5
-pefile==2024.8.26
-pyinstaller-hooks-contrib==2026.7
-pywin32-ctypes==0.2.3
-setuptools==84.0.0
+pyinstaller==6.22.3 \
+    --hash=sha256:500bd58c7bf7e584a8435adccbd763a0b918d5c12b08d74ff50fd79b2915458b
+altgraph==0.17.5 \
+    --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+pefile==2024.8.26 \
+    --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+pyinstaller-hooks-contrib==2026.7 \
+    --hash=sha256:24257a04c7a5a7a034cf28e39dcee20fbeeb9f043076729480f2e1b69904408a
+pywin32-ctypes==0.2.3 \
+    --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
+setuptools==84.0.0 \
+    --hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670
