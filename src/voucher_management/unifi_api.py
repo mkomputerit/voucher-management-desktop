@@ -306,7 +306,14 @@ class UniFiClient:
         *,
         expected: tuple[int, ...] = (200,),
         not_found_message: str | None = None,
+        uncertain_operation: str | None = None,
     ) -> dict:
+        method_upper = method.upper()
+        if method_upper == "POST" and not uncertain_operation:
+            raise ValueError(
+                "Le richieste POST richiedono una descrizione esplicita "
+                "dell'operazione incerta"
+            )
         if not self._api_key:
             raise UniFiApiError("Inserire la API key e connettersi prima")
 
@@ -344,8 +351,8 @@ class UniFiClient:
                     not_found_message
                     or "Endpoint UniFi non disponibile: verificare l'URL API in Network > Integrations"
                 ) from exc
-            if method.upper() == "POST" and (exc.code == 408 or exc.code >= 500):
-                raise UniFiMutationUncertain("la creazione dei voucher") from exc
+            if method_upper == "POST" and (exc.code == 408 or exc.code >= 500):
+                raise UniFiMutationUncertain(uncertain_operation) from exc
             raise UniFiApiError(f"Errore HTTP UniFi {exc.code}") from exc
         except URLError as exc:
             reason = getattr(exc, "reason", None)
@@ -357,17 +364,17 @@ class UniFiClient:
             if isinstance(reason, ssl.SSLCertVerificationError):
                 fingerprint = self._server_certificate_sha256()
                 raise UniFiCertificateTrustRequired(fingerprint) from exc
-            if method.upper() == "POST":
-                raise UniFiMutationUncertain("la creazione dei voucher") from exc
+            if method_upper == "POST":
+                raise UniFiMutationUncertain(uncertain_operation) from exc
             raise UniFiApiError("Controller UniFi non raggiungibile") from exc
         except (TimeoutError, OSError, http.client.HTTPException) as exc:
-            if method.upper() == "POST":
-                raise UniFiMutationUncertain("la creazione dei voucher") from exc
+            if method_upper == "POST":
+                raise UniFiMutationUncertain(uncertain_operation) from exc
             raise UniFiApiError("Controller UniFi non raggiungibile") from exc
 
         if status not in expected:
-            if method.upper() == "POST":
-                raise UniFiMutationUncertain("la creazione dei voucher")
+            if method_upper == "POST":
+                raise UniFiMutationUncertain(uncertain_operation)
             raise UniFiApiError(f"Risposta HTTP UniFi inattesa: {status}")
 
         if not raw.strip():
@@ -375,12 +382,12 @@ class UniFiClient:
         try:
             result = json.loads(raw)
         except json.JSONDecodeError as exc:
-            if method.upper() == "POST":
-                raise UniFiMutationUncertain("la creazione dei voucher") from exc
+            if method_upper == "POST":
+                raise UniFiMutationUncertain(uncertain_operation) from exc
             raise UniFiApiError("Il controller UniFi non ha restituito JSON valido") from exc
         if not isinstance(result, dict):
-            if method.upper() == "POST":
-                raise UniFiMutationUncertain("la creazione dei voucher")
+            if method_upper == "POST":
+                raise UniFiMutationUncertain(uncertain_operation)
             raise UniFiApiError("Formato risposta UniFi non valido")
         return result
 
@@ -657,6 +664,7 @@ class UniFiClient:
             f"/sites/{encoded_site}/hotspot/vouchers",
             payload,
             expected=(201,),
+            uncertain_operation="la creazione dei voucher",
         )
         try:
             vouchers = result.get("vouchers")

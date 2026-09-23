@@ -1,7 +1,12 @@
 # Code signing policy
 
-Voucher Management is preparing to use SignPath Foundation for open-source
-code signing.
+Voucher Management is applying for SignPath Foundation open-source code
+signing.
+
+For Foundation-signed releases: **Free code signing provided by SignPath.io,
+certificate by SignPath Foundation**. Until the application is accepted and
+the signing integration is active, published binaries remain unsigned and are
+distributed with release SHA-256 checksums.
 
 ## Release-signing rules
 
@@ -75,5 +80,5 @@ Authenticode-signed release artifact
 signature/checksum verification before publication
 ```
 
-The final SignPath project configuration, required Foundation attribution and
-public repository URL will be recorded here only after Foundation acceptance.
+The final SignPath project configuration and public SignPath project URL will
+be recorded here after Foundation acceptance.

@@ -17,6 +17,7 @@ on:
       - 'requirements*.txt'
       - 'pyinstaller.spec'
       - 'version.txt'
+      - 'windows_version_info.txt'
       - 'README.md'
       - 'LICENSE'
       - 'PRIVACY.md'
