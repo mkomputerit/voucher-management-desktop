@@ -230,7 +230,13 @@ def test_create_payload_maps_all_documented_limits(monkeypatch):
     calls = []
 
     def fake_request(method, path, payload=None, expected=(200,), **kwargs):
-        calls.append((method, path, payload, expected))
+        calls.append((
+            method,
+            path,
+            payload,
+            expected,
+            kwargs.get("uncertain_operation"),
+        ))
         return {
             "vouchers": [
                 voucher_json(
@@ -269,6 +275,7 @@ def test_create_payload_maps_all_documented_limits(monkeypatch):
             "txRateLimitKbps": 2000,
         },
         (201,),
+        "la creazione dei voucher",
     )
 
 
@@ -516,6 +523,24 @@ def test_generic_404_still_reports_api_root_configuration():
 
 
 
+def test_post_requires_explicit_uncertainty_context_before_network():
+    client = connected_client()
+
+    class MustNotOpen:
+        def open(self, request, timeout=None):
+            pytest.fail("POST without uncertainty context must fail before network I/O")
+
+    client.opener = MustNotOpen()
+
+    with pytest.raises(ValueError, match="descrizione esplicita"):
+        client._request(
+            "POST",
+            f"/sites/{SITE_ID}/hotspot/vouchers",
+            {"count": 1},
+            expected=(201,),
+        )
+
+
 def test_post_transport_failure_is_typed_as_uncertain_mutation():
     client = connected_client()
 
@@ -525,13 +550,16 @@ def test_post_transport_failure_is_typed_as_uncertain_mutation():
 
     client.opener = FailingOpener()
 
-    with pytest.raises(UniFiMutationUncertain, match="non ripeterla"):
+    with pytest.raises(UniFiMutationUncertain, match="non ripeterla") as excinfo:
         client._request(
             "POST",
             f"/sites/{SITE_ID}/hotspot/vouchers",
             {"count": 1},
             expected=(201,),
+            uncertain_operation="operazione sintetica",
         )
+
+    assert excinfo.value.operation == "operazione sintetica"
 
 
 def test_get_transport_failure_remains_safe_to_retry():
@@ -570,6 +598,7 @@ def test_post_server_error_is_conservatively_typed_as_uncertain():
             f"/sites/{SITE_ID}/hotspot/vouchers",
             {"count": 1},
             expected=(201,),
+            uncertain_operation="operazione sintetica",
         )
 
 
