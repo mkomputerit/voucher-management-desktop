@@ -58,6 +58,16 @@ Voucher Management 4.3.3 uses Ubiquiti's documented Network integration API with
   is omitted with an operator warning; corrupt or disguised image content is
   rejected;
 
+## Download
+
+The current stable Windows release is available from the
+[GitHub Releases page](https://github.com/mkomputerit/voucher-management-desktop/releases/latest).
+
+Voucher Management uses **SignPath Foundation** for open-source code-signing
+support. Until the SignPath Foundation application is accepted and the signing
+integration is active, published binaries remain unsigned and are distributed
+with SHA-256 checksums.
+
 ## Public release
 
 Voucher Management 4.3.3:
