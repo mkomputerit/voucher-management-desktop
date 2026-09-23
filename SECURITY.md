@@ -26,7 +26,7 @@ The project follows these rules:
 
 ## Authentication
 
-Voucher Management 4.3.1 uses the documented UniFi Network API and X-API-Key
+Voucher Management 4.3.3 uses the documented UniFi Network API and X-API-Key
 authentication.
 
 The API key is accepted only for the active connection. It is never persisted
