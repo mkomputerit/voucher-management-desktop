@@ -195,6 +195,21 @@ reviewable by a wider open-source audience.
 
 ## Development
 
+For a local Windows checkout, install the direct development requirements and
+add the `src` directory to `PYTHONPATH` before running tests or the launcher:
+
+```powershell
+py -m pip install -r requirements-dev.txt
+$env:PYTHONPATH = "$PWD\src"
+py -m pytest -q
+py launcher.py
+```
+
+For exact release-environment reproduction, use the hash-verified lock instead:
+
+```powershell
+py -m pip install --require-hashes --no-deps -r requirements-lock.txt
+```
 
 Windows builds are produced through GitHub Actions using PyInstaller. The reviewed Windows environment is fully pinned in `requirements-lock.txt`, installed in an isolated virtual environment, audited with `pip-audit`, and checked before every build. Automated tests cover the official API adapter/mapping, persistent history, backup/restore, lifecycle policy, migration and core voucher workflow behavior.
 
