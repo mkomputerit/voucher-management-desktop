@@ -188,10 +188,6 @@ provided by SignPath.io, certificate by SignPath Foundation**. Until the
 SignPath Foundation application is accepted and the signing pipeline is active,
 published binaries remain unsigned and are distributed with SHA-256 checksums.
 
-The project intends to apply for SignPath Foundation open-source code signing.
-Any Foundation attribution required by the program will be added only after the
-project has been accepted.
-
 ## Interface language
 
 The current Windows operator interface is in **Italian**. Project documentation
@@ -200,8 +196,9 @@ reviewable by a wider open-source audience.
 
 ## Development
 
-For a local Windows checkout, install the direct development requirements and
-add the `src` directory to `PYTHONPATH` before running tests or the launcher:
+For a local Windows checkout, run the following commands from the repository
+root, install the direct development requirements and add the `src` directory
+to `PYTHONPATH` before running tests or the launcher:
 
 ```powershell
 py -m pip install -r requirements-dev.txt
