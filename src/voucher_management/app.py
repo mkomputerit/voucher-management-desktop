@@ -467,6 +467,44 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         """Render vouchers in the concrete operator UI."""
         raise NotImplementedError
 
+    def _sync_selection_ui(self, iids=None) -> None:
+        """Update checkbox marks without rebuilding the voucher table.
+
+        Selection changes are purely local UI state. Re-running populate()
+        here would reread history, destroy every Treeview row and insert the
+        complete visible set again, which causes a noticeable refresh on each
+        click. Keep the expensive full render for real data/filter changes.
+        """
+
+        target_iids = tuple(self.by_iid) if iids is None else tuple(iids)
+        for iid in target_iids:
+            voucher = self.by_iid.get(iid)
+            if voucher is None:
+                continue
+
+            values = list(self.tree.item(iid, "values"))
+            if not values:
+                continue
+
+            if self._is_expired(voucher):
+                mark = "—"
+            else:
+                mark = "☑" if voucher.id in self.checked_ids else "☐"
+
+            if values[0] != mark:
+                values[0] = mark
+                self.tree.item(iid, values=values)
+
+        self.count_var.set(
+            f"{len(self.by_iid)} visualizzati  •  "
+            f"{len(self.checked_ids)} selezionati"
+        )
+        self.action_var.set(
+            f"PREPARA STAMPA  ({len(self.checked_ids)})"
+            if self.checked_ids
+            else "PREPARA STAMPA"
+        )
+
     def on_tree_click(self, event):
         if self.tree.identify_region(event.x, event.y) != "cell" or self.tree.identify_column(event.x) != "#1":
             return
@@ -481,7 +519,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             self.checked_ids.remove(voucher.id)
         else:
             self.checked_ids.add(voucher.id)
-        self.populate()
+        self._sync_selection_ui((iid,))
         return "break"
 
     def toggle_all_visible(self):
@@ -491,7 +529,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             self.checked_ids.difference_update(visible)
         else:
             self.checked_ids.update(visible)
-        self.populate()
+        self._sync_selection_ui()
 
     def select_unprinted(self) -> None:
         """Select the current print queue in the concrete UI."""
