@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.3.3 - 2026-09-23
+
+- Harden protected backup and history-exchange decryption with a bounded-memory
+  two-pass AES-256-GCM flow: the complete ciphertext is authenticated before
+  any plaintext is written to the temporary restore target.
+- Require every UniFi POST request to declare its uncertain-operation context
+  explicitly. Voucher creation keeps the existing conservative no-replay
+  behavior, while future POST operations cannot inherit a misleading
+  voucher-creation error message accidentally.
+- Add regression coverage proving failed authentication never writes plaintext
+  to the target and that POST requests cannot reach the network without an
+  explicit uncertainty description.
+- Align package, Windows executable metadata, security documentation and
+  code-signing policy with the 4.3.3 release prepared for SignPath Foundation
+  application.
+
 ## 4.3.2 - 2026-09-22
 
 - Removed the full voucher-table rebuild from ordinary checkbox selection.
