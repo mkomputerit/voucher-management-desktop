@@ -15,6 +15,8 @@
 - Align package, Windows executable metadata, security documentation and
   code-signing policy with the 4.3.3 release prepared for SignPath Foundation
   application.
+- Ensure changes to Windows version-resource metadata trigger the full Windows
+  CI/build workflow before release.
 
 ## 4.3.2 - 2026-09-22
 
