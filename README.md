@@ -37,7 +37,7 @@ The application currently provides:
 - persistent custom logo library;
 - Windows 11 light/dark themes.
 
-Voucher Management 4.3.1 uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
+Voucher Management 4.3.2 uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
 
 ## Current limitations
 
@@ -60,7 +60,7 @@ Voucher Management 4.3.1 uses Ubiquiti's documented Network integration API with
 
 ## Public release
 
-Voucher Management 4.3.1:
+Voucher Management 4.3.2:
 
 1. use the neutral **Voucher Management** product identity;
 2. use the MIT License;
