@@ -1,4 +1,5 @@
 from pathlib import Path
+import io
 import tempfile
 
 import pytest
@@ -123,3 +124,30 @@ def test_failed_stream_authentication_clears_anonymous_target(tmp_path: Path):
             )
         target.seek(0, 2)
         assert target.tell() == 0
+
+
+def test_failed_authentication_never_writes_plaintext_to_target(tmp_path: Path):
+    source = tmp_path / "source.zip"
+    encrypted = tmp_path / "backup.vmbk"
+    source.write_bytes(b"PK sensitive plaintext that must stay unauthenticated")
+    encrypt_backup_file(source, encrypted, PASSPHRASE)
+
+    class RecordingTarget(io.BytesIO):
+        def __init__(self):
+            super().__init__(b"stale")
+            self.write_calls = 0
+
+        def write(self, data):
+            self.write_calls += 1
+            return super().write(data)
+
+    target = RecordingTarget()
+    with pytest.raises(ProtectedBackupAuthenticationError):
+        decrypt_backup_to_file(
+            encrypted,
+            target,
+            "different password value",
+        )
+
+    assert target.write_calls == 0
+    assert target.getvalue() == b""
