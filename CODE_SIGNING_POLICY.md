@@ -80,5 +80,5 @@ Authenticode-signed release artifact
 signature/checksum verification before publication
 ```
 
-The final SignPath project configuration, required Foundation attribution and
-public repository URL will be recorded here only after Foundation acceptance.
+The final SignPath project configuration and public SignPath project URL will
+be recorded here after Foundation acceptance.
