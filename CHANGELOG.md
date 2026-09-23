@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.3.2 - 2026-09-22
+
+- Removed the full voucher-table rebuild from ordinary checkbox selection.
+  Single-row and select-all changes now update checkbox marks, the selected
+  count and the print-action label in place, eliminating the visible refresh
+  that was especially noticeable over Remote Desktop sessions.
+- Added regression tests proving that checkbox selection does not call the
+  expensive full-table populate path and that expired rows remain
+  non-selectable during bulk selection.
+- Aligned direct local-development/runtime requirements with the
+  hash-verified Windows release lock, including Pillow 12.3.0 and the explicit
+  cryptography dependency used by encrypted backup/history features.
+- Added dependency-consistency tests so direct requirement versions cannot
+  silently diverge from the reviewed release lock.
+
 ## 4.3.1 - 2026-09-22
 
 - Consolidated the Tk architecture without changing operator behavior:
