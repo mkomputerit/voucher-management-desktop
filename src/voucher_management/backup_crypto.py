@@ -263,12 +263,53 @@ def encrypt_backup_file(
         raise
 
 
+def _decrypt_pass(
+    source: Path,
+    *,
+    header: bytes,
+    nonce: bytes,
+    tag: bytes,
+    key: bytes,
+    ciphertext_bytes: int,
+    target=None,
+) -> None:
+    """Authenticate one ciphertext pass and optionally emit plaintext.
+
+    A first pass with target=None verifies the complete AES-GCM stream while
+    discarding plaintext. Only after that succeeds may a second pass write
+    plaintext to a caller-provided temporary file. This keeps memory bounded
+    and avoids persisting unauthenticated plaintext.
+    """
+
+    decryptor = Cipher(
+        algorithms.AES(key),
+        modes.GCM(nonce, tag),
+    ).decryptor()
+    decryptor.authenticate_additional_data(header)
+
+    with source.open("rb") as handle:
+        handle.seek(HEADER_BYTES)
+        remaining = ciphertext_bytes
+        while remaining:
+            chunk = handle.read(min(CHUNK_BYTES, remaining))
+            if not chunk:
+                raise ProtectedBackupError("Backup protetto incompleto")
+            remaining -= len(chunk)
+            plaintext = decryptor.update(chunk)
+            if target is not None and plaintext:
+                target.write(plaintext)
+
+        final_plaintext = decryptor.finalize()
+        if target is not None and final_plaintext:
+            target.write(final_plaintext)
+
+
 def decrypt_backup_to_file(
     source: Path,
     target,
     password: str,
 ) -> None:
-    """Decrypt/authenticate into an already-open seekable binary file object."""
+    """Authenticate fully before writing plaintext to a seekable target."""
 
     source = Path(source)
     password = validate_backup_password(password)
@@ -277,33 +318,38 @@ def decrypt_backup_to_file(
     key = _derive_key(password, salt)
 
     try:
-        target.seek(0)
-        target.truncate(0)
         with source.open("rb") as handle:
             handle.seek(total_size - TAG_BYTES)
             tag = handle.read(TAG_BYTES)
-            if len(tag) != TAG_BYTES:
-                raise ProtectedBackupError("Backup protetto incompleto")
-            handle.seek(HEADER_BYTES)
+        if len(tag) != TAG_BYTES:
+            raise ProtectedBackupError("Backup protetto incompleto")
 
-            decryptor = Cipher(
-                algorithms.AES(key),
-                modes.GCM(nonce, tag),
-            ).decryptor()
-            decryptor.authenticate_additional_data(header)
+        # Pass 1: authenticate the complete encrypted stream without writing
+        # plaintext anywhere. The second pass is reached only for a valid tag.
+        _decrypt_pass(
+            source,
+            header=header,
+            nonce=nonce,
+            tag=tag,
+            key=key,
+            ciphertext_bytes=ciphertext_bytes,
+        )
 
-            remaining = ciphertext_bytes
-            while remaining:
-                chunk = handle.read(min(CHUNK_BYTES, remaining))
-                if not chunk:
-                    raise ProtectedBackupError(
-                        "Backup protetto incompleto"
-                    )
-                remaining -= len(chunk)
-                target.write(decryptor.update(chunk))
-            target.write(decryptor.finalize())
-            target.flush()
-            target.seek(0)
+        # Pass 2: the ciphertext has been authenticated, so plaintext can now
+        # be emitted to the anonymous/temporary target used by restore flows.
+        target.seek(0)
+        target.truncate(0)
+        _decrypt_pass(
+            source,
+            header=header,
+            nonce=nonce,
+            tag=tag,
+            key=key,
+            ciphertext_bytes=ciphertext_bytes,
+            target=target,
+        )
+        target.flush()
+        target.seek(0)
     except InvalidTag as exc:
         try:
             target.seek(0)
