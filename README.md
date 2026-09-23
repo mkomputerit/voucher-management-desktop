@@ -68,7 +68,7 @@ Voucher Management 4.3.3:
 4. keep credentials out of source, logs, backups and persistent settings;
 5. provide reproducible GitHub Actions builds;
 6. include current dependency/license notices and release checksums;
-7. prepare releases for SignPath Foundation origin-verified code signing.
+7. publish unsigned Windows binaries with SHA-256 release checksums; code signing may be introduced in the future.
 
 See:
 
@@ -183,10 +183,11 @@ because the history identity is intentionally portable.
 
 See [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md).
 
-For Foundation-signed releases, the project will use: **Free code signing
-provided by SignPath.io, certificate by SignPath Foundation**. Until the
-SignPath Foundation application is accepted and the signing pipeline is active,
-published binaries remain unsigned and are distributed with SHA-256 checksums.
+Published Windows binaries are currently unsigned and are distributed with
+SHA-256 release checksums. Authenticode code signing may be introduced in the
+future when an appropriate signing solution is available. If signing is adopted,
+this policy and the public release documentation will be updated before signed
+artifacts are published.
 
 ## Interface language
 
