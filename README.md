@@ -37,7 +37,7 @@ The application currently provides:
 - persistent custom logo library;
 - Windows 11 light/dark themes.
 
-Voucher Management 4.3.2 uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
+Voucher Management 4.3.3 uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
 
 ## Current limitations
 
@@ -60,7 +60,7 @@ Voucher Management 4.3.2 uses Ubiquiti's documented Network integration API with
 
 ## Public release
 
-Voucher Management 4.3.2:
+Voucher Management 4.3.3:
 
 1. use the neutral **Voucher Management** product identity;
 2. use the MIT License;
@@ -183,6 +183,11 @@ because the history identity is intentionally portable.
 
 See [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md).
 
+For Foundation-signed releases, the project will use: **Free code signing
+provided by SignPath.io, certificate by SignPath Foundation**. Until the
+SignPath Foundation application is accepted and the signing pipeline is active,
+published binaries remain unsigned and are distributed with SHA-256 checksums.
+
 The project intends to apply for SignPath Foundation open-source code signing.
 Any Foundation attribution required by the program will be added only after the
 project has been accepted.
@@ -195,9 +200,8 @@ reviewable by a wider open-source audience.
 
 ## Development
 
-For a local Windows checkout, run the following commands from the repository
-root, install the direct development requirements and add the `src` directory
-to `PYTHONPATH` before running tests or the launcher:
+For a local Windows checkout, install the direct development requirements and
+add the `src` directory to `PYTHONPATH` before running tests or the launcher:
 
 ```powershell
 py -m pip install -r requirements-dev.txt
