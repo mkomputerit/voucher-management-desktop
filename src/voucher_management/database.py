@@ -286,8 +286,13 @@ class Database:
         expires_at: str | None = None, expired: bool = False,
         data_limit_mb: int | None = None, download_limit_kbps: int | None = None,
         upload_limit_kbps: int | None = None,
+        connection: sqlite3.Connection | None = None,
     ) -> int:
-        """Insert/update the latest UniFi state without destroying local history."""
+        """Insert/update latest UniFi state without destroying local history.
+
+        Supplying connection lets a higher-level workflow include the upsert in
+        its own transaction; otherwise this method owns a short transaction.
+        """
 
         values = (
             controller_id, unifi_id, code, name, created_at, imported_at,
@@ -295,7 +300,7 @@ class Database:
             activated_at, expires_at, int(expired), data_limit_mb,
             download_limit_kbps, upload_limit_kbps, last_synced_at, last_synced_at,
         )
-        with self.transaction() as db:
+        def write(db: sqlite3.Connection) -> int:
             db.execute(
                 """INSERT INTO vouchers (
                        controller_id, unifi_id, code, name, created_at, imported_at,
@@ -321,6 +326,11 @@ class Database:
                 (controller_id, unifi_id),
             ).fetchone()
             return int(row["id"])
+
+        if connection is not None:
+            return write(connection)
+        with self.transaction() as db:
+            return write(db)
 
     def print_summary(self, voucher_id: int) -> PrintAuditSummary:
         """Return immutable print totals used before allowing a duplicate."""
