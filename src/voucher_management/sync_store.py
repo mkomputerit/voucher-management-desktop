@@ -92,6 +92,7 @@ def persist_successful_snapshot(
                 download_limit_kbps=voucher.down_kbps,
                 upload_limit_kbps=voucher.up_kbps,
                 last_synced_at=observed_at,
+                connection=tx,
             )
             if old is None:
                 continue
