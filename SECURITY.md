@@ -76,6 +76,34 @@ print event verifies successfully. While it exists, new physical prints,
 backup/restore and history exchange are blocked to prevent lifecycle state from
 moving backwards. This descriptor is excluded from portable backups.
 
+## Voucher database security in 5.0
+
+Voucher Management 5.0 deliberately changes the storage model for voucher
+codes. The legacy append-only history continues to identify vouchers by HMAC,
+but the new SQLite operational database stores the actual voucher code because
+the application must support durable local history, reprint decisions and
+reports after a voucher is no longer available from the controller.
+
+This is an explicit security trade-off, not a weakening of the diagnostic-log
+policy. The SQLite database must be treated as sensitive operational data.
+
+The 5.0 deployment model therefore requires these compensating controls:
+
+- voucher codes never enter ordinary diagnostic logs or filenames;
+- controller API keys, passwords and authentication tokens never enter SQLite;
+- backups containing the SQLite database are sensitive and password-protected
+  backup remains the recommended transport/storage form;
+- when shared ProgramData deployment is introduced, installer ACLs must grant
+  database access only to the Windows principals intended to operate Voucher
+  Management, rather than making the database broadly readable;
+- reports expose voucher codes only when the report purpose requires them;
+- temporary copies of the live SQLite database are not used for backup; SQLite
+  backup/snapshot facilities must produce a transactionally consistent image.
+
+Encrypting voucher-code columns with a key stored beside the database would not
+provide a meaningful security boundary and is therefore not used as a cosmetic
+substitute for Windows access control and protected backups.
+
 ## Diagnostic logs
 
 Application logs contain timestamps, severity, OS family/architecture and
