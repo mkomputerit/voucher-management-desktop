@@ -3,12 +3,13 @@
 The lock deliberately avoids deleting a path merely because its timestamp looks
 old. That former stale-file recovery had a TOCTOU window: another process could
 replace the file between stat() and unlink(). Version 5.0 therefore uses an OS
-advisory byte-range lock. The operating system releases that lock when a process
-exits, so crash recovery does not require stale-file deletion.
+native advisory lock. Windows uses a one-byte range; POSIX uses a whole-file
+flock. The operating system releases that lock when a process exits, so crash recovery does not require stale-file deletion.
 """
 
 from __future__ import annotations
 
+import errno
 import os
 import time
 from contextlib import contextmanager
@@ -29,8 +30,11 @@ def _try_lock(fd: int) -> bool:
             os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             return True
-        except OSError:
-            return False
+        except OSError as exc:
+            # Retry only genuine contention; surface unrelated I/O failures.
+            if exc.errno in {errno.EACCES, errno.EDEADLK} or getattr(exc, 'winerror', None) == 33:
+                return False
+            raise
 
     import fcntl
 
@@ -42,7 +46,7 @@ def _try_lock(fd: int) -> bool:
 
 
 def _unlock(fd: int) -> None:
-    """Release the advisory byte-range lock held by fd."""
+    """Release the native advisory lock held by fd."""
 
     if os.name == "nt":
         import msvcrt
