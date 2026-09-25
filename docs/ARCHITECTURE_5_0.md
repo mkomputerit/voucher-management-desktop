@@ -41,6 +41,12 @@ Main entities:
 API keys, passwords and authentication tokens have no schema field and must
 remain memory-only.
 
+Unlike the 4.x HMAC-only audit history, the 5.0 operational voucher table stores
+the voucher code in plaintext. This is required for durable local operations
+after controller-side deletion and is an explicit security trade-off. The
+database is sensitive operational data; SECURITY.md defines the compensating
+logging, backup and Windows ACL requirements.
+
 ## Print and reprint safety
 
 A physical print is a lifecycle boundary. The first successful print creates
@@ -70,6 +76,43 @@ Default policy:
 The first-run wizard explains that recommended retention defaults are already
 configured and should be changed only when specifically required. Continue is
 the primary action; advanced editing is secondary.
+
+## Delivery milestones
+
+The 5.0 transition is intentionally split into independent engineering gates so
+a data-model regression is not confused with a Windows deployment/ACL problem.
+
+### Milestone A — SQLite wiring, still single-user
+
+SQLite first replaces the operational persistence path while data remains under
+the existing per-user LocalAppData root. Controller synchronization, printing,
+reprint decisions and reporting queries must use the real database path before
+the shared-workstation deployment model is introduced.
+
+The SQLite path must not become the automatic upgrade path for existing 4.x
+users until Milestone B can migrate or preserve their existing evidence.
+
+### Milestone B — explicit 4.x migration
+
+Migration is a separate transactional workflow with fixtures for complete,
+partial, ambiguous and corrupt legacy data. It validates the portable history
+identity and may associate an HMAC history row with a plaintext voucher only
+when that voucher code is independently known and recomputes to the exact HMAC.
+
+Unresolved rows are preserved as legacy audit evidence. They are never guessed
+into a voucher record. Migration creates a safety backup, supports rollback and
+is idempotent before SQLite becomes the default upgrade path.
+
+### Milestone C — shared Windows deployment
+
+Only after the data model and migration are proven does installation move from
+per-user LocalAppData to a shared ProgramData database. This milestone owns
+installer elevation, Program Files/ProgramData placement, ACLs, UAC behavior,
+Fast User Switching and a machine-wide single-instance guard.
+
+Before Milestone C, a per-user single-instance guard is shipped and exercised
+against the existing deployment model so application-instance ownership is not
+introduced for the first time together with multi-account access.
 
 ## Shared Windows workstation
 
@@ -123,6 +166,18 @@ never-printed vouchers, nominal assignment, controller and Windows operator.
 Observation timestamps mean "the application observed this change at this
 time". They must not be presented as an exact guest-use timestamp unless UniFi
 explicitly supplied such a timestamp.
+
+## Locking transition
+
+The 4.x history lock no longer recovers a supposedly stale lock by checking a
+timestamp and unlinking the path. That pattern had a TOCTOU window in which a
+new owner's lock could be deleted. The lock now uses an OS advisory lock whose
+ownership is released by the operating system on process exit; the lock path is
+kept persistent to avoid creating independently lockable filesystem objects.
+
+This audit-write lock is not itself the future application single-instance
+guard. Milestone A introduces a per-user application guard; Milestone C later
+elevates that concept to a machine-wide guard across Windows sessions.
 
 ## Review gates
 
