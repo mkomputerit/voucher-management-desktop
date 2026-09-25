@@ -33,6 +33,7 @@ from .print_archive import (
     cleanup_print_archive,
 )
 from .settings import SettingsStore
+from .single_instance import InstanceAlreadyRunning, SingleInstanceGuard
 from .voucher_creation_ui import VoucherCreationMixin
 from .security.history_key import HistoryKeyStore
 from .unifi_api import ApiVoucher, UniFiApiError
@@ -91,12 +92,21 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self.minsize(1120, 650)
         self.geometry("1420x780")
         self.paths = AppPaths()
+        self.instance_guard = SingleInstanceGuard(self.paths.instance_lock)
+        try:
+            self.instance_guard.acquire()
+        except InstanceAlreadyRunning as exc:
+            messagebox.showwarning("Voucher Management già aperto", str(exc), parent=self)
+            self.destroy()
+            return
         try:
             self.paths.ensure_writable()
         except Exception as exc:
             messagebox.showerror("Avvio impossibile", f"Cartella dell'applicazione non scrivibile.\n\n{exc}")
             self.destroy()
             return
+        # Keep ownership until the root window is destroyed.
+        self.bind("<Destroy>", self._release_instance_guard, add="+")
         self.create_guard = CreateMutationGuard(self.paths.pending_create)
         self.settings_store = SettingsStore(self.paths.settings)
         self.settings = self.settings_store.load()
@@ -193,6 +203,11 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 "l'elenco prima di creare altri voucher.",
                 parent=self,
             )
+
+    def _release_instance_guard(self, event) -> None:
+        """Release ownership only when the root Tk window is destroyed."""
+        if event.widget is self:
+            self.instance_guard.release()
 
     def _cleanup_orphan_pdf_temps(self) -> None:
         """Remove stale renderer temp files left behind by a hard crash."""
