@@ -110,9 +110,21 @@ per-user LocalAppData to a shared ProgramData database. This milestone owns
 installer elevation, Program Files/ProgramData placement, ACLs, UAC behavior,
 Fast User Switching and a machine-wide single-instance guard.
 
-Before Milestone C, a per-user single-instance guard is shipped and exercised
-against the existing deployment model so application-instance ownership is not
-introduced for the first time together with multi-account access.
+### Milestone A.1 — per-user single-instance gate
+
+Before shared deployment work begins, the current LocalAppData application must
+hold one OS-backed application guard for the lifetime of the Tk root window.
+
+Exit criteria are executable tests, not only documentation:
+
+- a concurrent second process is rejected immediately;
+- normal shutdown releases ownership for the next launch;
+- abrupt owner termination releases ownership through the operating system;
+- the guard remains scoped to the current user's LocalAppData root.
+
+This guard is intentionally distinct from the short history-write lock. Milestone
+C will replace its per-user scope with machine-wide ownership across Windows
+sessions.
 
 ## Shared Windows workstation
 
@@ -190,4 +202,6 @@ Before merging 5.0 work:
 5. backup/restore tests must include WAL consistency and rollback;
 6. duplicate-print warning behavior must have UI-independent tests;
 7. no credential field may enter persistent settings, database, logs or backup
-   metadata.
+   metadata;
+8. the Milestone A.1 single-instance tests must cover concurrent launch, clean
+   shutdown and abrupt owner termination.
