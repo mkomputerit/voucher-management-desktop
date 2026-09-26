@@ -416,7 +416,14 @@ class Database:
         if document_copies < 1:
             raise ValueError("document_copies must be positive")
 
-        counts = Counter(str(code).strip() for code in codes if str(code).strip())
+        # PDF/history use the human-readable 12345-67890 form while UniFi
+        # may persist the same code without the separator. Resolve by canonical
+        # digits so print audit does not depend on presentation formatting.
+        counts = Counter(
+            str(code).strip().replace("-", "")
+            for code in codes
+            if str(code).strip()
+        )
         if not counts:
             raise ValueError("at least one voucher code is required")
 
@@ -425,7 +432,7 @@ class Database:
             for code in counts:
                 rows = db.execute(
                     """SELECT id FROM vouchers
-                       WHERE controller_id=? AND code=?
+                       WHERE controller_id=? AND REPLACE(code, '-', '')=?
                        ORDER BY id""",
                     (controller_id, code),
                 ).fetchall()
