@@ -34,7 +34,16 @@ except ImportError:  # Allows source inspection/tests on non-Windows hosts.
 class PdfPreview(tk.Toplevel):
     """End-user viewer that always fits one complete A4 page in its viewport."""
 
-    def __init__(self, parent, pdf_path: Path, codes: list[str], history, settings: dict, on_print=None):
+    def __init__(
+        self,
+        parent,
+        pdf_path: Path,
+        codes: list[str],
+        history,
+        settings: dict,
+        on_print=None,
+        on_audit=None,
+    ):
         super().__init__(parent)
         self.app = parent
         self.pdf_path = Path(pdf_path)
@@ -42,6 +51,10 @@ class PdfPreview(tk.Toplevel):
         self.history = history
         self.settings = settings
         self.on_print = on_print
+        # Optional application-level audit (SQLite in 5.0). It runs on the Tk
+        # thread after the crash-safe HMAC audit succeeds, so the SQLite
+        # connection is never shared with the print worker.
+        self.on_audit = on_audit
         self.document = None
         self.page_index = 0
         self.photo = None
@@ -356,18 +369,34 @@ class PdfPreview(tk.Toplevel):
             pending, audit_error = result
             if not finish_controls():
                 return
+
+            if audit_error is None:
+                try:
+                    on_audit = getattr(self, "on_audit", None)
+                    if on_audit:
+                        on_audit(
+                            dict(pending),
+                            list(codes),
+                            Path(pdf_path),
+                        )
+                except Exception as exc:
+                    # The physical print and HMAC history are already durable.
+                    # Keep an in-memory audit-only retry path; never resend the
+                    # document because SQLite persistence failed.
+                    audit_error = exc
+
             if audit_error is not None:
                 self._pending_print_audit = pending
                 self.register_print_button.grid()
                 if self.on_print:
                     self.on_print()
                 messagebox.showwarning(
-                    "Stampa inviata - storico non aggiornato",
-                    f"Il documento è stato inviato a {printer}, ma lo storico "
-                    "locale non è stato aggiornato.\n\n"
+                    "Stampa inviata - archivio non aggiornato",
+                    f"Il documento è stato inviato a {printer}, ma una parte "
+                    "dell'archivio locale non è stata aggiornata.\n\n"
                     f"{audit_error}\n\n"
                     "Non ristampare il voucher. Usare REGISTRA STAMPA per "
-                    "ritentare soltanto la registrazione nello storico.",
+                    "ritentare soltanto la registrazione.",
                     parent=self,
                 )
                 return
@@ -463,6 +492,24 @@ class PdfPreview(tk.Toplevel):
         def completed(_result) -> None:
             if not finish_controls():
                 return
+            try:
+                on_audit = getattr(self, "on_audit", None)
+                if on_audit:
+                    on_audit(
+                        dict(stable_pending),
+                        list(codes),
+                        Path(pdf_path),
+                    )
+            except Exception as exc:
+                messagebox.showerror(
+                    "Registrazione stampa",
+                    "Lo storico HMAC è disponibile, ma l'archivio SQLite "
+                    "non è stato aggiornato. Non ristampare il voucher.\n\n"
+                    f"{exc}",
+                    parent=self,
+                )
+                return
+
             self._pending_print_audit = None
             self.register_print_button.grid_remove()
             if self.on_print:
