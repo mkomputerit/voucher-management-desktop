@@ -386,6 +386,38 @@ class Database:
             last_printed_at=str(row["last_at"]),
         )
 
+    def print_summaries_for_codes(
+        self,
+        *,
+        controller_id: int,
+        codes: list[str],
+    ) -> dict[str, PrintAuditSummary]:
+        """Return print facts keyed by canonical voucher code.
+
+        Code lookup is fail-closed: a missing or duplicated code cannot be used
+        to decide whether a physical reprint warning is required.
+        """
+
+        canonical_codes = {
+            str(code).strip().replace("-", "")
+            for code in codes
+            if str(code).strip()
+        }
+        result: dict[str, PrintAuditSummary] = {}
+        for code in canonical_codes:
+            rows = self.connection.execute(
+                """SELECT id FROM vouchers
+                   WHERE controller_id=? AND REPLACE(code, '-', '')=?
+                   ORDER BY id""",
+                (controller_id, code),
+            ).fetchall()
+            if len(rows) != 1:
+                raise RuntimeError(
+                    "Voucher code is missing or ambiguous in the local database"
+                )
+            result[code] = self.print_summary(int(rows[0]["id"]))
+        return result
+
     def record_print_audit(
         self,
         *,
