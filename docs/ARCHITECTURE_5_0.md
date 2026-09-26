@@ -8,15 +8,27 @@ Status: review implementation foundation.
 
 Voucher codes are reusable network credentials and are therefore excluded by
 default from every report. Summary and audit reports cannot expose a clear code
-even if a caller requests it. The only permitted exception is an explicit
-operational-handoff report requested by the operator.
+even if a caller requests it. The only permitted exception remains an explicit
+operational-handoff purpose requested by the operator.
 
-The policy boundary already exists in `report_policy.py` and has dedicated
-unit tests, but report rendering is not yet implemented in this foundation
-milestone. Therefore no current PDF/CSV renderer is claimed to enforce it.
-When reporting is introduced, every renderer/exporter that can emit voucher
-data must call this policy module, and integration tests must prove that summary
-and audit outputs cannot bypass it.
+Reporting is now implemented through one privacy boundary:
+`reporting.build_report_dataset()` reads durable SQLite facts, applies
+`report_policy.py`, and returns renderer-safe rows. Administrative summary and
+audit datasets therefore contain an empty voucher-code field even when a caller
+requests code exposure. PDF/CSV renderers accept only this sanitized dataset and
+have no database or controller access, so they cannot silently bypass the
+credential decision.
+
+The operator UI provides summary, used, expired, printed-but-never-used,
+never-printed, nominal-assignment and full-history views, scoped either to the
+active controller or to all persisted controllers. PDF output is printable A4
+landscape; CSV is an administrative export. Both are written atomically.
+
+Report totals are calculated from atomic persisted facts: current/last-observed
+controller usage counters and the application's physical-print audit. A usage
+counter is never converted into an invented guest-use timestamp. Controller
+creation time and first local import time remain separate fields rather than
+being collapsed into an unsupported created/imported classification.
 
 ## Data ownership
 
