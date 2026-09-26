@@ -139,15 +139,28 @@ Deterministic 5+5 display formatting may be derived from an independently known
 10-character code because that is the representation 4.x used when generating
 the audit HMAC.
 
-This planning phase does not write SQLite, alter `history.jsonl`, rotate the
-history key or enable automatic migration at startup. Its purpose is to make the
-association rules independently reviewable before the transactional apply
-phase is introduced.
+The planner itself remains read-only: it does not write SQLite, alter
+`history.jsonl`, rotate the history key or enable automatic migration at
+startup.
+
+The next Milestone B boundary persists that verified plan into schema version 2.
+`migration_runs` records each apply transaction and `legacy_audit_events`
+stores the original HMAC evidence with an explicit
+`RESOLVED`/`AMBIGUOUS`/`UNRESOLVED` state. A resolved row receives a
+foreign-key link only after the controller identity, UniFi voucher id and code
+are revalidated inside the same transaction. Existing resolved evidence may
+never regress to an unresolved/ambiguous state. Reapplying the same migration
+identity is idempotent, while a later plan may promote previously unresolved
+evidence when an independently known voucher becomes available.
+
+Schema 1 upgrades to schema 2 inside an explicit SQLite transaction so a DDL
+failure cannot leave a partial migration schema. Neither this evidence phase nor
+the planner materializes legacy physical-print counts into `print_jobs` yet.
 
 Unresolved rows are preserved as legacy audit evidence. They are never guessed
-into a voucher record. The later apply phase must create a safety backup,
-preserve unresolved/ambiguous evidence, support rollback and be idempotent
-before SQLite becomes the default upgrade path.
+into a voucher record. Before the final apply/materialization workflow becomes
+the default upgrade path it must create a safety backup, translate only verified
+legacy facts into operational tables, support rollback and remain idempotent.
 
 ### Milestone C — shared Windows deployment
 
