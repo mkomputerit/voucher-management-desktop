@@ -824,6 +824,114 @@ def test_materializes_print_without_legacy_print_job_id_idempotently(tmp_path):
         db.close()
 
 
+
+def test_two_legacy_print_rows_without_job_id_become_distinct_jobs(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "print",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T09:00:00+00:00",
+                "output_file": "Voucher_Old_A.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+            },
+            {
+                "event": "print",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T09:05:00+00:00",
+                "output_file": "Voucher_Old_B.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+            },
+        ],
+    )
+    db, controller_id, voucher_id = _database_with_voucher(tmp_path)
+    try:
+        _plan_and_apply(
+            db=db,
+            history=history,
+            controller_id=controller_id,
+        )
+
+        result = materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:32:00+00:00",
+        )
+
+        rows = db.connection.execute(
+            """SELECT pj.print_job_uuid, vp.print_sequence
+               FROM voucher_prints AS vp
+               JOIN print_jobs AS pj ON pj.id=vp.print_job_id
+               WHERE vp.voucher_id=?
+               ORDER BY vp.print_sequence""",
+            (voucher_id,),
+        ).fetchall()
+
+        assert result.print_rows == 2
+        assert len(rows) == 2
+        assert rows[0]["print_job_uuid"].startswith("legacy-")
+        assert rows[1]["print_job_uuid"].startswith("legacy-")
+        assert rows[0]["print_job_uuid"] != rows[1]["print_job_uuid"]
+        assert [row["print_sequence"] for row in rows] == [1, 2]
+    finally:
+        db.close()
+
+
+def test_generate_without_event_id_materializes_end_to_end(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "voucher_id": _digest("12345-67890"),
+                "recipient": "Legacy guest",
+                "duration_minutes": 60,
+                "timestamp": "2026-09-20T08:30:00+00:00",
+                "output_file": "Voucher_PreEventId.pdf",
+            }
+        ],
+    )
+    db, controller_id, voucher_id = _database_with_voucher(tmp_path)
+    try:
+        _plan_and_apply(
+            db=db,
+            history=history,
+            controller_id=controller_id,
+        )
+
+        first = materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:33:00+00:00",
+        )
+        second = materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:34:00+00:00",
+        )
+
+        rows = db.connection.execute(
+            """SELECT event_uuid, event_type, source, details_json
+               FROM voucher_events
+               WHERE voucher_id=?""",
+            (voucher_id,),
+        ).fetchall()
+
+        assert first.generated_events == 1
+        assert second.generated_events == 1
+        assert len(rows) == 1
+        assert rows[0]["event_uuid"].startswith("legacy-generate-")
+        assert rows[0]["event_type"] == "LEGACY_PDF_GENERATED"
+        assert rows[0]["source"] == "MIGRATION"
+        details = json.loads(rows[0]["details_json"])
+        assert details["output_file"] == "Voucher_PreEventId.pdf"
+        assert details["recipient"] == "Legacy guest"
+    finally:
+        db.close()
+
+
 def test_materialization_reuses_existing_milestone_a_print_job(tmp_path):
     history = tmp_path / "history.jsonl"
     _write_history(
