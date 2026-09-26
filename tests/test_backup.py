@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 import tempfile
 import unittest
 import zipfile
@@ -107,6 +108,140 @@ class BackupServiceTests(unittest.TestCase):
             self.assertNotIn(
                 "security/history_secret.bin", archive.namelist()
             )
+
+    def test_backup_captures_committed_wal_pages_without_sidecars(self):
+        database = self.paths.user_root / "data" / "voucher_management.db"
+        connection = sqlite3.connect(database)
+        try:
+            self.assertEqual(
+                connection.execute("PRAGMA journal_mode=WAL").fetchone()[0],
+                "wal",
+            )
+            connection.execute("PRAGMA wal_autocheckpoint=0")
+            connection.execute(
+                "CREATE TABLE durable_test (id INTEGER PRIMARY KEY, value TEXT)"
+            )
+            connection.commit()
+            connection.execute(
+                "INSERT INTO durable_test(value) VALUES ('committed-in-wal')"
+            )
+            connection.commit()
+
+            wal_path = Path(str(database) + "-wal")
+            self.assertTrue(wal_path.exists())
+            self.assertGreater(wal_path.stat().st_size, 0)
+
+            backup = Path(self.temp.name) / "wal-safe.zip"
+            self.service.create(backup)
+
+            with zipfile.ZipFile(backup, "r") as archive:
+                names = set(archive.namelist())
+                self.assertIn("data/voucher_management.db", names)
+                self.assertNotIn("data/voucher_management.db-wal", names)
+                self.assertNotIn("data/voucher_management.db-shm", names)
+                manifest = json.loads(
+                    archive.read("backup_manifest.json").decode("utf-8")
+                )
+                self.assertEqual(
+                    manifest["sqlite_snapshot"]["method"],
+                    "sqlite3.Connection.backup",
+                )
+                payload = archive.read("data/voucher_management.db")
+
+            snapshot = sqlite3.connect(":memory:")
+            try:
+                snapshot.deserialize(payload)
+                self.assertEqual(
+                    snapshot.execute(
+                        "SELECT value FROM durable_test"
+                    ).fetchone()[0],
+                    "committed-in-wal",
+                )
+                self.assertEqual(
+                    snapshot.execute("PRAGMA integrity_check").fetchone()[0],
+                    "ok",
+                )
+            finally:
+                snapshot.close()
+        finally:
+            connection.close()
+
+    def test_validation_runs_sqlite_integrity_check_not_only_hash(self):
+        database = self.paths.user_root / "data" / "voucher_management.db"
+        connection = sqlite3.connect(database)
+        connection.execute("CREATE TABLE durable_test (value TEXT)")
+        connection.execute(
+            "INSERT INTO durable_test(value) VALUES ('valid')"
+        )
+        connection.commit()
+        connection.close()
+
+        backup = Path(self.temp.name) / "valid-sqlite.zip"
+        self.service.create(backup)
+        tampered = Path(self.temp.name) / "corrupt-sqlite.zip"
+
+        with zipfile.ZipFile(backup, "r") as source:
+            payloads = {
+                info.filename: source.read(info.filename)
+                for info in source.infolist()
+            }
+
+        broken = bytearray(payloads["data/voucher_management.db"])
+        broken[:16] = b"not-a-sqlite-db!"
+        payloads["data/voucher_management.db"] = bytes(broken)
+        manifest = json.loads(
+            payloads["backup_manifest.json"].decode("utf-8")
+        )
+        manifest["sqlite_snapshot"]["sha256"] = hashlib.sha256(
+            payloads["data/voucher_management.db"]
+        ).hexdigest()
+        payloads["backup_manifest.json"] = json.dumps(
+            manifest
+        ).encode("utf-8")
+
+        with zipfile.ZipFile(
+            tampered,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as archive:
+            for name, payload in payloads.items():
+                archive.writestr(name, payload)
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "SQLite",
+        ):
+            self.service.validate(tampered)
+
+    def test_validation_rejects_unverifiable_raw_sqlite_beta_backup(self):
+        database = self.paths.user_root / "data" / "voucher_management.db"
+        connection = sqlite3.connect(database)
+        connection.execute("CREATE TABLE durable_test (value TEXT)")
+        connection.commit()
+        connection.close()
+
+        unsafe = Path(self.temp.name) / "unsafe-beta.zip"
+        with zipfile.ZipFile(
+            unsafe,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as archive:
+            archive.writestr(
+                "backup_manifest.json",
+                json.dumps(
+                    {
+                        "format": BACKUP_FORMAT,
+                        "application": "Voucher Management",
+                    }
+                ),
+            )
+            archive.write(database, "data/voucher_management.db")
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "privo di metadati snapshot",
+        ):
+            self.service.validate(unsafe)
 
     def test_encrypted_backup_roundtrip_restores_complete_data(self):
         backup = Path(self.temp.name) / "backup.vmbk"
