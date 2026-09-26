@@ -892,8 +892,14 @@ class _FakeEncryptedBackupService:
         return destination
 
     def is_encrypted_backup(self, source):
-        self.calls.append(("verify", str(source)))
+        self.calls.append(("verify-kind", str(source)))
         return self.encrypted
+
+    def validate_encrypted(self, source, password):
+        self.calls.append(("validate", str(source), bool(password)))
+        if not self.encrypted:
+            raise RuntimeError("synthetic unverified backup")
+        return {"format": 2}
 
 
 def test_execute_requires_verified_encrypted_backup_before_migration(tmp_path):
@@ -939,7 +945,11 @@ def test_execute_requires_verified_encrypted_backup_before_migration(tmp_path):
 
         assert result.backup_path == backup
         assert backup.is_file()
-        assert [call[0] for call in service.calls] == ["create", "verify"]
+        assert [call[0] for call in service.calls] == [
+            "create",
+            "verify-kind",
+            "validate",
+        ]
         run = db.connection.execute(
             """SELECT status, completed_at FROM migration_runs
                WHERE migration_uuid='migration-execute'"""
