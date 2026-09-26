@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from .backup_crypto import (
-    MIN_PASSWORD_CHARS,
     ProtectedBackupAuthenticationError,
     ProtectedBackupError,
     ProtectedBackupWriter,
@@ -172,11 +171,20 @@ class BackupService:
             "voucher_management.db-journal",
         }
 
+        source_root = Path(source).resolve()
+
         def ignore(path, names):
-            current = Path(path)
+            current = Path(path).resolve()
+            ignored: list[str] = []
+            if current == source_root and "application.instance.lock" in names:
+                ignored.append("application.instance.lock")
             if current.name == "data":
-                return [name for name in names if name in database_names]
-            return []
+                ignored.extend(
+                    name for name in names if name in database_names
+                )
+                if "application.instance.lock" in names:
+                    ignored.append("application.instance.lock")
+            return ignored
 
         shutil.copytree(source, destination, ignore=ignore)
 
@@ -444,10 +452,13 @@ class BackupService:
                     continue
                 if source.name in {
                     "history.lock",
+                    "application.instance.lock",
                     "pending_print_audit.json",
                     "pending_print_audit.json.tmp",
                     "pending_create_guard",
                 }:
+                    # Lock/guard files describe live process state and are never
+                    # portable application data.
                     continue
                 if (
                     dirname == "Print"

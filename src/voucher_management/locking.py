@@ -84,7 +84,9 @@ def exclusive_file_lock(
 
     # Ensure at least one byte exists because Windows byte-range locking cannot
     # lock beyond an empty file. O_APPEND avoids truncating a file another
-    # process may already have open.
+    # process may already have open. The 0o600 mode protects POSIX files only;
+    # Windows access control is provided by the parent NTFS ACL configured by
+    # the installer in shared ProgramData mode.
     fd = os.open(str(path), os.O_CREAT | os.O_RDWR | os.O_APPEND, 0o600)
     locked = False
     try:

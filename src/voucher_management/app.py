@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import getpass
+import logging
 import os
 from pathlib import Path
 from queue import Empty
@@ -25,7 +26,7 @@ from .dialogs import PrintCopiesDialog, ReprintConfirmDialog
 from .history import HistoryError, HistoryService
 from .identity import PRODUCT_NAME
 from .logging_utils import configure_logging
-from .mutation_guard import CreateMutationGuard
+from .mutation_guard import CreateMutationGuard, CreateMutationGuardError
 from .paths import AppPaths
 from .pdf_fonts import UnsupportedPdfTextError
 from .pdf_preview import PdfPreview
@@ -50,6 +51,9 @@ from .workflows import (
     resolve_existing_pdf,
     verify_print_history_ready,
 )
+
+
+LOGGER = logging.getLogger("voucher_management.app")
 
 
 def bundled_app_icon_path() -> Path | None:
@@ -92,11 +96,21 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             except tk.TclError:
                 # The EXE resource still carries the application icon even if a
                 # particular Tk build cannot apply iconbitmap at runtime.
-                pass
+                LOGGER.debug("runtime_iconbitmap_unavailable")
         self.title(f"{PRODUCT_NAME} {__version__}")
         self.minsize(1120, 650)
         self.geometry("1420x780")
-        self.paths = AppPaths()
+        try:
+            self.paths = AppPaths()
+        except Exception as exc:
+            messagebox.showerror(
+                "Avvio impossibile",
+                "Configurazione dell'installazione non valida.\n\n"
+                f"{exc}",
+                parent=self,
+            )
+            self.destroy()
+            return
         self.instance_guard = SingleInstanceGuard(self.paths.instance_lock)
         try:
             self.instance_guard.acquire()
@@ -375,9 +389,12 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 "prima di riprovare.",
                 parent=self,
             )
-        except Exception:
+        except Exception as dialog_exc:
             # Tk may itself be tearing down; logging above remains available.
-            pass
+            LOGGER.debug(
+                "unhandled_error_dialog_failed type=%s",
+                type(dialog_exc).__name__,
+            )
 
     @staticmethod
     def _print_state(stat) -> str:

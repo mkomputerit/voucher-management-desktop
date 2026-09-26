@@ -227,6 +227,33 @@ class SettingsDialog(tk.Toplevel):
             ),
         ).pack(side="left", padx=(8, 0))
 
+        if getattr(self.app.paths, "shared_mode", False):
+            ttk.Separator(frame).pack(fill="x", pady=22)
+            ttk.Label(
+                frame,
+                text="Archivio condiviso Windows",
+                style="SectionTitle.TLabel",
+            ).pack(anchor="w")
+            ttk.Label(
+                frame,
+                text=(
+                    "Questa installazione usa un archivio comune del PC in "
+                    "ProgramData. Se questo utente dispone ancora di dati della "
+                    "precedente installazione per profilo, possono essere "
+                    "trasferiti una sola volta prima che l'archivio condiviso "
+                    "venga utilizzato operativamente."
+                ),
+                style="Muted.TLabel",
+                wraplength=560,
+            ).pack(anchor="w", pady=(3, 10))
+            ttk.Button(
+                frame,
+                text="Migra dati di questo utente…",
+                command=lambda: self.app.migrate_per_user_data_to_shared(
+                    parent=self,
+                ),
+            ).pack(anchor="w")
+
         ttk.Separator(frame).pack(fill="x", pady=22)
         ttk.Label(
             frame,
@@ -756,7 +783,9 @@ class ModernVoucherApp(DataMaintenanceMixin, ControllerConnectionMixin, VoucherD
             try:
                 self.after_cancel(self._search_after)
             except tk.TclError:
-                pass
+                logging.getLogger("voucher_management").debug(
+                    "search_after_cancel_ignored"
+                )
         self._search_after = self.after(220, self._run_search_populate)
 
     def _run_search_populate(self) -> None:
@@ -829,6 +858,9 @@ def main() -> int:
                 "Controllare le impostazioni locali o ripristinare un backup "
                 "valido, quindi riprovare.",
             )
-        except Exception:
-            pass
+        except Exception as dialog_exc:
+            logging.getLogger("voucher_management").debug(
+                "startup_error_dialog_failed type=%s",
+                type(dialog_exc).__name__,
+            )
         return 1

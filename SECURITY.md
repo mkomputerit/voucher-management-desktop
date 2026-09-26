@@ -94,9 +94,12 @@ The 5.0 deployment model therefore requires these compensating controls:
 - backups containing the SQLite database are sensitive; the normal 5.0 backup
   path is password-protected and encrypted, while plaintext backup remains only
   a legacy-compatibility/import concern rather than a recommended choice;
-- when shared ProgramData deployment is introduced, installer ACLs must grant
-  database access only to the Windows principals intended to operate Voucher
-  Management, rather than making the database broadly readable;
+- installed shared ProgramData deployment rebuilds the application-data ACL
+  from a clean inherited baseline, removes parent inheritance, grants access
+  only to SYSTEM, BUILTIN\Administrators and the dedicated Voucher Management
+  operator group, then verifies the resulting Allow ACEs recursively; stale
+  explicit grants to other principals cause installation to fail rather than
+  leaving the database broadly readable;
 - reports expose voucher codes only when the report purpose requires them;
 - temporary copies of the live SQLite database are not used for backup; SQLite
   backup/snapshot facilities must produce a transactionally consistent image.
