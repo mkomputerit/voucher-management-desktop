@@ -68,6 +68,18 @@ class PendingPrintAudit:
     records: tuple[dict, ...]
 
 
+@dataclass(frozen=True)
+class ResolvedPendingPrint:
+    """Pending print reconstructed from HMAC records and known voucher codes."""
+
+    state: str
+    audit_id: str
+    codes: tuple[str, ...]
+    output_file: str
+    document_copies: int
+    submitted_at: str
+
+
 class HistoryService:
     """Persist PDF/print audit data using privacy-preserving HMAC identifiers.
 
@@ -538,6 +550,80 @@ class HistoryService:
         pending = self._load_pending_print()
         return pending.state if pending is not None else ""
 
+    def resolve_pending_print(
+        self,
+        candidate_codes: list[str],
+        settings: dict,
+    ) -> ResolvedPendingPrint | None:
+        """Resolve HMAC-only pending rows against independently known codes.
+
+        The pending descriptor deliberately contains no voucher plaintext.
+        During 5.0 recovery the SQLite snapshot supplies candidate codes; only
+        exact HMAC matches are accepted, so recovery never guesses identity.
+        """
+
+        pending = self._load_pending_print()
+        if pending is None:
+            return None
+
+        secret = self._secret(settings)
+        digest_to_code: dict[str, str] = {}
+        for code in candidate_codes:
+            normalized = str(code).strip()
+            if not normalized:
+                continue
+            digest = self._digest(normalized, secret)
+            previous = digest_to_code.get(digest)
+            if previous is not None and previous != normalized:
+                raise HistoryError(
+                    "Collisione nella risoluzione della stampa pendente"
+                )
+            digest_to_code[digest] = normalized
+
+        first = pending.records[0]
+        output_file = str(first["output_file"])
+        document_copies = int(first["document_copies"])
+        submitted_at = str(first["timestamp"])
+        resolved_codes: list[str] = []
+
+        for record in pending.records:
+            if (
+                str(record["output_file"]) != output_file
+                or int(record["document_copies"]) != document_copies
+                or str(record["timestamp"]) != submitted_at
+            ):
+                raise HistoryError(
+                    "Registrazione stampa pendente con metadati incoerenti"
+                )
+            code = digest_to_code.get(str(record["voucher_id"]))
+            if code is None:
+                raise HistoryError(
+                    "Impossibile associare un voucher della stampa pendente "
+                    "all'archivio locale"
+                )
+            physical_copies = int(record["physical_copies"])
+            if physical_copies % document_copies:
+                raise HistoryError(
+                    "Registrazione stampa pendente con conteggio copie incoerente"
+                )
+            resolved_codes.extend(
+                [code] * (physical_copies // document_copies)
+            )
+
+        return ResolvedPendingPrint(
+            state=pending.state,
+            audit_id=pending.audit_id,
+            codes=tuple(resolved_codes),
+            output_file=output_file,
+            document_copies=document_copies,
+            submitted_at=submitted_at,
+        )
+
+    def finalize_pending_print_audit(self, audit_id: str) -> None:
+        """Remove the durable marker only after every required audit is safe."""
+
+        self._clear_pending_print(str(audit_id).strip())
+
     def has_pending_print_audit(self) -> bool:
         """Return whether an unresolved physical-print audit exists."""
 
@@ -794,6 +880,7 @@ class HistoryService:
         self,
         *,
         assume_submitted: bool = False,
+        clear_pending: bool = True,
     ) -> bool:
         """Complete a pending print audit without voucher plaintext.
 
@@ -825,7 +912,8 @@ class HistoryService:
             list(pending.records),
             pending.audit_id,
         )
-        self._clear_pending_print(pending.audit_id)
+        if clear_pending:
+            self._clear_pending_print(pending.audit_id)
         return True
 
     def record_print(
@@ -837,8 +925,13 @@ class HistoryService:
         *,
         audit_id: str | None = None,
         submitted_at: str | None = None,
+        clear_pending: bool = True,
     ) -> None:
-        """Record a print already known to have been submitted to Windows."""
+        """Record a print already known to have been submitted to Windows.
+
+        clear_pending=False keeps the crash marker until a second durable audit
+        (SQLite in 5.0) has committed the same audit_id.
+        """
 
         normalized_audit_id = (
             secrets.token_hex(16)
@@ -867,7 +960,8 @@ class HistoryService:
             records,
             normalized_audit_id,
         )
-        self._clear_pending_print(normalized_audit_id)
+        if clear_pending:
+            self._clear_pending_print(normalized_audit_id)
 
     def _verify_print_job(
         self,
