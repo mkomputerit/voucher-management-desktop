@@ -174,3 +174,30 @@ def test_print_summary_counts_jobs_and_physical_copies(tmp_path):
         assert summary.last_printed_at.endswith("11:00:00Z")
     finally:
         db.close()
+
+
+def test_get_or_create_controller_reuses_api_root_without_credentials(tmp_path):
+    db = _db(tmp_path)
+    try:
+        first = db.get_or_create_controller(
+            name="Sala",
+            api_root="https://controller.example",
+            observed_at="2026-09-26T05:00:00+00:00",
+            cert_sha256="AA",
+        )
+        second = db.get_or_create_controller(
+            name="Sala aggiornata",
+            api_root="https://controller.example",
+            observed_at="2026-09-26T06:00:00+00:00",
+            cert_sha256="BB",
+        )
+        assert second == first
+        row = db.connection.execute(
+            "SELECT * FROM controllers WHERE id=?", (first,)
+        ).fetchone()
+        assert row["name"] == "Sala aggiornata"
+        assert row["last_used_at"] == "2026-09-26T06:00:00+00:00"
+        assert row["cert_sha256"] == "BB"
+        assert db.connection.execute("SELECT COUNT(*) FROM controllers").fetchone()[0] == 1
+    finally:
+        db.close()
