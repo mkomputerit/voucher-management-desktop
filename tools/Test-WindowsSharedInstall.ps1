@@ -52,6 +52,16 @@ function Assert-Rights {
 
 try {
     New-Item -ItemType Directory -Force -Path $root | Out-Null
+    New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
+    $legacyFile = Join-Path $dataRoot "legacy-permissive.txt"
+    Set-Content -LiteralPath $legacyFile -Value "legacy" -Encoding ascii
+
+    # Seed the exact upgrade hazard under review: explicit third-party grants
+    # on an already-existing ProgramData tree. The installer must remove them.
+    & icacls.exe $dataRoot /grant "*S-1-1-0:(OI)(CI)F" /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Impossibile predisporre l'ACL permissiva di test."
+    }
 
     $installArgs = @{
         SourcePath = $SourcePath
@@ -86,6 +96,11 @@ try {
         if ($aclState.Rights.ContainsKey($forbiddenSid)) {
             throw "ACL troppo ampia: SID vietato $forbiddenSid presente."
         }
+    }
+
+    $legacyAcl = Get-AllowRightsBySid -Path $legacyFile
+    if ($legacyAcl.Rights.ContainsKey("S-1-1-0")) {
+        throw "ACE esplicita Everyone sopravvissuta su un file preesistente."
     }
 
     $sentinel = Join-Path $dataRoot "upgrade-preserves-data.txt"
