@@ -444,10 +444,13 @@ class BackupService:
                     continue
                 if source.name in {
                     "history.lock",
+                    "application.instance.lock",
                     "pending_print_audit.json",
                     "pending_print_audit.json.tmp",
                     "pending_create_guard",
                 }:
+                    # Lock/guard files describe live process state and are never
+                    # portable application data.
                     continue
                 if (
                     dirname == "Print"
