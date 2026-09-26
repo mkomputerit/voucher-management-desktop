@@ -468,6 +468,7 @@ def test_manual_registration_failure_keeps_pending_job(monkeypatch):
 def test_print_flow_persists_intent_before_windows_submission(monkeypatch):
     order = []
     captured = {}
+    confirmed = []
     print_button = _Button()
     register_button = _Button()
 
@@ -529,6 +530,7 @@ def test_print_flow_persists_intent_before_windows_submission(monkeypatch):
         settings={},
         _pending_print_audit=None,
         on_print=None,
+        on_submitted=lambda: confirmed.append(True),
         winfo_exists=lambda: True,
     )
 
@@ -552,6 +554,9 @@ def test_print_flow_persists_intent_before_windows_submission(monkeypatch):
     assert order[1][1] == order[3][1] == order[4][1]
     assert order[1][2] == order[4][2]
     assert result[1] is None
+
+    captured["success"](result)
+    assert confirmed == [True]
 
 
 def test_windows_failure_leaves_prepared_job_for_operator_resolution(monkeypatch):
