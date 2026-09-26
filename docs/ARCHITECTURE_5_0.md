@@ -201,11 +201,16 @@ closed instead of silently falling back to another data root.
 The elevated Windows installer copies the reviewed onedir build under
 `%ProgramFiles%\Voucher Management`, creates the local
 `Voucher Management Operators` group, adds the selected operator and applies
-ProgramData ACLs by SID: SYSTEM and BUILTIN\Administrators receive Full
-Control, while the dedicated operator group receives inherited Modify rights.
-Inheritance from broader ProgramData ACLs is removed. Ordinary users outside
-that group therefore receive no application-data grant from Voucher Management.
-The runtime never broadens ACLs itself.
+ProgramData ACLs by SID. Before granting application rights, the installer
+resets stale explicit ACL state from a pre-existing data tree, removes
+inheritance from broader ProgramData ACLs, and rebuilds the allowed set:
+SYSTEM and BUILTIN\Administrators receive Full Control, while the dedicated
+operator group receives an explicit inheritable Modify ACE. The installer then
+enumerates the root and all existing descendants and fails closed if any
+Allow ACE belongs to a principal outside those three SIDs. Ordinary users
+outside that group therefore receive no application-data grant from Voucher
+Management, including upgrade scenarios with previously permissive explicit
+ACEs. The runtime never broadens ACLs itself.
 
 The lifetime application guard lives directly below the active data root rather
 than inside `data/`. In installed mode this means every authorized Windows
