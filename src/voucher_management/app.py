@@ -26,7 +26,7 @@ from .dialogs import PrintCopiesDialog, ReprintConfirmDialog
 from .history import HistoryError, HistoryService
 from .identity import PRODUCT_NAME
 from .logging_utils import configure_logging
-from .mutation_guard import CreateMutationGuard
+from .mutation_guard import CreateMutationGuard, CreateMutationGuardError
 from .paths import AppPaths
 from .pdf_fonts import UnsupportedPdfTextError
 from .pdf_preview import PdfPreview
