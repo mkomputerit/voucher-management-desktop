@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import tkinter as tk
+from datetime import datetime
 from tkinter import messagebox, ttk
 
 from .backup_crypto import validate_backup_password
 from .pdf_render import VOUCHERS_PER_PAGE
+from .reprint_policy import ReprintWarning
 from .unifi_api import ApiVoucher
 from .workflows import validate_create_params
 
@@ -252,6 +254,147 @@ class PrintCopiesDialog(tk.Toplevel):
             )
             return
         self.result = copies
+        self.destroy()
+
+
+def _local_print_time(value: str) -> str:
+    """Format stored ISO print time for an operator-facing confirmation."""
+
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    try:
+        return (
+            datetime.fromisoformat(text.replace("Z", "+00:00"))
+            .astimezone()
+            .strftime("%d/%m/%Y %H:%M")
+        )
+    except ValueError:
+        return text
+
+
+class ReprintConfirmDialog(tk.Toplevel):
+    """Require explicit confirmation before a duplicate physical print."""
+
+    def __init__(
+        self,
+        parent,
+        warnings: list[tuple[str, ReprintWarning]],
+    ):
+        super().__init__(parent)
+        self.result = False
+        self.warnings = list(warnings)
+        self.transient(parent)
+        self.grab_set()
+        self.resizable(False, False)
+
+        frame = ttk.Frame(self, padding=18)
+        frame.pack(fill="both", expand=True)
+
+        if len(self.warnings) == 1:
+            self.title("Questo voucher è già stato stampato")
+            code, warning = self.warnings[0]
+            ttk.Label(
+                frame,
+                text="Questo voucher è già stato stampato",
+                font=("TkDefaultFont", 11, "bold"),
+            ).pack(anchor="w")
+            ttk.Label(
+                frame,
+                text=(
+                    "Stai per generare una copia dello stesso voucher. "
+                    "Procedi solo se la copia precedente è stata smarrita "
+                    "o se sei certo che sia necessaria una ristampa."
+                ),
+                wraplength=520,
+                justify="left",
+            ).pack(anchor="w", pady=(10, 12))
+            ttk.Label(
+                frame,
+                text=f"Voucher: {code}",
+            ).pack(anchor="w")
+            ttk.Label(
+                frame,
+                text=(
+                    "Ultima stampa: "
+                    f"{_local_print_time(warning.last_printed_at)}"
+                ),
+            ).pack(anchor="w", pady=(4, 0))
+            ttk.Label(
+                frame,
+                text=(
+                    "Stampe precedenti: "
+                    f"{warning.previous_print_jobs}"
+                ),
+            ).pack(anchor="w", pady=(4, 0))
+            continue_text = "Ristampa voucher"
+        else:
+            self.title("Conferma ristampe")
+            count = len(self.warnings)
+            ttk.Label(
+                frame,
+                text="La selezione contiene voucher già stampati",
+                font=("TkDefaultFont", 11, "bold"),
+            ).pack(anchor="w")
+            ttk.Label(
+                frame,
+                text=(
+                    f"La selezione contiene {count} voucher già stampati. "
+                    "Continuando verranno generate copie di voucher "
+                    "precedentemente stampati."
+                ),
+                wraplength=560,
+                justify="left",
+            ).pack(anchor="w", pady=(10, 10))
+
+            self.details = ttk.Frame(frame)
+            self.details_visible = False
+            details_button = ttk.Button(
+                frame,
+                text=f"Visualizza i {count} voucher",
+                command=lambda: self._toggle_details(details_button),
+            )
+            details_button.pack(anchor="w", pady=(0, 8))
+
+            for code, warning in self.warnings:
+                ttk.Label(
+                    self.details,
+                    text=(
+                        f"{code} — {warning.previous_print_jobs} stampe — "
+                        f"ultima {_local_print_time(warning.last_printed_at)}"
+                    ),
+                ).pack(anchor="w", pady=2)
+            continue_text = "Continua con le ristampe"
+
+        actions = ttk.Frame(frame)
+        actions.pack(anchor="e", pady=(16, 0))
+        cancel = ttk.Button(
+            actions,
+            text="Annulla",
+            command=self.destroy,
+        )
+        cancel.pack(side="left", padx=(0, 8))
+        ttk.Button(
+            actions,
+            text=continue_text,
+            command=self._accept,
+        ).pack(side="left")
+
+        self.bind("<Escape>", lambda _event: self.destroy())
+        cancel.focus_set()
+        self.wait_window(self)
+
+    def _toggle_details(self, button) -> None:
+        self.details_visible = not self.details_visible
+        if self.details_visible:
+            self.details.pack(fill="x", anchor="w", pady=(0, 8))
+            button.configure(text="Nascondi elenco")
+        else:
+            self.details.pack_forget()
+            button.configure(text=f"Visualizza i {len(self.warnings)} voucher")
+
+    def _accept(self) -> None:
+        self.result = True
         self.destroy()
 
 
