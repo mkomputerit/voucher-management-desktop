@@ -174,10 +174,11 @@ before either phase begins and performs a final SQLite integrity check.
 `history.jsonl` and its key are never rewritten by migration.
 
 Unresolved rows are preserved as legacy audit evidence. They are never guessed
-into a voucher record. The remaining Milestone B UI must make this workflow an
-explicit operator action, gather independently known candidate vouchers and a
-backup password, show unresolved/ambiguous counts before execution, and keep
-automatic startup migration disabled until that interaction is proven.
+into a voucher record. The Milestone B UI exposes migration only as an explicit
+operator action under data maintenance: it uses voucher identities already
+known to SQLite, requires the verified legacy HMAC identity and an encrypted
+safety-backup password, shows resolved/ambiguous/unresolved counts before
+execution, and never enables automatic startup migration.
 
 ### Milestone C — shared Windows deployment
 
