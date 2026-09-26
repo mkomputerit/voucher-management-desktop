@@ -278,6 +278,31 @@ class Database:
             )
             return int(cursor.lastrowid)
 
+    def get_or_create_controller(
+        self, *, name: str, api_root: str, observed_at: str,
+        cert_sha256: str = "",
+    ) -> int:
+        """Resolve one non-secret controller profile by normalized API root."""
+
+        row = self.connection.execute(
+            "SELECT id FROM controllers WHERE api_root=? AND is_active=1 ORDER BY id LIMIT 1",
+            (api_root.strip(),),
+        ).fetchone()
+        if row is not None:
+            with self.transaction() as db:
+                db.execute(
+                    """UPDATE controllers SET name=?, cert_sha256=?, last_used_at=?
+                       WHERE id=?""",
+                    (name.strip(), cert_sha256.strip(), observed_at, row["id"]),
+                )
+            return int(row["id"])
+        return self.create_controller(
+            name=name,
+            api_root=api_root,
+            created_at=observed_at,
+            cert_sha256=cert_sha256,
+        )
+
     def upsert_voucher(
         self, *, controller_id: int, unifi_id: str, code: str, imported_at: str,
         last_synced_at: str, name: str = "", created_at: str | None = None,
