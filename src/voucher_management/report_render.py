@@ -51,6 +51,15 @@ def _paragraph(value: object, style: ParagraphStyle) -> Paragraph:
     return Paragraph(escape(str(value or "—")), style)
 
 
+def _csv_cell(value: object) -> str:
+    """Prevent spreadsheet formula execution from operator/controller text."""
+
+    text = str(value or "")
+    if text.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + text
+    return text
+
+
 def _display_time(value: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -143,16 +152,27 @@ def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
     try:
         with temp_path.open("w", encoding="utf-8-sig", newline="") as stream:
             writer = csv.writer(stream, delimiter=";")
-            writer.writerow(["Report", dataset.title])
-            writer.writerow(["Generato", _display_time(dataset.generated_at)])
-            writer.writerow(["Ambito", dataset.controller_label])
+            writer.writerow(
+                [_csv_cell("Report"), _csv_cell(dataset.title)]
+            )
+            writer.writerow(
+                [_csv_cell("Generato"), _csv_cell(_display_time(dataset.generated_at))]
+            )
+            writer.writerow(
+                [_csv_cell("Ambito"), _csv_cell(dataset.controller_label)]
+            )
             writer.writerow([])
-            writer.writerow(["Riepilogo", "Valore"])
-            writer.writerows(_summary_rows(dataset))
+            writer.writerow([_csv_cell("Riepilogo"), _csv_cell("Valore")])
+            for summary_row in _summary_rows(dataset):
+                writer.writerow([_csv_cell(value) for value in summary_row])
             writer.writerow([])
-            writer.writerow(_detail_headers(dataset))
+            writer.writerow(
+                [_csv_cell(value) for value in _detail_headers(dataset)]
+            )
             for row in dataset.rows:
-                writer.writerow(_detail_row(dataset, row))
+                writer.writerow(
+                    [_csv_cell(value) for value in _detail_row(dataset, row)]
+                )
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temp_path, output_path)
