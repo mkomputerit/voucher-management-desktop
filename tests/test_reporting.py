@@ -307,3 +307,28 @@ def test_controller_filter_never_mixes_controller_rows(tmp_path):
         assert len(all_controllers.rows) == 2
     finally:
         database.close()
+
+
+def test_expired_report_uses_persisted_expiration_time_offline(tmp_path):
+    database, controller_id = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller_id,
+            unifi_id="time-expired",
+            code="9999900000",
+            expired=False,
+            expires_at="2026-09-20T09:00:00+00:00",
+        )
+
+        dataset = build_report_dataset(
+            database,
+            kind=ReportKind.EXPIRED,
+            generated_at=NOW,
+        )
+
+        assert [row.voucher_id for row in dataset.rows] == [voucher_id]
+        assert dataset.rows[0].expired is True
+        assert dataset.rows[0].status == "Scaduto"
+    finally:
+        database.close()
