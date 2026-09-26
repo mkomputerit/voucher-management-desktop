@@ -129,9 +129,25 @@ partial, ambiguous and corrupt legacy data. It validates the portable history
 identity and may associate an HMAC history row with a plaintext voucher only
 when that voucher code is independently known and recomputes to the exact HMAC.
 
+The first Milestone B implementation boundary is deliberately read-only:
+`legacy_migration.py` validates the history fingerprint/key pair, parses the
+entire legacy audit file fail-closed, recomputes HMACs only from independently
+known voucher candidates and returns an immutable migration plan. A row is
+resolved only when exactly one voucher identity matches. Zero matches remain
+unresolved evidence; multiple voucher identities remain ambiguous evidence.
+Deterministic 5+5 display formatting may be derived from an independently known
+10-character code because that is the representation 4.x used when generating
+the audit HMAC.
+
+This planning phase does not write SQLite, alter `history.jsonl`, rotate the
+history key or enable automatic migration at startup. Its purpose is to make the
+association rules independently reviewable before the transactional apply
+phase is introduced.
+
 Unresolved rows are preserved as legacy audit evidence. They are never guessed
-into a voucher record. Migration creates a safety backup, supports rollback and
-is idempotent before SQLite becomes the default upgrade path.
+into a voucher record. The later apply phase must create a safety backup,
+preserve unresolved/ambiguous evidence, support rollback and be idempotent
+before SQLite becomes the default upgrade path.
 
 ### Milestone C — shared Windows deployment
 
