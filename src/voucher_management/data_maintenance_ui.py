@@ -106,14 +106,50 @@ class DataMaintenanceMixin:
                 )
                 return
 
-            recovery_worker = lambda: self.history.recover_pending_print_audit(
-                assume_submitted=True
-            )
+            if callable(
+                getattr(self, "_record_pending_print_sqlite_and_finalize", None)
+            ):
+                recovery_worker = lambda: self.history.recover_pending_print_audit(
+                    assume_submitted=True,
+                    clear_pending=False,
+                )
+            else:
+                recovery_worker = lambda: self.history.recover_pending_print_audit(
+                    assume_submitted=True
+                )
         else:
-            recovery_worker = self.history.recover_pending_print_audit
+            if callable(
+                getattr(self, "_record_pending_print_sqlite_and_finalize", None)
+            ):
+                recovery_worker = lambda: self.history.recover_pending_print_audit(
+                    clear_pending=False
+                )
+            else:
+                recovery_worker = self.history.recover_pending_print_audit
 
         def completed(recovered) -> None:
             if recovered:
+                sqlite_recovery = getattr(
+                    self,
+                    "_record_pending_print_sqlite_and_finalize",
+                    None,
+                )
+                if callable(sqlite_recovery):
+                    try:
+                        sqlite_recovery()
+                    except Exception as exc:
+                        self.logger.warning(
+                            "pending_sqlite_print_recovery_failed type=%s",
+                            type(exc).__name__,
+                        )
+                        messagebox.showerror(
+                            "Registrazione stampa",
+                            "Lo storico HMAC è stato verificato, ma l'archivio "
+                            "SQLite non è stato completato. La registrazione "
+                            "pendente resta protetta e può essere ritentata.",
+                            parent=parent,
+                        )
+                        return
                 self.populate()
                 messagebox.showinfo(
                     "Registrazione stampa",
