@@ -4,7 +4,8 @@ param(
     [string]$InstallRoot = (Join-Path $env:ProgramFiles "Voucher Management"),
     [string]$DataRoot = (Join-Path $env:ProgramData "VoucherManagement"),
     [string]$OperatorGroup = "Voucher Management Operators",
-    [string]$OperatorUser
+    [string]$OperatorUser,
+    [switch]$SkipShortcut
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +21,10 @@ function Assert-Administrator {
 function Resolve-InteractiveUser {
     param([string]$ExplicitUser)
     if ($ExplicitUser) { return $ExplicitUser }
+
+    # Win32_ComputerSystem.UserName identifies the console-interactive user,
+    # not an arbitrary RDP/Fast User Switching session. Multi-session installs
+    # should pass -OperatorUser explicitly instead of relying on inference.
     $loggedOn = (Get-CimInstance Win32_ComputerSystem).UserName
     if (-not $loggedOn) {
         throw "Impossibile determinare l'utente Windows interattivo. Usare -OperatorUser."
@@ -95,14 +100,16 @@ $utf8NoBom = [Text.UTF8Encoding]::new($false)
 
 Set-SharedDataAcl -Path $DataRoot -OperatorGroupSid $group.SID
 
-$startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs"
-$shortcutPath = Join-Path $startMenu "Voucher Management.lnk"
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = Join-Path $destination "VoucherManagement.exe"
-$shortcut.WorkingDirectory = $destination
-$shortcut.Description = "Voucher Management"
-$shortcut.Save()
+if (-not $SkipShortcut) {
+    $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs"
+    $shortcutPath = Join-Path $startMenu "Voucher Management.lnk"
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = Join-Path $destination "VoucherManagement.exe"
+    $shortcut.WorkingDirectory = $destination
+    $shortcut.Description = "Voucher Management"
+    $shortcut.Save()
+}
 
 Write-Host "Voucher Management installato in: $destination"
 Write-Host "Dati condivisi: $DataRoot"
