@@ -1,0 +1,295 @@
+"""Milestone B tests for non-destructive 4.x audit migration planning."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+
+import pytest
+
+from voucher_management.legacy_migration import (
+    LegacyMigrationError,
+    LegacyVoucherCandidate,
+    build_legacy_migration_plan,
+)
+
+
+SECRET = "legacy-migration-secret-value"
+FINGERPRINT = hashlib.sha256(SECRET.encode("utf-8")).hexdigest()[:16]
+
+
+def _digest(code: str) -> str:
+    return hmac.new(
+        SECRET.encode("utf-8"),
+        code.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _write_history(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(
+            json.dumps(row, separators=(",", ":")) + "\n"
+            for row in rows
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_plan_resolves_generate_and_print_rows_from_known_code(tmp_path):
+    history = tmp_path / "history.jsonl"
+    code = "12345-67890"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "event-1",
+                "voucher_id": _digest(code),
+                "recipient": "Guest",
+                "duration_minutes": 60,
+                "timestamp": "2026-09-20T10:00:00+00:00",
+                "output_file": "Voucher_Test.pdf",
+            },
+            {
+                "event": "print",
+                "voucher_id": _digest(code),
+                "timestamp": "2026-09-20T10:05:00+00:00",
+                "output_file": "Voucher_Test.pdf",
+                "document_copies": 2,
+                "physical_copies": 2,
+                "print_job_id": "abc123",
+            },
+        ],
+    )
+
+    plan = build_legacy_migration_plan(
+        history_path=history,
+        expected_fingerprint=FINGERPRINT,
+        secret=SECRET,
+        candidates=[
+            LegacyVoucherCandidate(
+                controller_id=7,
+                unifi_id="voucher-1",
+                code="1234567890",
+            )
+        ],
+    )
+
+    assert plan.total_rows == 2
+    assert plan.fully_resolved is True
+    assert len(plan.resolved) == 2
+    assert plan.resolved[0].candidate.unifi_id == "voucher-1"
+    assert plan.resolved[1].row.event == "print"
+    assert plan.ambiguous == ()
+    assert plan.unresolved == ()
+
+
+def test_plan_preserves_unknown_hmac_as_unresolved_evidence(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "voucher_id": _digest("99999-00000"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+                "output_file": "Voucher_Old.pdf",
+            }
+        ],
+    )
+
+    plan = build_legacy_migration_plan(
+        history_path=history,
+        expected_fingerprint=FINGERPRINT,
+        secret=SECRET,
+        candidates=[
+            LegacyVoucherCandidate(
+                controller_id=1,
+                unifi_id="current",
+                code="12345-67890",
+            )
+        ],
+    )
+
+    assert plan.resolved == ()
+    assert plan.ambiguous == ()
+    assert len(plan.unresolved) == 1
+    assert plan.unresolved[0].reason == "no_known_code"
+    assert plan.unresolved[0].row.line_number == 1
+
+
+def test_same_digest_on_two_voucher_identities_is_ambiguous(tmp_path):
+    history = tmp_path / "history.jsonl"
+    code = "55555-66666"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "voucher_id": _digest(code),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+                "output_file": "Voucher_Ambiguous.pdf",
+            }
+        ],
+    )
+
+    plan = build_legacy_migration_plan(
+        history_path=history,
+        expected_fingerprint=FINGERPRINT,
+        secret=SECRET,
+        candidates=[
+            LegacyVoucherCandidate(1, "controller-a-id", code),
+            LegacyVoucherCandidate(2, "controller-b-id", code),
+        ],
+    )
+
+    assert plan.resolved == ()
+    assert plan.unresolved == ()
+    assert len(plan.ambiguous) == 1
+    assert {
+        candidate.key
+        for candidate in plan.ambiguous[0].candidates
+    } == {
+        (1, "controller-a-id"),
+        (2, "controller-b-id"),
+    }
+
+
+def test_duplicate_candidate_spelling_does_not_create_false_ambiguity(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "voucher_id": _digest("11111-22222"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+
+    plan = build_legacy_migration_plan(
+        history_path=history,
+        expected_fingerprint=FINGERPRINT,
+        secret=SECRET,
+        candidates=[
+            LegacyVoucherCandidate(1, "v1", "11111-22222"),
+            LegacyVoucherCandidate(1, "v1", "1111122222"),
+        ],
+    )
+
+    assert len(plan.resolved) == 1
+    assert plan.ambiguous == ()
+
+
+@pytest.mark.parametrize(
+    "expected,secret",
+    [
+        ("deadbeefdeadbeef", SECRET),
+        (FINGERPRINT, "different-secret"),
+        ("", SECRET),
+    ],
+)
+def test_identity_mismatch_fails_before_history_is_migrated(
+    tmp_path,
+    expected,
+    secret,
+):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+
+    with pytest.raises(
+        LegacyMigrationError,
+        match="Identità HMAC",
+    ):
+        build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=expected,
+            secret=secret,
+            candidates=[],
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{broken-json\n",
+        json.dumps(
+            {
+                "event": "unknown",
+                "voucher_id": "0" * 64,
+                "timestamp": "t",
+            }
+        )
+        + "\n",
+        json.dumps(
+            {
+                "event": "print",
+                "voucher_id": "0" * 64,
+                "timestamp": "t",
+                "physical_copies": 0,
+            }
+        )
+        + "\n",
+        json.dumps(
+            {
+                "event": "generate",
+                "voucher_id": "not-a-digest",
+                "timestamp": "t",
+            }
+        )
+        + "\n",
+    ],
+)
+def test_corrupt_or_unsupported_history_fails_closed(tmp_path, payload):
+    history = tmp_path / "history.jsonl"
+    history.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(LegacyMigrationError):
+        build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=SECRET,
+            candidates=[],
+        )
+
+
+def test_planning_is_read_only_and_idempotent(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+    before = history.read_bytes()
+    args = dict(
+        history_path=history,
+        expected_fingerprint=FINGERPRINT,
+        secret=SECRET,
+        candidates=[
+            LegacyVoucherCandidate(1, "v1", "1234567890"),
+        ],
+    )
+
+    first = build_legacy_migration_plan(**args)
+    second = build_legacy_migration_plan(**args)
+
+    assert first == second
+    assert history.read_bytes() == before
