@@ -136,6 +136,10 @@ jobs:
       - name: Build portable onedir
         run: .\.venv\Scripts\pyinstaller.exe --noconfirm --clean pyinstaller.spec
 
+      - name: Test shared Windows installer and ACLs
+        shell: pwsh
+        run: .\tools\Test-WindowsSharedInstall.ps1 -SourcePath .\dist\VoucherManagement
+
       - name: Verify Windows executable metadata
         shell: pwsh
         run: |
