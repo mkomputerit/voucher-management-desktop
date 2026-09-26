@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import getpass
+import logging
 import os
 from pathlib import Path
 from queue import Empty
@@ -52,6 +53,9 @@ from .workflows import (
 )
 
 
+LOGGER = logging.getLogger("voucher_management.app")
+
+
 def bundled_app_icon_path() -> Path | None:
     """Return the bundled Windows icon path when running from PyInstaller."""
 
@@ -92,7 +96,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             except tk.TclError:
                 # The EXE resource still carries the application icon even if a
                 # particular Tk build cannot apply iconbitmap at runtime.
-                pass
+                LOGGER.debug("runtime_iconbitmap_unavailable")
         self.title(f"{PRODUCT_NAME} {__version__}")
         self.minsize(1120, 650)
         self.geometry("1420x780")
@@ -385,9 +389,12 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 "prima di riprovare.",
                 parent=self,
             )
-        except Exception:
+        except Exception as dialog_exc:
             # Tk may itself be tearing down; logging above remains available.
-            pass
+            self.logger.debug(
+                "unhandled_error_dialog_failed type=%s",
+                type(dialog_exc).__name__,
+            )
 
     @staticmethod
     def _print_state(stat) -> str:
