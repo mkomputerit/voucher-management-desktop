@@ -16,8 +16,10 @@ Reporting is now implemented through one privacy boundary:
 `report_policy.py`, and returns renderer-safe rows. Administrative summary and
 audit datasets therefore contain an empty voucher-code field even when a caller
 requests code exposure. PDF/CSV renderers accept only this sanitized dataset and
-have no database or controller access, so they cannot silently bypass the
-credential decision.
+have no database or controller access. As a second boundary they re-evaluate
+the central code-exposure policy and reject an inconsistent dataset, so a
+manually constructed summary/audit object cannot smuggle a clear voucher code
+into an export.
 
 The operator UI provides summary, used, expired, printed-but-never-used,
 never-printed, nominal-assignment and full-history views, scoped either to the
