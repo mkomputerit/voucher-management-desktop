@@ -9,9 +9,14 @@ Status: review implementation foundation.
 Voucher codes are reusable network credentials and are therefore excluded by
 default from every report. Summary and audit reports cannot expose a clear code
 even if a caller requests it. The only permitted exception is an explicit
-operational-handoff report requested by the operator. All report renderers must
-use `report_policy.py`; this rule is covered by dedicated tests so PDF/CSV
-implementations cannot silently choose a weaker policy.
+operational-handoff report requested by the operator.
+
+The policy boundary already exists in `report_policy.py` and has dedicated
+unit tests, but report rendering is not yet implemented in this foundation
+milestone. Therefore no current PDF/CSV renderer is claimed to enforce it.
+When reporting is introduced, every renderer/exporter that can emit voucher
+data must call this policy module, and integration tests must prove that summary
+and audit outputs cannot bypass it.
 
 ## Data ownership
 
@@ -195,9 +200,12 @@ backup before replacing a live 5.0 database.
 ## Backup
 
 SQLite backups must be transactionally consistent; copying only the main
-`.db` file while WAL is active is not sufficient. The implementation should
-use SQLite's backup API or a verified checkpoint/snapshot strategy, then verify
-integrity and archive metadata before publishing the backup.
+`.db` file while WAL is active is not sufficient. Milestone A uses
+`sqlite3.Connection.backup()` to build a standalone committed snapshot,
+verifies `PRAGMA integrity_check`, records the snapshot SHA-256 and schema
+version in the manifest, and excludes live `-wal`/`-shm`/`-journal`
+sidecars. Validation repeats the integrity/hash/schema checks before restore.
+The pre-restore rollback snapshot uses the same SQLite-safe mechanism.
 
 Automatic backup-on-close is enabled by default. Because the 5.0 SQLite
 database contains clear voucher codes, the normal 5.0 backup path is encrypted
