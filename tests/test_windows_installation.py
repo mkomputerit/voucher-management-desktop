@@ -38,6 +38,7 @@ def test_uninstaller_preserves_shared_data_without_explicit_switch():
     assert "if ($RemoveData)" in script
     assert "Dati condivisi conservati" in script
     assert "Remove-LocalGroup" in script
+    assert "icacls.exe $DataRoot /reset /T /C" in script
     assert 'Get-Process -Name "VoucherManagement"' in script
 
 
