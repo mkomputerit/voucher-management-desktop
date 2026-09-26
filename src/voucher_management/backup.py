@@ -132,6 +132,11 @@ class BackupService:
                 timeout=5.0,
             )
             source_connection.backup(snapshot_connection)
+            # backup() copies page 1 verbatim, including WAL read/write flags
+            # from the source. VACUUM rebuilds only the in-memory snapshot under
+            # its own rollback-journal mode, producing a standalone image that
+            # never requires a -wal sidecar after archive/restore.
+            snapshot_connection.execute("VACUUM")
             rows = snapshot_connection.execute(
                 "PRAGMA integrity_check"
             ).fetchall()
