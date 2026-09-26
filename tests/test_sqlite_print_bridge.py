@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from voucher_management.app import VoucherApp
+from voucher_management.database import PrintAuditSummary
 
 
 class _DatabaseRecorder:
@@ -122,3 +123,69 @@ def test_pending_print_recovery_commits_sqlite_before_marker_finalize():
     assert calls[0][0] == "resolve"
     assert calls[1][0] == "sqlite"
     assert calls[2] == ("finalize", "recover-1")
+
+
+def test_reprint_preflight_allows_first_physical_print(monkeypatch):
+    class Database:
+        def print_summaries_for_codes(self, *, controller_id, codes):
+            assert controller_id == 7
+            return {
+                "1234567890": PrintAuditSummary(0, 0, "", ""),
+            }
+
+    monkeypatch.setattr(
+        "voucher_management.app.ReprintConfirmDialog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("first print must not show a reprint dialog")
+        ),
+    )
+    fake = SimpleNamespace(
+        active_controller_id=7,
+        database=Database(),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+
+    assert VoucherApp._confirm_physical_reprint(
+        fake,
+        ["12345-67890"],
+        object(),
+    ) is True
+
+
+def test_reprint_preflight_collects_only_previously_printed_vouchers(monkeypatch):
+    captured = {}
+
+    class Database:
+        def print_summaries_for_codes(self, *, controller_id, codes):
+            return {
+                "1111122222": PrintAuditSummary(
+                    2, 3, "2026-09-26T08:00:00+00:00", "2026-09-26T09:00:00+00:00"
+                ),
+                "3333344444": PrintAuditSummary(0, 0, "", ""),
+                "5555566666": PrintAuditSummary(
+                    1, 1, "2026-09-26T09:15:00+00:00", "2026-09-26T09:15:00+00:00"
+                ),
+            }
+
+    class Dialog:
+        def __init__(self, parent, warnings):
+            captured["warnings"] = warnings
+            self.result = True
+
+    monkeypatch.setattr("voucher_management.app.ReprintConfirmDialog", Dialog)
+    fake = SimpleNamespace(
+        active_controller_id=7,
+        database=Database(),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+
+    assert VoucherApp._confirm_physical_reprint(
+        fake,
+        ["11111-22222", "33333-44444", "55555-66666"],
+        object(),
+    ) is True
+    assert [code for code, _warning in captured["warnings"]] == [
+        "11111-22222",
+        "55555-66666",
+    ]
+    assert captured["warnings"][0][1].previous_print_jobs == 2
