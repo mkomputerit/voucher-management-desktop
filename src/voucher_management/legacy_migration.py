@@ -11,7 +11,7 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Mapping, Sequence
 
 if TYPE_CHECKING:
@@ -508,4 +508,299 @@ def apply_legacy_migration_plan(
         resolved_rows=counts[1],
         ambiguous_rows=counts[2],
         unresolved_rows=counts[3],
+    )
+
+
+@dataclass(frozen=True)
+class LegacyMaterializationResult:
+    """Operational facts verified/materialized from resolved legacy evidence."""
+
+    generated_events: int
+    print_rows: int
+    affected_vouchers: int
+
+
+def _portable_basename(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return PurePosixPath(text.replace("\\", "/")).name
+
+
+def _legacy_print_job_uuid(row: LegacyAuditRow) -> str:
+    recorded = str(row.payload.get("print_job_id", "") or "").strip()
+    if recorded:
+        return recorded
+    digest = hashlib.sha256(row.event_key.encode("utf-8")).hexdigest()[:32]
+    return f"legacy-{digest}"
+
+
+def _legacy_generate_event_uuid(row: LegacyAuditRow) -> str:
+    digest = hashlib.sha256(row.event_key.encode("utf-8")).hexdigest()
+    return f"legacy-generate-{digest}"
+
+
+def materialize_resolved_legacy_events(
+    *,
+    database: "Database",
+    materialized_at: str,
+) -> LegacyMaterializationResult:
+    """Translate only RESOLVED evidence into operational SQLite facts.
+
+    The function is idempotent and verifies existing Milestone A print jobs
+    rather than duplicating them.  Unresolved/ambiguous evidence is never
+    materialized. Print sequences are normalized after inserts so older legacy
+    prints can correctly precede already-recorded 5.0 prints.
+    """
+
+    materialized_at = str(materialized_at or "").strip()
+    if not materialized_at:
+        raise LegacyMigrationError("Timestamp materializzazione mancante")
+
+    generated_events = 0
+    print_rows = 0
+    affected_vouchers: set[int] = set()
+
+    with database.transaction() as db:
+        evidence = db.execute(
+            """SELECT * FROM legacy_audit_events
+               WHERE resolution_status='RESOLVED'
+               ORDER BY occurred_at, source_line, legacy_event_key"""
+        ).fetchall()
+
+        for item in evidence:
+            voucher_id = int(item["voucher_id"])
+            try:
+                payload = json.loads(item["payload_json"])
+            except json.JSONDecodeError as exc:
+                raise LegacyMigrationError(
+                    "Evidenza legacy SQLite non più leggibile"
+                ) from exc
+            if not isinstance(payload, dict):
+                raise LegacyMigrationError(
+                    "Evidenza legacy SQLite non valida"
+                )
+
+            row = LegacyAuditRow(
+                line_number=int(item["source_line"]),
+                event=str(item["event_type"]),
+                voucher_digest=str(item["voucher_digest"]),
+                timestamp=str(item["occurred_at"]),
+                payload=payload,
+            )
+            if row.event_key != item["legacy_event_key"]:
+                raise LegacyMigrationError(
+                    "Identità evidenza legacy SQLite incoerente"
+                )
+
+            if row.event == "generate":
+                event_uuid = _legacy_generate_event_uuid(row)
+                details = {
+                    "legacy_event_key": row.event_key,
+                    "output_file": _portable_basename(
+                        payload.get("output_file", "")
+                    ),
+                    "recipient": str(
+                        payload.get("recipient", "") or ""
+                    ),
+                    "duration_minutes": payload.get("duration_minutes"),
+                    "reprint": bool(payload.get("reprint", False)),
+                }
+                details_json = json.dumps(
+                    details,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                existing = db.execute(
+                    "SELECT * FROM voucher_events WHERE event_uuid=?",
+                    (event_uuid,),
+                ).fetchone()
+                if existing is None:
+                    db.execute(
+                        """INSERT INTO voucher_events
+                           (event_uuid, voucher_id, event_type, occurred_at,
+                            source, windows_user, details_json)
+                           VALUES (?, ?, 'LEGACY_PDF_GENERATED', ?, 'MIGRATION',
+                                   NULL, ?)""",
+                        (
+                            event_uuid,
+                            voucher_id,
+                            row.timestamp,
+                            details_json,
+                        ),
+                    )
+                else:
+                    comparable = (
+                        int(existing["voucher_id"]),
+                        existing["event_type"],
+                        existing["occurred_at"],
+                        existing["source"],
+                        existing["details_json"],
+                    )
+                    wanted = (
+                        voucher_id,
+                        "LEGACY_PDF_GENERATED",
+                        row.timestamp,
+                        "MIGRATION",
+                        details_json,
+                    )
+                    if comparable != wanted:
+                        raise LegacyMigrationError(
+                            "Evento PDF legacy già materializzato con dati diversi"
+                        )
+                generated_events += 1
+
+            elif row.event == "print":
+                job_uuid = _legacy_print_job_uuid(row)
+                output_file = _portable_basename(
+                    payload.get("output_file", "")
+                )
+                document_copies = payload.get("document_copies", 1)
+                physical_copies = payload.get("physical_copies", 1)
+                if (
+                    type(document_copies) is not int
+                    or document_copies < 1
+                    or type(physical_copies) is not int
+                    or physical_copies < 1
+                ):
+                    raise LegacyMigrationError(
+                        "Conteggio stampa legacy materializzato non valido"
+                    )
+
+                job = db.execute(
+                    "SELECT * FROM print_jobs WHERE print_job_uuid=?",
+                    (job_uuid,),
+                ).fetchone()
+                if job is None:
+                    cursor = db.execute(
+                        """INSERT INTO print_jobs
+                           (print_job_uuid, created_at, submitted_at,
+                            windows_user, output_file, document_copies, status)
+                           VALUES (?, ?, ?, 'MIGRATION', ?, ?, 'AUDITED')""",
+                        (
+                            job_uuid,
+                            row.timestamp,
+                            row.timestamp,
+                            output_file,
+                            document_copies,
+                        ),
+                    )
+                    print_job_id = int(cursor.lastrowid)
+                    print_user = "MIGRATION"
+                else:
+                    comparable = (
+                        job["submitted_at"],
+                        str(job["output_file"] or ""),
+                        int(job["document_copies"]),
+                        job["status"],
+                    )
+                    wanted = (
+                        row.timestamp,
+                        output_file,
+                        document_copies,
+                        "AUDITED",
+                    )
+                    if comparable != wanted:
+                        raise LegacyMigrationError(
+                            "Job stampa legacy già presente con dati diversi"
+                        )
+                    print_job_id = int(job["id"])
+                    print_user = str(job["windows_user"])
+
+                existing_prints = db.execute(
+                    """SELECT * FROM voucher_prints
+                       WHERE print_job_id=? AND voucher_id=?""",
+                    (print_job_id, voucher_id),
+                ).fetchall()
+                if len(existing_prints) > 1:
+                    raise LegacyMigrationError(
+                        "Più stampe SQLite per lo stesso job/voucher legacy"
+                    )
+                if existing_prints:
+                    existing_print = existing_prints[0]
+                    if (
+                        existing_print["printed_at"] != row.timestamp
+                        or int(existing_print["physical_copies"])
+                        != physical_copies
+                    ):
+                        raise LegacyMigrationError(
+                            "Stampa legacy già materializzata con dati diversi"
+                        )
+                else:
+                    previous_max = db.execute(
+                        """SELECT COALESCE(MAX(print_sequence), 0)
+                           FROM voucher_prints WHERE voucher_id=?""",
+                        (voucher_id,),
+                    ).fetchone()[0]
+                    db.execute(
+                        """INSERT INTO voucher_prints
+                           (print_job_id, voucher_id, printed_at, windows_user,
+                            physical_copies, print_sequence, is_reprint)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            print_job_id,
+                            voucher_id,
+                            row.timestamp,
+                            print_user,
+                            physical_copies,
+                            int(previous_max) + 1,
+                            int(int(previous_max) > 0),
+                        ),
+                    )
+
+                affected_vouchers.add(voucher_id)
+                print_rows += 1
+
+            else:
+                raise LegacyMigrationError(
+                    "Tipo evento legacy materializzabile non supportato"
+                )
+
+            db.execute(
+                """UPDATE legacy_audit_events
+                   SET materialized_at=COALESCE(materialized_at, ?)
+                   WHERE legacy_event_key=?""",
+                (materialized_at, row.event_key),
+            )
+
+        # Historical rows can predate print facts already recorded by 5.0.
+        # Renumber all affected vouchers after insertion so sequence 1 remains
+        # the chronologically earliest known physical print.
+        for voucher_id in sorted(affected_vouchers):
+            prints = db.execute(
+                """SELECT vp.id, vp.print_sequence, vp.printed_at,
+                          pj.print_job_uuid
+                   FROM voucher_prints AS vp
+                   JOIN print_jobs AS pj ON pj.id=vp.print_job_id
+                   WHERE vp.voucher_id=?
+                   ORDER BY vp.printed_at, pj.print_job_uuid, vp.id""",
+                (voucher_id,),
+            ).fetchall()
+            if not prints:
+                continue
+            max_sequence = max(int(row["print_sequence"]) for row in prints)
+            offset = max_sequence + len(prints) + 1
+            db.execute(
+                """UPDATE voucher_prints
+                   SET print_sequence=print_sequence+?
+                   WHERE voucher_id=?""",
+                (offset, voucher_id),
+            )
+            for sequence, print_row in enumerate(prints, start=1):
+                db.execute(
+                    """UPDATE voucher_prints
+                       SET print_sequence=?, is_reprint=?
+                       WHERE id=?""",
+                    (
+                        sequence,
+                        int(sequence > 1),
+                        int(print_row["id"]),
+                    ),
+                )
+
+    return LegacyMaterializationResult(
+        generated_events=generated_events,
+        print_rows=print_rows,
+        affected_vouchers=len(affected_vouchers),
     )
