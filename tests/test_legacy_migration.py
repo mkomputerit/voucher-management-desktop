@@ -13,6 +13,7 @@ from voucher_management.legacy_migration import (
     LegacyVoucherCandidate,
     apply_legacy_migration_plan,
     build_legacy_migration_plan,
+    materialize_resolved_legacy_events,
 )
 from voucher_management.database import Database
 
@@ -585,3 +586,285 @@ def test_duplicate_stable_event_identity_fails_closed(tmp_path):
             secret=FIXTURE_KEY,
             candidates=[],
         )
+
+
+def _plan_and_apply(
+    *,
+    db,
+    history,
+    controller_id,
+    migration_uuid="migration-materialize",
+):
+    plan = build_legacy_migration_plan(
+        history_path=history,
+        expected_fingerprint=FINGERPRINT,
+        secret=FIXTURE_KEY,
+        candidates=[
+            LegacyVoucherCandidate(
+                controller_id,
+                "legacy-voucher-1",
+                "1234567890",
+            )
+        ],
+    )
+    apply_legacy_migration_plan(
+        database=db,
+        plan=plan,
+        migration_uuid=migration_uuid,
+        applied_at="2026-09-26T10:20:00+00:00",
+    )
+    return plan
+
+
+def test_materializes_resolved_generate_event_idempotently(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "generation-1",
+                "voucher_id": _digest("12345-67890"),
+                "recipient": "Reception",
+                "duration_minutes": 120,
+                "timestamp": "2026-09-20T10:00:00+00:00",
+                "output_file": r"C:\\Old\\Voucher_Test.pdf",
+                "reprint": False,
+            }
+        ],
+    )
+    db, controller_id, voucher_id = _database_with_voucher(tmp_path)
+    try:
+        _plan_and_apply(
+            db=db,
+            history=history,
+            controller_id=controller_id,
+        )
+
+        first = materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:25:00+00:00",
+        )
+        second = materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:30:00+00:00",
+        )
+
+        assert first.generated_events == 1
+        assert second.generated_events == 1
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM voucher_events"
+        ).fetchone()[0] == 1
+        event = db.connection.execute(
+            "SELECT * FROM voucher_events"
+        ).fetchone()
+        assert event["voucher_id"] == voucher_id
+        assert event["event_type"] == "LEGACY_PDF_GENERATED"
+        details = json.loads(event["details_json"])
+        assert details["output_file"] == "Voucher_Test.pdf"
+        evidence = db.connection.execute(
+            "SELECT materialized_at FROM legacy_audit_events"
+        ).fetchone()
+        assert evidence["materialized_at"] == "2026-09-26T10:25:00+00:00"
+    finally:
+        db.close()
+
+
+def test_materializes_legacy_print_and_reorders_existing_v5_sequence(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "print",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+                "output_file": "Voucher_Legacy.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+                "print_job_id": "legacy-job-1",
+            }
+        ],
+    )
+    db, controller_id, voucher_id = _database_with_voucher(tmp_path)
+    try:
+        db.record_print_audit(
+            controller_id=controller_id,
+            audit_id="current-job-1",
+            codes=["12345-67890"],
+            output_file="Voucher_Current.pdf",
+            document_copies=1,
+            printed_at="2026-09-25T10:00:00+00:00",
+            windows_user="operator",
+        )
+        _plan_and_apply(
+            db=db,
+            history=history,
+            controller_id=controller_id,
+        )
+
+        result = materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:25:00+00:00",
+        )
+
+        assert result.print_rows == 1
+        rows = db.connection.execute(
+            """SELECT pj.print_job_uuid, vp.print_sequence, vp.is_reprint
+               FROM voucher_prints AS vp
+               JOIN print_jobs AS pj ON pj.id=vp.print_job_id
+               WHERE vp.voucher_id=?
+               ORDER BY vp.print_sequence""",
+            (voucher_id,),
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [
+            ("legacy-job-1", 1, 0),
+            ("current-job-1", 2, 1),
+        ]
+    finally:
+        db.close()
+
+
+def test_materialization_reuses_existing_milestone_a_print_job(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "print",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-25T10:00:00+00:00",
+                "output_file": "Voucher_Current.pdf",
+                "document_copies": 2,
+                "physical_copies": 2,
+                "print_job_id": "shared-audit-id",
+            }
+        ],
+    )
+    db, controller_id, _voucher_id = _database_with_voucher(tmp_path)
+    try:
+        db.record_print_audit(
+            controller_id=controller_id,
+            audit_id="shared-audit-id",
+            codes=["12345-67890"],
+            output_file="Voucher_Current.pdf",
+            document_copies=2,
+            printed_at="2026-09-25T10:00:00+00:00",
+            windows_user="operator",
+        )
+        _plan_and_apply(
+            db=db,
+            history=history,
+            controller_id=controller_id,
+        )
+
+        materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:25:00+00:00",
+        )
+
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM print_jobs"
+        ).fetchone()[0] == 1
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM voucher_prints"
+        ).fetchone()[0] == 1
+    finally:
+        db.close()
+
+
+def test_unresolved_evidence_is_never_materialized(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "print",
+                "voucher_id": _digest("99999-00000"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+                "physical_copies": 1,
+                "document_copies": 1,
+                "print_job_id": "unknown-job",
+            }
+        ],
+    )
+    db, _controller_id, _voucher_id = _database_with_voucher(tmp_path)
+    try:
+        plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[],
+        )
+        apply_legacy_migration_plan(
+            database=db,
+            plan=plan,
+            migration_uuid="migration-unresolved-materialize",
+            applied_at="2026-09-26T10:20:00+00:00",
+        )
+
+        result = materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:25:00+00:00",
+        )
+
+        assert result.print_rows == 0
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM print_jobs"
+        ).fetchone()[0] == 0
+        assert db.connection.execute(
+            "SELECT materialized_at FROM legacy_audit_events"
+        ).fetchone()[0] is None
+    finally:
+        db.close()
+
+
+def test_conflicting_existing_print_job_rolls_back_materialization(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "print",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+                "output_file": "Voucher_Legacy.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+                "print_job_id": "conflict-job",
+            }
+        ],
+    )
+    db, controller_id, _voucher_id = _database_with_voucher(tmp_path)
+    try:
+        _plan_and_apply(
+            db=db,
+            history=history,
+            controller_id=controller_id,
+        )
+        db.connection.execute(
+            """INSERT INTO print_jobs
+               (print_job_uuid, created_at, submitted_at, windows_user,
+                output_file, document_copies, status)
+               VALUES ('conflict-job', 't', 'different', 'operator',
+                       'Other.pdf', 1, 'AUDITED')"""
+        )
+        db.connection.commit()
+
+        with pytest.raises(
+            LegacyMigrationError,
+            match="Job stampa legacy già presente",
+        ):
+            materialize_resolved_legacy_events(
+                database=db,
+                materialized_at="2026-09-26T10:25:00+00:00",
+            )
+
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM voucher_prints"
+        ).fetchone()[0] == 0
+        assert db.connection.execute(
+            "SELECT materialized_at FROM legacy_audit_events"
+        ).fetchone()[0] is None
+    finally:
+        db.close()
