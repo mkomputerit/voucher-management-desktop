@@ -151,3 +151,37 @@ def test_failed_authentication_never_writes_plaintext_to_target(tmp_path: Path):
 
     assert target.write_calls == 0
     assert target.getvalue() == b""
+
+
+def test_cleanup_failure_is_logged_without_masking_authentication_error(
+    tmp_path: Path,
+    caplog,
+):
+    source = tmp_path / "source.zip"
+    encrypted = tmp_path / "backup.vmbk"
+    source.write_bytes(b"PK protected")
+    encrypt_backup_file(source, encrypted, PASSPHRASE)
+
+    class FailingCleanupTarget(io.BytesIO):
+        def truncate(self, size=None):
+            raise RuntimeError("synthetic cleanup failure")
+
+    target = FailingCleanupTarget()
+    caplog.set_level(
+        "WARNING",
+        logger="voucher_management.backup_crypto",
+    )
+
+    with pytest.raises(ProtectedBackupAuthenticationError):
+        decrypt_backup_to_file(
+            encrypted,
+            target,
+            "different password value",
+        )
+
+    assert any(
+        "protected_backup_target_cleanup_failed" in record.message
+        and "RuntimeError" in record.message
+        for record in caplog.records
+    )
+    assert all(str(tmp_path) not in record.message for record in caplog.records)
