@@ -191,20 +191,41 @@ execution, and never enables automatic startup migration.
 
 ### Milestone C — shared Windows deployment
 
-Only after the data model and migration are proven does installation move from
-per-user LocalAppData to a shared ProgramData database. This milestone owns
-installer elevation, Program Files/ProgramData placement, ACLs, UAC behavior,
-Fast User Switching and a machine-wide single-instance guard.
+Installed 5.0 deployments opt into shared storage through the installer-owned
+`voucher-management-deployment.json` marker beside the executable. Portable
+and source execution remain per-user for compatibility; the marker is therefore
+the explicit trust boundary that switches the runtime to
+`%ProgramData%\VoucherManagement`. A malformed/unsupported marker fails
+closed instead of silently falling back to another data root.
 
-The installer must create a dedicated local Windows group for Voucher
-Management operators. ProgramData is not made writable/readable to all
-authenticated users: Administrators and SYSTEM retain full control, while the
-dedicated operator group receives only the modify/read permissions required by
-the application data tree. Ordinary users outside that group receive no
-application-data access. The installer performs ACL creation while elevated;
-the application itself must not broaden ACLs at runtime. Uninstall/repair and
-upgrade tests must verify that permissions remain restrictive and that Fast
-User Switching cannot create two concurrent writers.
+The elevated Windows installer copies the reviewed onedir build under
+`%ProgramFiles%\Voucher Management`, creates the local
+`Voucher Management Operators` group, adds the selected operator and applies
+ProgramData ACLs by SID: SYSTEM and BUILTIN\Administrators receive Full
+Control, while the dedicated operator group receives inherited Modify rights.
+Inheritance from broader ProgramData ACLs is removed. Ordinary users outside
+that group therefore receive no application-data grant from Voucher Management.
+The runtime never broadens ACLs itself.
+
+The lifetime application guard lives directly below the active data root rather
+than inside `data/`. In installed mode this means every authorized Windows
+session locks the same ProgramData file, so Fast User Switching cannot create
+two concurrent application writers. Keeping the guard outside managed backup
+directories also prevents restore from trying to replace an open lock file.
+
+Migration from the current user's old LocalAppData tree is explicit, never
+automatic. It is offered only in shared mode and only while the ProgramData
+archive is still operationally pristine. The source tree is held against both
+old and new instance-lock locations, its history lock is held while snapshotting,
+and the transfer is performed through an authenticated encrypted `.vmbk`
+backup. The shared SQLite handle is closed before restore; the existing
+WAL-safe restore path supplies rollback. The original per-user tree is left
+unchanged and the application restarts after a successful migration.
+
+The installer does not auto-launch after adding a user to the local operator
+group because Windows group membership is reflected in a newly created logon
+token. A newly added operator may therefore need to sign out and sign in before
+the first shared-data launch.
 
 ### Milestone A.1 — per-user single-instance gate
 
