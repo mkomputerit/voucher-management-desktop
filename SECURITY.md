@@ -91,8 +91,9 @@ The 5.0 deployment model therefore requires these compensating controls:
 
 - voucher codes never enter ordinary diagnostic logs or filenames;
 - controller API keys, passwords and authentication tokens never enter SQLite;
-- backups containing the SQLite database are sensitive and password-protected
-  backup remains the recommended transport/storage form;
+- backups containing the SQLite database are sensitive; the normal 5.0 backup
+  path is password-protected and encrypted, while plaintext backup remains only
+  a legacy-compatibility/import concern rather than a recommended choice;
 - when shared ProgramData deployment is introduced, installer ACLs must grant
   database access only to the Windows principals intended to operate Voucher
   Management, rather than making the database broadly readable;
@@ -143,7 +144,7 @@ Backups contain application-managed settings, audit data, the portable history
 key, generated PDFs and custom logos. They can therefore contain recipient
 labels and voucher codes in the generated PDFs.
 
-Voucher Management can create an optional password-protected `.vmbk` container.
+Voucher Management 5.0 uses the password-protected `.vmbk` container as its normal backup format.
 The logical ZIP snapshot is streamed directly into AES-256-GCM rather than
 being written to a plaintext intermediate archive. The 256-bit AES key is derived
 from the operator password with Scrypt (random 16-byte salt, N=131072, r=8,
@@ -151,9 +152,10 @@ p=1). The container header is authenticated as additional data. A wrong
 password or modified encrypted file fails authentication before restore staging
 or rollback creation begins. The password is never persisted.
 
-Unencrypted ZIP backups remain supported for backward compatibility and
-explicit operator choice; they must still be protected as sensitive operational
-data. Encrypted backup validation and restore decrypt into an OS-managed
+Unencrypted ZIP backups remain readable for backward compatibility. They are
+not the normal 5.0 backup output because the SQLite database contains reusable
+voucher codes in clear text; any legacy plaintext archive must still be treated
+as sensitive operational data. Encrypted backup validation and restore decrypt into an OS-managed
 anonymous/auto-delete seekable temporary file because ZIP validation needs
 random access; no named decrypted ZIP is created below the application-data
 tree. Authentication/validation complete before live application data or the
