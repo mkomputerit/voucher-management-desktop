@@ -109,20 +109,41 @@ new fingerprint.
 
 ## Installation and removal
 
-The current Windows distribution is portable:
+The Windows build supports two deployment modes.
 
-1. extract the complete release folder;
-2. run `VoucherManagement.exe`;
-3. keep all files in the extracted program folder together.
+**Portable mode** keeps application data under the current Windows user's local
+application-data profile. Extract the complete build folder and run
+`VoucherManagement.exe`; no shared-machine permissions are changed.
 
-To remove the portable application, close Voucher Management and delete the
-extracted program folder.
+**Installed shared mode** is intended for one workstation used by multiple
+authorized Windows accounts. From an elevated PowerShell prompt in the extracted
+build folder, run:
 
-Persistent user data is intentionally separate from the executable under the
-user application-data profile. Removing the portable program folder does not
-delete settings, audit history, generated PDFs or custom logos. Users who also
-want to remove their local data can delete the Voucher Management application
-data directory after making any desired backup.
+```powershell
+.\Install-VoucherManagement.ps1
+```
+
+The installer copies the application to `Program Files\Voucher Management`,
+creates the local `Voucher Management Operators` group, authorizes the
+interactive Windows user, creates `ProgramData\VoucherManagement` with
+restrictive ACLs, writes the shared-deployment marker and creates a Start Menu
+shortcut. If the user was newly added to the group, sign out and sign in again
+before the first launch.
+
+Installed mode uses one shared SQLite database and one machine-wide application
+guard across Fast User Switching sessions. Existing per-user data is not
+silently copied. Before the shared archive is used operationally, Settings
+offers an explicit migration that creates and verifies an encrypted safety
+backup, transfers the old LocalAppData tree through the normal restore path and
+leaves the original per-user data unchanged.
+
+To remove the installed program while preserving shared data, run the bundled
+`Uninstall-VoucherManagement.ps1` from an elevated PowerShell prompt. Pass
+`-RemoveData` only when the shared ProgramData archive and local operator group
+should also be deleted.
+
+Removing a portable folder or the installed program does not by itself delete
+retained application data.
 
 Generated PDFs are archived below `Print/YYYY/MM`. Retention is disabled by
 default (`0`) so an upgrade never removes an existing PDF unless the operator
