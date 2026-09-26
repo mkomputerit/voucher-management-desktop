@@ -12,7 +12,10 @@ import hmac
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from .database import Database
 
 
 class LegacyMigrationError(RuntimeError):
@@ -34,13 +37,34 @@ class LegacyVoucherCandidate:
 
 @dataclass(frozen=True)
 class LegacyAuditRow:
-    """Validated legacy row plus its original line identity."""
+    """Validated legacy row plus its stable migration identity."""
 
     line_number: int
     event: str
     voucher_digest: str
     timestamp: str
     payload: Mapping[str, object]
+
+    @property
+    def event_key(self) -> str:
+        event_id = str(self.payload.get("event_id", "") or "").strip()
+        if self.event == "generate" and event_id:
+            return f"generate:{event_id}"
+
+        print_job_id = str(
+            self.payload.get("print_job_id", "") or ""
+        ).strip()
+        if self.event == "print" and print_job_id:
+            return f"print:{print_job_id}:{self.voucher_digest}"
+
+        canonical = json.dumps(
+            dict(self.payload),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return f"legacy:{self.line_number}:{digest}"
 
 
 @dataclass(frozen=True)
@@ -72,6 +96,7 @@ class LegacyMigrationPlan:
     """Immutable dry-run result used as the boundary before migration writes."""
 
     history_fingerprint: str
+    source_history_sha256: str
     resolved: tuple[ResolvedLegacyRow, ...]
     ambiguous: tuple[AmbiguousLegacyRow, ...]
     unresolved: tuple[UnresolvedLegacyRow, ...]
@@ -117,19 +142,22 @@ def _candidate_spellings(code: str) -> tuple[str, ...]:
     return tuple(spellings)
 
 
-def _validated_history_rows(history_path: Path) -> tuple[LegacyAuditRow, ...]:
-    """Parse the complete legacy file or fail on the first unsafe row."""
+def _validated_history_rows(
+    history_path: Path,
+) -> tuple[tuple[LegacyAuditRow, ...], str]:
+    """Parse one immutable file snapshot or fail on the first unsafe row."""
 
     history_path = Path(history_path)
     if not history_path.exists():
-        return ()
+        return (), hashlib.sha256(b"").hexdigest()
     if not history_path.is_file():
         raise LegacyMigrationError("Cronologia legacy non leggibile")
 
     rows: list[LegacyAuditRow] = []
     try:
-        with history_path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
+        raw = history_path.read_bytes()
+        text = raw.decode("utf-8")
+        for line_number, line in enumerate(text.splitlines(), start=1):
                 if not line.strip():
                     continue
                 try:
@@ -186,7 +214,7 @@ def _validated_history_rows(history_path: Path) -> tuple[LegacyAuditRow, ...]:
             "Cronologia legacy non leggibile"
         ) from exc
 
-    return tuple(rows)
+    return tuple(rows), hashlib.sha256(raw).hexdigest()
 
 
 def build_legacy_migration_plan(
@@ -232,7 +260,8 @@ def build_legacy_migration_plan(
     ambiguous: list[AmbiguousLegacyRow] = []
     unresolved: list[UnresolvedLegacyRow] = []
 
-    for row in _validated_history_rows(history_path):
+    rows, source_history_sha256 = _validated_history_rows(history_path)
+    for row in rows:
         matches = tuple(
             sorted(
                 by_digest.get(row.voucher_digest, {}).values(),
@@ -252,7 +281,225 @@ def build_legacy_migration_plan(
 
     return LegacyMigrationPlan(
         history_fingerprint=expected,
+        source_history_sha256=source_history_sha256,
         resolved=tuple(resolved),
         ambiguous=tuple(ambiguous),
         unresolved=tuple(unresolved),
+    )
+
+
+@dataclass(frozen=True)
+class LegacyMigrationApplyResult:
+    """Result of one atomic evidence-persistence transaction."""
+
+    migration_uuid: str
+    total_rows: int
+    resolved_rows: int
+    ambiguous_rows: int
+    unresolved_rows: int
+    already_applied: bool = False
+
+
+def _canonical_code(value: str) -> str:
+    return str(value or "").strip().replace("-", "")
+
+
+def apply_legacy_migration_plan(
+    *,
+    database: "Database",
+    plan: LegacyMigrationPlan,
+    migration_uuid: str,
+    applied_at: str,
+) -> LegacyMigrationApplyResult:
+    """Persist a verified plan atomically without materializing print facts yet.
+
+    This phase preserves original legacy evidence in SQLite. Resolved rows gain
+    a foreign-key link only after the planned controller/unifi identity and code
+    are revalidated against the current database inside the same transaction.
+    """
+
+    migration_uuid = str(migration_uuid or "").strip()
+    applied_at = str(applied_at or "").strip()
+    if not migration_uuid or not applied_at:
+        raise LegacyMigrationError("Identificativo/timestamp migrazione mancante")
+
+    counts = (
+        plan.total_rows,
+        len(plan.resolved),
+        len(plan.ambiguous),
+        len(plan.unresolved),
+    )
+
+    with database.transaction() as db:
+        existing_run = db.execute(
+            """SELECT * FROM migration_runs WHERE migration_uuid=?""",
+            (migration_uuid,),
+        ).fetchone()
+        if existing_run is not None:
+            expected = (
+                plan.source_history_sha256,
+                "COMPLETED",
+                *counts,
+            )
+            actual = (
+                existing_run["source_history_sha256"],
+                existing_run["status"],
+                existing_run["total_rows"],
+                existing_run["resolved_rows"],
+                existing_run["ambiguous_rows"],
+                existing_run["unresolved_rows"],
+            )
+            if actual != expected:
+                raise LegacyMigrationError(
+                    "Identificativo migrazione già usato con dati diversi"
+                )
+            return LegacyMigrationApplyResult(
+                migration_uuid=migration_uuid,
+                total_rows=counts[0],
+                resolved_rows=counts[1],
+                ambiguous_rows=counts[2],
+                unresolved_rows=counts[3],
+                already_applied=True,
+            )
+
+        db.execute(
+            """INSERT INTO migration_runs
+               (migration_uuid, source_kind, source_history_sha256,
+                started_at, status, total_rows, resolved_rows,
+                ambiguous_rows, unresolved_rows)
+               VALUES (?, 'LEGACY_4X_HISTORY', ?, ?, 'STARTED', ?, ?, ?, ?)""",
+            (
+                migration_uuid,
+                plan.source_history_sha256,
+                applied_at,
+                *counts,
+            ),
+        )
+
+        resolutions: list[
+            tuple[LegacyAuditRow, str, int | None]
+        ] = []
+
+        for item in plan.resolved:
+            rows = db.execute(
+                """SELECT id, code FROM vouchers
+                   WHERE controller_id=? AND unifi_id=?""",
+                (
+                    item.candidate.controller_id,
+                    item.candidate.unifi_id,
+                ),
+            ).fetchall()
+            if len(rows) != 1:
+                raise LegacyMigrationError(
+                    "Voucher risolto non più presente univocamente in SQLite"
+                )
+            voucher_row = rows[0]
+            if _canonical_code(voucher_row["code"]) != _canonical_code(
+                item.candidate.code
+            ):
+                raise LegacyMigrationError(
+                    "Codice voucher cambiato dopo la pianificazione"
+                )
+            resolutions.append(
+                (item.row, "RESOLVED", int(voucher_row["id"]))
+            )
+
+        resolutions.extend(
+            (item.row, "AMBIGUOUS", None)
+            for item in plan.ambiguous
+        )
+        resolutions.extend(
+            (item.row, "UNRESOLVED", None)
+            for item in plan.unresolved
+        )
+
+        for row, status, voucher_id in resolutions:
+            payload_json = json.dumps(
+                dict(row.payload),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            existing = db.execute(
+                """SELECT * FROM legacy_audit_events
+                   WHERE legacy_event_key=?""",
+                (row.event_key,),
+            ).fetchone()
+            if existing is None:
+                db.execute(
+                    """INSERT INTO legacy_audit_events
+                       (legacy_event_key, source_line, voucher_digest,
+                        event_type, occurred_at, payload_json,
+                        resolution_status, voucher_id,
+                        first_migration_uuid, last_migration_uuid)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        row.event_key,
+                        row.line_number,
+                        row.voucher_digest,
+                        row.event,
+                        row.timestamp,
+                        payload_json,
+                        status,
+                        voucher_id,
+                        migration_uuid,
+                        migration_uuid,
+                    ),
+                )
+                continue
+
+            immutable = (
+                existing["voucher_digest"],
+                existing["event_type"],
+                existing["occurred_at"],
+                existing["payload_json"],
+            )
+            wanted = (
+                row.voucher_digest,
+                row.event,
+                row.timestamp,
+                payload_json,
+            )
+            if immutable != wanted:
+                raise LegacyMigrationError(
+                    "Evento legacy già noto con contenuto differente"
+                )
+
+            previous_status = existing["resolution_status"]
+            previous_voucher = existing["voucher_id"]
+            if previous_status == "RESOLVED":
+                if status != "RESOLVED" or previous_voucher != voucher_id:
+                    raise LegacyMigrationError(
+                        "Una risoluzione legacy esistente non può regredire"
+                    )
+            elif status == "RESOLVED":
+                db.execute(
+                    """UPDATE legacy_audit_events
+                       SET resolution_status='RESOLVED', voucher_id=?,
+                           last_migration_uuid=?
+                       WHERE legacy_event_key=?""",
+                    (voucher_id, migration_uuid, row.event_key),
+                )
+            else:
+                db.execute(
+                    """UPDATE legacy_audit_events
+                       SET resolution_status=?, voucher_id=NULL,
+                           last_migration_uuid=?
+                       WHERE legacy_event_key=?""",
+                    (status, migration_uuid, row.event_key),
+                )
+
+        db.execute(
+            """UPDATE migration_runs
+               SET completed_at=?, status='COMPLETED'
+               WHERE migration_uuid=?""",
+            (applied_at, migration_uuid),
+        )
+
+    return LegacyMigrationApplyResult(
+        migration_uuid=migration_uuid,
+        total_rows=counts[0],
+        resolved_rows=counts[1],
+        ambiguous_rows=counts[2],
+        unresolved_rows=counts[3],
     )
