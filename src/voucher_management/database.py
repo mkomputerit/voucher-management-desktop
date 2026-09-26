@@ -278,6 +278,16 @@ class Database:
             )
             return int(cursor.lastrowid)
 
+    def find_controller_by_api_root(self, api_root: str) -> int | None:
+        """Return the active controller matching an API root, if already known."""
+
+        row = self.connection.execute(
+            """SELECT id FROM controllers
+               WHERE api_root=? AND is_active=1 ORDER BY id LIMIT 1""",
+            (api_root.strip(),),
+        ).fetchone()
+        return None if row is None else int(row["id"])
+
     def get_or_create_controller(
         self, *, name: str, api_root: str, observed_at: str,
         cert_sha256: str = "",
