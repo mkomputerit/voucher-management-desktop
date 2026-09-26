@@ -2,6 +2,7 @@ import multiprocessing
 
 import pytest
 
+from voucher_management.paths import AppPaths
 from voucher_management.single_instance import (
     InstanceAlreadyRunning,
     SingleInstanceGuard,
@@ -62,3 +63,35 @@ def test_guard_can_be_reacquired_after_owner_crash(tmp_path):
 
     with SingleInstanceGuard(path):
         assert path.exists()
+
+
+def test_shared_programdata_guard_is_common_across_windows_profiles(
+    tmp_path,
+    monkeypatch,
+):
+    shared = tmp_path / "ProgramData" / "VoucherManagement"
+    program = tmp_path / "ProgramFiles" / "VoucherManagement"
+    program.mkdir(parents=True)
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "user-a"))
+    first_paths = AppPaths(
+        base_override=program,
+        shared_root_override=shared,
+    )
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "user-b"))
+    second_paths = AppPaths(
+        base_override=program,
+        shared_root_override=shared,
+    )
+
+    assert first_paths.per_user_root != second_paths.per_user_root
+    assert first_paths.instance_lock == second_paths.instance_lock
+
+    first = SingleInstanceGuard(first_paths.instance_lock)
+    first.acquire()
+    try:
+        with pytest.raises(InstanceAlreadyRunning):
+            SingleInstanceGuard(second_paths.instance_lock).acquire()
+    finally:
+        first.release()
