@@ -553,3 +553,35 @@ def test_stale_resolved_plan_rolls_back_all_evidence_writes(tmp_path):
         )
     finally:
         db.close()
+
+
+def test_duplicate_stable_event_identity_fails_closed(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "duplicate-event",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            },
+            {
+                "event": "generate",
+                "event_id": "duplicate-event",
+                "voucher_id": _digest("99999-00000"),
+                "timestamp": "2026-09-20T11:00:00+00:00",
+            },
+        ],
+    )
+
+    with pytest.raises(
+        LegacyMigrationError,
+        match="Identità evento legacy duplicata",
+    ):
+        build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[],
+        )
