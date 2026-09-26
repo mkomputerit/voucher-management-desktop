@@ -24,6 +24,12 @@ from .legacy_migration import (
     execute_legacy_migration,
     legacy_candidates_from_database,
 )
+from .shared_data_migration import (
+    SharedDataMigrationError,
+    execute_shared_data_migration,
+    shared_target_is_pristine,
+    source_has_migratable_data,
+)
 from .utils import format_fingerprint
 
 
@@ -596,6 +602,175 @@ class DataMaintenanceMixin:
             planning_failed,
             busy_scope=self._dialog_busy_scope(parent),
         )
+
+    def migrate_per_user_data_to_shared(self, *, parent=None) -> None:
+        """Move this Windows user's previous data into shared ProgramData.
+
+        The operation is available only in installer-controlled shared mode.
+        It never merges over an already-used shared archive: the target must
+        still contain only bootstrap schema/history-identity artifacts.
+        """
+
+        parent = parent or self
+        if not getattr(self.paths, "shared_mode", False):
+            messagebox.showinfo(
+                "Archivio condiviso",
+                "Questa installazione utilizza ancora dati per utente.",
+                parent=parent,
+            )
+            return
+
+        source_root = Path(self.paths.per_user_root)
+        if not source_has_migratable_data(source_root):
+            messagebox.showinfo(
+                "Migrazione dati utente",
+                "Non risultano dati precedenti nel profilo Windows corrente.",
+                parent=parent,
+            )
+            return
+
+        try:
+            pristine = shared_target_is_pristine(self.database, self.paths)
+        except Exception as exc:
+            self.logger.warning(
+                "shared_migration_preflight_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Migrazione dati utente",
+                "Impossibile verificare in sicurezza l'archivio condiviso.",
+                parent=parent,
+            )
+            return
+
+        if not pristine:
+            messagebox.showerror(
+                "Migrazione dati utente",
+                "L'archivio condiviso contiene già dati operativi. "
+                "Per evitare sovrascritture, la migrazione del profilo utente "
+                "non può essere eseguita su questa installazione.",
+                parent=parent,
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Migrazione dati utente",
+            "Sono stati trovati dati della precedente installazione nel "
+            "profilo Windows corrente. Verranno trasferiti nell'archivio "
+            "condiviso di questo PC tramite un backup cifrato e verificato.\n\n"
+            "La copia originale nel profilo utente non verrà modificata. "
+            "Al termine Voucher Management verrà chiuso.\n\n"
+            "Procedere?",
+            parent=parent,
+        ):
+            return
+
+        password = ask_password(
+            parent,
+            title="Backup pre-migrazione",
+            prompt=(
+                "Inserire una password di almeno 12 caratteri per il backup "
+                "di sicurezza dei dati precedenti."
+            ),
+            confirm=True,
+        )
+        if password is None:
+            return
+
+        default = (
+            "VoucherManagement-user-migration-"
+            f"{datetime.now().strftime('%Y%m%d-%H%M')}.vmbk"
+        )
+        target = filedialog.asksaveasfilename(
+            parent=parent,
+            title="Backup dei dati utente precedenti",
+            defaultextension=".vmbk",
+            initialfile=default,
+            filetypes=[
+                ("Backup cifrato Voucher Management", "*.vmbk"),
+            ],
+        )
+        if not target:
+            return
+
+        try:
+            # The target database must be released before BackupService.restore
+            # replaces ProgramData/data on Windows.
+            DataMaintenanceMixin._close_database_for_restore(self)
+        except Exception as exc:
+            self.logger.error(
+                "database_close_before_shared_migration_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Migrazione dati utente",
+                "Impossibile chiudere il database condiviso prima della migrazione.",
+                parent=parent,
+            )
+            return
+
+        def completed(result) -> None:
+            messagebox.showinfo(
+                "Migrazione completata",
+                "I dati del profilo Windows sono stati trasferiti "
+                "nell'archivio condiviso.\n\n"
+                f"Backup sorgente verificato:\n{result.backup_path}\n\n"
+                f"Rollback del precedente ProgramData:\n"
+                f"{result.rollback_path}\n\n"
+                "La copia originale nel profilo utente è rimasta invariata. "
+                "Riavviare Voucher Management.",
+                parent=parent,
+            )
+            self.destroy()
+
+        def failed(exc: Exception) -> None:
+            try:
+                DataMaintenanceMixin._reopen_database_after_failed_restore(self)
+            except Exception as reopen_exc:
+                self.logger.error(
+                    "database_reopen_after_shared_migration_failed type=%s",
+                    type(reopen_exc).__name__,
+                )
+                messagebox.showerror(
+                    "Migrazione dati utente",
+                    "La migrazione non è riuscita e il database condiviso non "
+                    "può essere riaperto in sicurezza. Chiudere e riavviare "
+                    "Voucher Management.",
+                    parent=parent,
+                )
+                return
+
+            detail = (
+                str(exc)
+                if isinstance(exc, SharedDataMigrationError)
+                else "Migrazione dei dati utente non riuscita."
+            )
+            messagebox.showerror(
+                "Migrazione dati utente",
+                detail,
+                parent=parent,
+            )
+
+        started = self._run_background_task(
+            "Migrazione dati utente…",
+            lambda: execute_shared_data_migration(
+                source_root=source_root,
+                target_paths=self.paths,
+                backup_destination=Path(target),
+                backup_password=password,
+            ),
+            completed,
+            failed,
+            busy_scope=self._dialog_busy_scope(parent),
+        )
+        if not started:
+            try:
+                DataMaintenanceMixin._reopen_database_after_failed_restore(self)
+            except Exception as exc:
+                self.logger.error(
+                    "database_reopen_after_shared_migration_cancelled type=%s",
+                    type(exc).__name__,
+                )
 
     def create_backup(self, *, parent=None) -> None:
         parent = parent or self
