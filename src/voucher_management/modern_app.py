@@ -23,6 +23,7 @@ from .identity import (
 from .logo_validation import LogoValidationError, validate_logo_image
 from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
+from .report_ui import ReportDialog
 from .utils import format_fingerprint
 from .data_maintenance_ui import DataMaintenanceMixin
 from .controller_connection_ui import ControllerConnectionMixin
@@ -649,6 +650,12 @@ class ModernVoucherApp(DataMaintenanceMixin, ControllerConnectionMixin, VoucherD
             command=self.open_existing_pdf,
         )
         self.open_pdf_button.pack(side="left")
+        self.report_button = ttk.Button(
+            actions,
+            text="Report",
+            command=lambda: ReportDialog(self),
+        )
+        self.report_button.pack(side="left", padx=(8, 0))
         self.delete_button = ttk.Button(
             actions,
             text="Elimina",
@@ -707,6 +714,7 @@ class ModernVoucherApp(DataMaintenanceMixin, ControllerConnectionMixin, VoucherD
             self.delete_button,
             self.print_button,
             self.open_pdf_button,
+            self.report_button,
         ):
             widget.state(state)
 
