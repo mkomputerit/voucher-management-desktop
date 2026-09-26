@@ -89,9 +89,11 @@ class AppPaths:
         self.assets = self.base / "assets"
         self.history = self.data / "history.jsonl"
         self.history_lock = self.data / "history.lock"
-        # In shared mode this path is common to all Windows sessions, so the
-        # existing OS file lock becomes machine-wide across Fast User Switching.
-        self.instance_lock = self.data / "application.instance.lock"
+        # Keep the lifetime guard outside config/data/Print/Loghi because
+        # backup restore replaces those managed directories. In shared mode
+        # this root is ProgramData, so the same OS file lock is visible across
+        # Fast User Switching sessions.
+        self.instance_lock = self.user_root / "application.instance.lock"
         self.pending_create = self.data / "pending_create_guard"
         self.database = self.data / "voucher_management.db"
         self.settings = self.config / "settings.json"
