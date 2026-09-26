@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Iterable
 
@@ -112,6 +113,38 @@ def _operators(value: object) -> tuple[str, ...]:
     return tuple(sorted(values, key=str.casefold))
 
 
+def _parse_time(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _expired_at_report_time(
+    *,
+    persisted_expired: bool,
+    expires_at: object,
+    generated_at: str,
+) -> bool:
+    if persisted_expired:
+        return True
+    expiry = _parse_time(expires_at)
+    report_time = _parse_time(generated_at)
+    if expiry is None or report_time is None:
+        return False
+    if expiry.tzinfo is None and report_time.tzinfo is not None:
+        expiry = expiry.replace(tzinfo=report_time.tzinfo)
+    if report_time.tzinfo is None and expiry.tzinfo is not None:
+        report_time = report_time.replace(tzinfo=expiry.tzinfo)
+    try:
+        return expiry <= report_time
+    except TypeError:
+        return False
+
+
 def _status(*, expired: bool, uses: int, print_jobs: int) -> str:
     if expired:
         return "Scaduto"
@@ -195,6 +228,11 @@ def build_report_dataset(
 
         print_jobs = int(raw["print_jobs"] or 0)
         uses = int(raw["authorized_guest_count"] or 0)
+        expired = _expired_at_report_time(
+            persisted_expired=bool(raw["expired"]),
+            expires_at=raw["expires_at"],
+            generated_at=generated_at,
+        )
         assigned_to = str(raw["assigned_to"] or "").strip()
         recipient = assigned_to or str(raw["name"] or "").strip()
         row = ReportRow(
@@ -214,10 +252,10 @@ def build_report_dataset(
             first_printed_at=str(raw["first_printed_at"] or ""),
             last_printed_at=str(raw["last_printed_at"] or ""),
             print_operators=_operators(raw["print_operators"]),
-            expired=bool(raw["expired"]),
+            expired=expired,
             present_on_controller=bool(raw["present_on_controller"]),
             status=_status(
-                expired=bool(raw["expired"]),
+                expired=expired,
                 uses=uses,
                 print_jobs=print_jobs,
             ),
