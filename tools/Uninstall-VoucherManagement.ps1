@@ -3,7 +3,8 @@ param(
     [string]$InstallRoot = (Join-Path $env:ProgramFiles "Voucher Management"),
     [string]$DataRoot = (Join-Path $env:ProgramData "VoucherManagement"),
     [string]$OperatorGroup = "Voucher Management Operators",
-    [switch]$RemoveData
+    [switch]$RemoveData,
+    [switch]$SkipShortcut
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,9 +15,11 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     throw "La disinstallazione richiede privilegi di amministratore."
 }
 
-$shortcutPath = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Voucher Management.lnk"
-if (Test-Path -LiteralPath $shortcutPath) {
-    Remove-Item -LiteralPath $shortcutPath -Force
+if (-not $SkipShortcut) {
+    $shortcutPath = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Voucher Management.lnk"
+    if (Test-Path -LiteralPath $shortcutPath) {
+        Remove-Item -LiteralPath $shortcutPath -Force
+    }
 }
 $running = Get-Process -Name "VoucherManagement" -ErrorAction SilentlyContinue
 if ($running) {
