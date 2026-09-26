@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from tkinter import messagebox
+
+from .sync_store import persist_successful_snapshot
 
 from .unifi_api import (
     UniFiApiError,
@@ -202,8 +205,25 @@ class ControllerConnectionMixin:
         info: dict,
         vouchers,
     ) -> None:
+        snapshot = list(vouchers)
+        observed_at = datetime.now(timezone.utc).isoformat()
+        controller_id = self.database.get_or_create_controller(
+            name=str(info.get("siteName") or "Controller UniFi"),
+            api_root=client.base_url,
+            observed_at=observed_at,
+            cert_sha256=client.trusted_cert_sha256 or "",
+        )
+        # Connection success includes a complete list_vouchers() snapshot, so
+        # it is safe to persist absence as well as current voucher facts.
+        persist_successful_snapshot(
+            self.database,
+            controller_id=controller_id,
+            vouchers=snapshot,
+            observed_at=observed_at,
+        )
+        self.active_controller_id = controller_id
         self.client = client
-        self.vouchers = list(vouchers)
+        self.vouchers = snapshot
         self.api_root_var.set(client.base_url)
         self.settings = self.settings_store.update(
             controller_api_root=client.base_url,
