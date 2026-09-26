@@ -240,6 +240,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self.count_var = tk.StringVar(value="0 voucher")
         self.action_var = tk.StringVar(value="PREPARA STAMPA")
         self._build_ui()
+        self._populate_initial_snapshot()
         if logo_warning:
             messagebox.showwarning(
                 "Logo rimosso",
@@ -264,6 +265,16 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 "l'elenco prima di creare altri voucher.",
                 parent=self,
             )
+
+    def _populate_initial_snapshot(self) -> None:
+        """Render the already-loaded SQLite snapshot on first UI display.
+
+        The local snapshot is loaded before widgets are created. Populate only
+        after _build_ui() so offline startup immediately shows durable vouchers
+        instead of waiting for an operator refresh/filter action.
+        """
+
+        self.populate()
 
     def _release_instance_guard(self, event) -> None:
         """Release ownership only when the root Tk window is destroyed."""
