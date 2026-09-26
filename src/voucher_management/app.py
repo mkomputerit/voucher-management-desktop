@@ -96,7 +96,17 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self.title(f"{PRODUCT_NAME} {__version__}")
         self.minsize(1120, 650)
         self.geometry("1420x780")
-        self.paths = AppPaths()
+        try:
+            self.paths = AppPaths()
+        except Exception as exc:
+            messagebox.showerror(
+                "Avvio impossibile",
+                "Configurazione dell'installazione non valida.\n\n"
+                f"{exc}",
+                parent=self,
+            )
+            self.destroy()
+            return
         self.instance_guard = SingleInstanceGuard(self.paths.instance_lock)
         try:
             self.instance_guard.acquire()
