@@ -109,7 +109,8 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
     headers.extend(
         [
             "Destinatario",
-            "Creazione",
+            "Creazione controller",
+            "Prima acquisizione",
             "Scadenza",
             "Utilizzi",
             "Stampe",
@@ -129,7 +130,8 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
     values.extend(
         [
             row.recipient or "—",
-            _display_time(row.created_at or row.imported_at),
+            _display_time(row.created_at),
+            _display_time(row.imported_at),
             _display_time(row.expires_at),
             str(row.authorized_guest_count),
             str(row.print_jobs),
@@ -331,9 +333,9 @@ def render_report_pdf(
         else:
             usable = page_width - 20 * mm
             if dataset.code_exposed:
-                weights = [1.0, 1.0, 1.6, 1.05, 1.05, 0.55, 0.55, 0.55, 0.6, 1.2, 0.8]
+                weights = [0.9, 0.9, 1.45, 0.9, 0.9, 0.9, 0.48, 0.48, 0.48, 0.52, 1.0, 0.72]
             else:
-                weights = [1.0, 1.65, 1.05, 1.05, 0.55, 0.55, 0.55, 0.6, 1.2, 0.8]
+                weights = [0.9, 1.5, 0.9, 0.9, 0.9, 0.48, 0.48, 0.48, 0.52, 1.0, 0.72]
             scale = usable / sum(weights)
             detail_table = Table(
                 rows,
