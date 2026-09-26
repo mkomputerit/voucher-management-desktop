@@ -7,6 +7,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 import tempfile
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -27,6 +28,12 @@ from .pdf_fonts import (
     validate_pdf_text_support,
 )
 from .reporting import ReportDataset
+
+
+def _paragraph(value: object, style: ParagraphStyle) -> Paragraph:
+    """Render untrusted/operator text as literal ReportLab paragraph content."""
+
+    return Paragraph(escape(str(value or "—")), style)
 
 
 def _display_time(value: str) -> str:
@@ -219,18 +226,17 @@ def render_report_pdf(
         story = []
         if installation_name.strip():
             story.append(
-                Paragraph(
+                _paragraph(
                     installation_name.strip(),
                     subtitle_style,
                 )
             )
-        story.append(Paragraph(dataset.title, title_style))
+        story.append(_paragraph(dataset.title, title_style))
         story.append(
-            Paragraph(
+            _paragraph(
                 (
                     f"Generato: {_display_time(dataset.generated_at)}"
-                    f" &nbsp;&nbsp;|&nbsp;&nbsp; "
-                    f"Ambito: {dataset.controller_label}"
+                    f"  |  Ambito: {dataset.controller_label}"
                 ),
                 subtitle_style,
             )
@@ -239,8 +245,8 @@ def render_report_pdf(
 
         summary = [
             [
-                Paragraph(label, small),
-                Paragraph(value, small),
+                _paragraph(label, small),
+                _paragraph(value, small),
             ]
             for label, value in _summary_rows(dataset)
         ]
@@ -268,19 +274,19 @@ def render_report_pdf(
 
         headers = _detail_headers(dataset)
         rows = [
-            [Paragraph(value, small) for value in headers]
+            [_paragraph(value, small) for value in headers]
         ]
         for row in dataset.rows:
             rows.append(
                 [
-                    Paragraph(str(value or "—"), small)
+                    _paragraph(value, small)
                     for value in _detail_row(dataset, row)
                 ]
             )
 
         if len(rows) == 1:
             story.append(
-                Paragraph(
+                _paragraph(
                     "Nessun voucher corrisponde ai criteri del report.",
                     regular,
                 )
@@ -317,7 +323,7 @@ def render_report_pdf(
 
         story.append(Spacer(1, 4 * mm))
         story.append(
-            Paragraph(
+            _paragraph(
                 "Nota: il numero di utilizzi è il totale osservato dal controller. "
                 "Non rappresenta l'ora esatta in cui un ospite ha utilizzato il voucher.",
                 small,
