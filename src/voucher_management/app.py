@@ -155,16 +155,10 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         # Keep the UI copy synchronized so later saves cannot erase it.
         self.settings = self.settings_store.load()
 
+        # Recovery is delayed until the SQLite controller snapshot is loaded.
+        # A submitted print marker must not be cleared after repairing only the
+        # HMAC history, otherwise a crash could permanently omit the 5.0 audit.
         pending_print_recovery_error = None
-        try:
-            if self.history.recover_pending_print_audit():
-                self.logger.info("pending_print_audit_recovered")
-        except HistoryError as exc:
-            pending_print_recovery_error = str(exc)
-            self.logger.warning(
-                "pending_print_audit_recovery_failed type=%s",
-                type(exc).__name__,
-            )
 
         self._cleanup_print_archive()
         if settings_warning:
@@ -189,6 +183,35 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             if self.active_controller_id is not None
             else []
         )
+
+        try:
+            pending_state = self.history.pending_print_state()
+            if pending_state == "submitted":
+                if self.history.recover_pending_print_audit(
+                    clear_pending=False
+                ):
+                    self._record_pending_print_sqlite_and_finalize()
+                    self.logger.info("pending_print_audit_recovered")
+            elif pending_state == "prepared":
+                # Preserve the existing fail-closed behavior: only an operator
+                # may decide whether an interrupted Windows submission printed.
+                self.history.recover_pending_print_audit()
+        except HistoryError as exc:
+            pending_print_recovery_error = str(exc)
+            self.logger.warning(
+                "pending_print_audit_recovery_failed type=%s",
+                type(exc).__name__,
+            )
+        except Exception as exc:
+            pending_print_recovery_error = (
+                "Lo storico della stampa è disponibile, ma l'archivio SQLite "
+                "non è stato completato. Usare Recupera stampa pendente."
+            )
+            self.logger.warning(
+                "pending_sqlite_print_recovery_failed type=%s",
+                type(exc).__name__,
+            )
+
         self.by_iid = {}
         self.checked_ids = set()
         self.last_pdf = None
@@ -729,6 +752,37 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             printed_at=str(pending["submitted_at"]),
             windows_user=self._windows_operator_identity(),
         )
+
+    def _record_pending_print_sqlite_and_finalize(self) -> bool:
+        """Complete SQLite audit for a submitted crash-recovery marker.
+
+        Milestone A data is per Windows user, so reopening the same LocalAppData
+        root also identifies the same operator scope. The HMAC descriptor is
+        resolved only against voucher codes already present in SQLite.
+        """
+
+        details = self.history.resolve_pending_print(
+            [voucher.code_formatted for voucher in self.vouchers],
+            self.settings,
+        )
+        if details is None:
+            return False
+        if details.state != "submitted":
+            raise HistoryError(
+                "La stampa pendente non è ancora confermata come inviata"
+            )
+
+        self._record_sqlite_print_audit(
+            {
+                "audit_id": details.audit_id,
+                "copies": details.document_copies,
+                "submitted_at": details.submitted_at,
+            },
+            list(details.codes),
+            Path(details.output_file),
+        )
+        self.history.finalize_pending_print_audit(details.audit_id)
+        return True
 
     def _deselect_printed_codes(self, codes: list[str]) -> None:
         """Clear only vouchers whose Windows print submission was confirmed."""
