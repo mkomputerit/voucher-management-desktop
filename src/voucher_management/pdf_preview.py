@@ -12,6 +12,7 @@ accessible. Only the PDF viewport is allowed to grow/shrink with the window.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 from queue import Empty
 import tkinter as tk
@@ -29,6 +30,8 @@ try:
     import win32ui
 except ImportError:  # Allows source inspection/tests on non-Windows hosts.
     win32con = win32print = win32ui = None
+
+LOGGER = logging.getLogger("voucher_management.pdf_preview")
 
 
 class PdfPreview(tk.Toplevel):
@@ -153,7 +156,7 @@ class PdfPreview(tk.Toplevel):
             # Some Tk/window-manager combinations do not implement 'zoomed'.
             # The fallback geometry still preserves the fixed command bar and
             # fit-page invariant, so usability does not depend on maximisation.
-            pass
+            LOGGER.debug("preview_zoom_state_unavailable")
 
     def _load_printers(self):
         if win32print is None:
@@ -173,7 +176,7 @@ class PdfPreview(tk.Toplevel):
             try:
                 self.after_cancel(self._render_after)
             except tk.TclError:
-                pass
+                LOGGER.debug("preview_after_cancel_ignored")
         self._render_after = self.after(120, self.render_page)
 
     def render_page(self):
@@ -649,8 +652,11 @@ class PdfPreview(tk.Toplevel):
             if document_started:
                 try:
                     dc.AbortDoc()
-                except Exception:
-                    pass
+                except Exception as abort_exc:
+                    LOGGER.warning(
+                        "printer_abort_failed type=%s",
+                        type(abort_exc).__name__,
+                    )
             raise
         finally:
             dc.DeleteDC()
@@ -662,13 +668,13 @@ class PdfPreview(tk.Toplevel):
             try:
                 self.after_cancel(self._render_after)
             except tk.TclError:
-                pass
+                LOGGER.debug("preview_after_cancel_ignored")
             self._render_after = None
         if self._render_poll_after is not None:
             try:
                 self.after_cancel(self._render_poll_after)
             except tk.TclError:
-                pass
+                LOGGER.debug("preview_after_cancel_ignored")
             self._render_poll_after = None
         self._render_generation += 1
         self._render_active_generation = 0
@@ -678,6 +684,9 @@ class PdfPreview(tk.Toplevel):
         if document is not None:
             try:
                 document.close()
-            except Exception:
-                pass
+            except Exception as close_exc:
+                LOGGER.warning(
+                    "preview_document_close_failed type=%s",
+                    type(close_exc).__name__,
+                )
         super().destroy()
