@@ -1,9 +1,9 @@
-"""Per-user single-instance ownership for the 5.0 transition.
+"""OS-backed single-instance ownership tied to the active application data root.
 
-Milestone A deliberately keeps application data under LocalAppData.  The guard
-therefore scopes ownership to that per-user data root; Milestone C will replace
-this with a machine-wide Windows-session guard when the database itself moves to
-ProgramData.
+Portable mode keeps the lock under LocalAppData and is therefore per-user.
+Installed shared mode puts the same lock under ProgramData, making ownership
+common to every Windows session that is authorized to access the shared tree.
+The filesystem lock is released by the operating system on process exit.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class SingleInstanceGuard:
             context.__enter__()
         except LockTimeout as exc:
             raise InstanceAlreadyRunning(
-                "Voucher Management è già in esecuzione per questo utente Windows."
+                "Voucher Management è già in esecuzione in un'altra sessione Windows."
             ) from exc
         self._context = context
 
