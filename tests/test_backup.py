@@ -17,6 +17,7 @@ from voucher_management.backup import (
 )
 from voucher_management.backup_crypto import PROTECTED_BACKUP_MAGIC
 from voucher_management.security.history_key import HistoryKeyStore
+from voucher_management.single_instance import SingleInstanceGuard
 
 
 class BackupServiceTests(unittest.TestCase):
@@ -989,6 +990,24 @@ class BackupServiceTests(unittest.TestCase):
                 "config/settings.json.corrupt-synthetic",
                 archive.namelist(),
             )
+
+    def test_restore_succeeds_while_root_level_instance_guard_is_held(self):
+        backup = Path(self.temp.name) / "guarded-restore.zip"
+        self.service.create(backup)
+        guard_path = self.paths.user_root / "application.instance.lock"
+
+        guard = SingleInstanceGuard(guard_path)
+        guard.acquire()
+        try:
+            rollback = self.service.restore(backup)
+        finally:
+            guard.release()
+
+        self.assertTrue(rollback.exists())
+        self.assertTrue(guard_path.exists())
+        self.assertFalse(
+            (rollback / "application.instance.lock").exists()
+        )
 
     def test_restore_rejects_malformed_history_before_live_change(self):
         backup = Path(self.temp.name) / "backup.zip"
