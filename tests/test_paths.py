@@ -201,6 +201,10 @@ def test_installed_marker_uses_shared_programdata_without_implicit_profile_impor
     assert paths.database == (
         programdata / "VoucherManagement" / "data" / "voucher_management.db"
     )
+    assert paths.instance_lock == (
+        programdata / "VoucherManagement" / "application.instance.lock"
+    )
+    assert paths.instance_lock.parent == paths.user_root
     assert not paths.settings.exists()
     assert paths.per_user_root in paths.legacy_user_roots
 
