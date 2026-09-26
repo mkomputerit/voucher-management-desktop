@@ -89,3 +89,36 @@ def test_sqlite_print_bridge_fails_closed_without_controller():
         assert "Controller locale" in str(exc)
     else:
         raise AssertionError("missing controller must block SQLite print audit")
+
+
+def test_pending_print_recovery_commits_sqlite_before_marker_finalize():
+    calls = []
+
+    class History:
+        def resolve_pending_print(self, candidate_codes, settings):
+            calls.append(("resolve", tuple(candidate_codes), dict(settings)))
+            return SimpleNamespace(
+                state="submitted",
+                audit_id="recover-1",
+                codes=("12345-67890",),
+                output_file="Voucher_Recover.pdf",
+                document_copies=2,
+                submitted_at="2026-09-26T09:45:00+00:00",
+            )
+
+        def finalize_pending_print_audit(self, audit_id):
+            calls.append(("finalize", audit_id))
+
+    fake = SimpleNamespace(
+        history=History(),
+        vouchers=[SimpleNamespace(code_formatted="12345-67890")],
+        settings={"structure_name": "Test"},
+        _record_sqlite_print_audit=lambda pending, codes, path: calls.append(
+            ("sqlite", dict(pending), tuple(codes), path.name)
+        ),
+    )
+
+    assert VoucherApp._record_pending_print_sqlite_and_finalize(fake) is True
+    assert calls[0][0] == "resolve"
+    assert calls[1][0] == "sqlite"
+    assert calls[2] == ("finalize", "recover-1")
