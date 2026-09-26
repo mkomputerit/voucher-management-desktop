@@ -164,6 +164,15 @@ rather than duplicated. After inserting older historical prints, print
 sequences are deterministically renumbered so sequence 1 remains the earliest
 known physical print. Ambiguous and unresolved evidence is never materialized.
 
+Very old 4.x rows may predate stable `event_id`/`print_job_id` fields. Those
+rows remain supported through deterministic synthetic identities derived from
+their immutable legacy evidence. For print rows without `print_job_id`, job
+grouping cannot be proven from the source file, so each legacy print row becomes
+its own synthetic print job rather than guessing that multiple rows belonged to
+one physical submission. Generate rows without `event_id` likewise receive a
+deterministic synthetic event identity. Both fallbacks are covered end-to-end
+and remain idempotent across retries.
+
 A migration run is `EVIDENCE_READY` after the HMAC evidence transaction and
 becomes `COMPLETED` only in the materialization transaction. A materialization
 failure therefore leaves no partial operational print/event facts and can be
