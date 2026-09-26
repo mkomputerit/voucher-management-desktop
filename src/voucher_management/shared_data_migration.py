@@ -97,20 +97,30 @@ def shared_target_is_pristine(database, paths) -> bool:
     customized settings, PDFs or logos make replacement unsafe.
     """
 
-    tables = (
-        "controllers",
-        "application_sessions",
-        "installation_profile",
-        "vouchers",
-        "sync_runs",
-        "voucher_events",
-        "print_jobs",
-        "migration_runs",
-        "legacy_audit_events",
+    tables = tuple(
+        row[0]
+        for row in database.connection.execute(
+            """SELECT name
+               FROM sqlite_master
+               WHERE type='table' AND name NOT LIKE 'sqlite_%'
+               ORDER BY name"""
+        ).fetchall()
     )
     for table in tables:
+        # app_metadata is the only bootstrap table allowed to contain a row.
+        # Keep this check deliberately conservative: any new schema table is
+        # automatically required to be empty until explicitly reviewed here.
+        if table == "app_metadata":
+            rows = database.connection.execute(
+                "SELECT key, value FROM app_metadata ORDER BY key"
+            ).fetchall()
+            if len(rows) != 1 or rows[0]["key"] != "schema_version":
+                return False
+            continue
+
+        quoted = '"' + table.replace('"', '""') + '"'
         row = database.connection.execute(
-            f"SELECT COUNT(*) FROM {table}"
+            f"SELECT COUNT(*) FROM {quoted}"
         ).fetchone()
         if int(row[0]) > 0:
             return False
@@ -152,9 +162,16 @@ def execute_shared_data_migration(
     """Move one quiescent per-user tree through an authenticated .vmbk backup.
 
     The caller must close the target SQLite connection before invoking this
-    function. Source history is locked for the complete backup so even older
-    4.x builds that predate the application-wide guard cannot append audit rows
-    while the migration snapshot is being built.
+    function. This service is reached only from the already-running installed
+    application, which continues to hold target_paths.instance_lock for its
+    entire Tk lifetime. That machine-wide ProgramData guard therefore remains
+    held while the target database handle is closed and while restore replaces
+    the managed data directories; another Windows session cannot enter the
+    application during this interval.
+
+    Source history is locked for the complete backup so even older 4.x builds
+    that predate the application-wide guard cannot append audit rows while the
+    migration snapshot is being built.
     """
 
     source_paths = DataRootPaths(Path(source_root))
