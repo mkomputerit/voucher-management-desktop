@@ -466,10 +466,11 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         def completed(vouchers) -> None:
             snapshot = list(vouchers)
-            if self.active_controller_id is not None:
+            controller_id = getattr(self, "active_controller_id", None)
+            if controller_id is not None:
                 persist_successful_snapshot(
                     self.database,
-                    controller_id=self.active_controller_id,
+                    controller_id=controller_id,
                     vouchers=snapshot,
                     observed_at=datetime.now(timezone.utc).isoformat(),
                 )
