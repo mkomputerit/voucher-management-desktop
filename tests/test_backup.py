@@ -166,6 +166,96 @@ class BackupServiceTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_restore_rollback_captures_committed_wal_state(self):
+        database = self.paths.user_root / "data" / "voucher_management.db"
+
+        original = sqlite3.connect(database)
+        original.execute("PRAGMA journal_mode=WAL")
+        original.execute(
+            "CREATE TABLE rollback_test (id INTEGER PRIMARY KEY, value TEXT)"
+        )
+        original.execute(
+            "INSERT INTO rollback_test(id, value) VALUES (1, 'backup-state')"
+        )
+        original.commit()
+        original.close()
+
+        backup = Path(self.temp.name) / "restore-source.zip"
+        self.service.create(backup)
+
+        writer = sqlite3.connect(database)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(
+            "UPDATE rollback_test SET value='current-wal-state' WHERE id=1"
+        )
+        writer.commit()
+        wal_path = Path(str(database) + "-wal")
+        self.assertTrue(wal_path.exists())
+        self.assertGreater(wal_path.stat().st_size, 0)
+
+        real_snapshot = self.service._sqlite_snapshot_bytes
+        released = {"done": False}
+
+        def snapshot_then_release():
+            snapshot = real_snapshot()
+            if not released["done"]:
+                writer.close()
+                released["done"] = True
+            return snapshot
+
+        try:
+            with patch.object(
+                self.service,
+                "_sqlite_snapshot_bytes",
+                side_effect=snapshot_then_release,
+            ):
+                rollback = self.service.restore(backup)
+        finally:
+            if not released["done"]:
+                writer.close()
+
+        restored = sqlite3.connect(database)
+        try:
+            self.assertEqual(
+                restored.execute(
+                    "SELECT value FROM rollback_test WHERE id=1"
+                ).fetchone()[0],
+                "backup-state",
+            )
+            self.assertEqual(
+                restored.execute("PRAGMA integrity_check").fetchone()[0],
+                "ok",
+            )
+        finally:
+            restored.close()
+
+        rollback_db = rollback / "data" / "voucher_management.db"
+        self.assertTrue(rollback_db.is_file())
+        rollback_connection = sqlite3.connect(rollback_db)
+        try:
+            self.assertEqual(
+                rollback_connection.execute(
+                    "SELECT value FROM rollback_test WHERE id=1"
+                ).fetchone()[0],
+                "current-wal-state",
+            )
+            self.assertEqual(
+                rollback_connection.execute(
+                    "PRAGMA integrity_check"
+                ).fetchone()[0],
+                "ok",
+            )
+        finally:
+            rollback_connection.close()
+
+        self.assertFalse(
+            (rollback / "data" / "voucher_management.db-wal").exists()
+        )
+        self.assertFalse(
+            (rollback / "data" / "voucher_management.db-shm").exists()
+        )
+
     def test_validation_runs_sqlite_integrity_check_not_only_hash(self):
         database = self.paths.user_root / "data" / "voucher_management.db"
         connection = sqlite3.connect(database)
