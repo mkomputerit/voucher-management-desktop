@@ -115,16 +115,19 @@ The Windows build supports two deployment modes.
 application-data profile. Extract the complete build folder and run
 `VoucherManagement.exe`; no shared-machine permissions are changed.
 
-**Installed shared mode** is intended for one workstation used by multiple
-authorized Windows accounts. From an elevated PowerShell prompt in the extracted
-build folder, run:
+**Managed shared deployment** is intended for one workstation used by multiple
+authorized Windows accounts. It is currently delivered as an elevated
+PowerShell deployment script, not as an MSI/EXE package registered in Windows
+"Installed apps". From an elevated PowerShell prompt in the extracted build
+folder, run:
 
 ```powershell
 .\Install-VoucherManagement.ps1
 ```
 
-The installer copies the application to `Program Files\Voucher Management`,
-creates the local `Voucher Management Operators` group, authorizes the
+The managed deployment script copies the application to
+`Program Files\Voucher Management`, creates the local
+`Voucher Management Operators` group, authorizes the
 interactive Windows user, creates `ProgramData\VoucherManagement` with
 restrictive ACLs, writes the shared-deployment marker and creates a Start Menu
 shortcut. If the user was newly added to the group, sign out and sign in again
@@ -137,8 +140,10 @@ offers an explicit migration that creates and verifies an encrypted safety
 backup, transfers the old LocalAppData tree through the normal restore path and
 leaves the original per-user data unchanged.
 
-To remove the installed program while preserving shared data, run the bundled
-`Uninstall-VoucherManagement.ps1` from an elevated PowerShell prompt. Pass
+Because this is not a Windows Installer/MSI package, removal is also performed
+with the bundled administrative script. To remove the deployed program while
+preserving shared data, run `Uninstall-VoucherManagement.ps1` from an elevated
+PowerShell prompt. Pass
 `-RemoveData` only when the shared ProgramData archive and local operator group
 should also be deleted.
 
