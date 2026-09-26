@@ -783,7 +783,9 @@ class ModernVoucherApp(DataMaintenanceMixin, ControllerConnectionMixin, VoucherD
             try:
                 self.after_cancel(self._search_after)
             except tk.TclError:
-                pass
+                logging.getLogger("voucher_management").debug(
+                    "search_after_cancel_ignored"
+                )
         self._search_after = self.after(220, self._run_search_populate)
 
     def _run_search_populate(self) -> None:
