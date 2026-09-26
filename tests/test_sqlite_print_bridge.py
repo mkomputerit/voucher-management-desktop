@@ -31,7 +31,7 @@ def test_confirmed_print_is_mirrored_with_stable_audit_identity():
         fake,
         pending,
         ["12345-67890", "12345-67890"],
-        Path(r"C:\Print\Voucher_Test.pdf"),
+        Path("Voucher_Test.pdf"),
     )
 
     assert database.calls == [
