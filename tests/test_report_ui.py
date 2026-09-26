@@ -60,13 +60,14 @@ def test_report_query_runs_before_background_renderer(monkeypatch, tmp_path: Pat
             ("render", current_dataset, Path(target), installation_name)
         )
 
-    def run_background(label, worker, success, error):
+    def run_background(label, worker, success, error, busy_scope=None):
         tasks.append(
             {
                 "label": label,
                 "worker": worker,
                 "success": success,
                 "error": error,
+                "busy_scope": busy_scope,
             }
         )
         return True
@@ -84,6 +85,7 @@ def test_report_query_runs_before_background_renderer(monkeypatch, tmp_path: Pat
         scope_var=_variable("Controller attivo"),
         format_var=_variable("PDF"),
         destroy=lambda: events.append(("destroy",)),
+        _set_busy=lambda busy: events.append(("busy", busy)),
     )
 
     monkeypatch.setattr(report_ui, "build_report_dataset", build)
@@ -99,6 +101,7 @@ def test_report_query_runs_before_background_renderer(monkeypatch, tmp_path: Pat
     assert events[0][0] == "build"
     assert len(tasks) == 1
     assert tasks[0]["label"] == "Generazione report…"
+    assert tasks[0]["busy_scope"] is dialog._set_busy
     assert all(event[0] != "render" for event in events)
 
     result = tasks[0]["worker"]()
