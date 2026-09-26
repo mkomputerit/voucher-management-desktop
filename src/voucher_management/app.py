@@ -104,6 +104,10 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         try:
             self.paths.ensure_writable()
         except Exception as exc:
+            # The <Destroy> release hook is installed only after this check.
+            # Release explicitly so a recoverable startup error never keeps
+            # this Windows user locked out for the lifetime of the process.
+            self.instance_guard.release()
             messagebox.showerror("Avvio impossibile", f"Cartella dell'applicazione non scrivibile.\n\n{exc}")
             self.destroy()
             return
