@@ -560,7 +560,7 @@ class DataMaintenanceMixin:
 
             def restore_failed(exc: Exception) -> None:
                 try:
-                    self._reopen_database_after_failed_restore()
+                    DataMaintenanceMixin._reopen_database_after_failed_restore(self)
                 except Exception as reopen_exc:
                     self.logger.error(
                         "database_reopen_after_restore_failed type=%s",
@@ -589,7 +589,7 @@ class DataMaintenanceMixin:
             try:
                 # SQLite is opened on the Tk thread. Close it here before the
                 # worker can replace data/voucher_management.db on Windows.
-                self._close_database_for_restore()
+                DataMaintenanceMixin._close_database_for_restore(self)
             except Exception as exc:
                 self.logger.error(
                     "database_close_before_restore_failed type=%s",
@@ -615,7 +615,7 @@ class DataMaintenanceMixin:
             )
             if not started:
                 try:
-                    self._reopen_database_after_failed_restore()
+                    DataMaintenanceMixin._reopen_database_after_failed_restore(self)
                 except Exception as exc:
                     self.logger.error(
                         "database_reopen_after_restore_cancelled type=%s",
