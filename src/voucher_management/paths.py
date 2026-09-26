@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -14,14 +15,28 @@ from .logo_validation import LogoValidationError, validate_logo_image
 class AppPaths:
     """Resolve immutable program files separately from persistent user data.
 
+    Portable/source execution remains per-user. An installed deployment opts
+    into shared ProgramData only through a small non-secret deployment marker
+    written beside the executable by the elevated Windows installer.
+
     Public releases use a neutral VoucherManagement data root. Existing beta
     data is imported from the legacy UniFiVoucherTool root without overwriting
     newer files, so the product rename does not discard settings, audit history,
     PDFs or custom logos.
     """
 
-    def __init__(self) -> None:
-        if getattr(sys, "frozen", False):
+    DEPLOYMENT_MARKER = "voucher-management-deployment.json"
+    SHARED_MODE = "shared_programdata"
+
+    def __init__(
+        self,
+        *,
+        base_override: Path | None = None,
+        shared_root_override: Path | None = None,
+    ) -> None:
+        if base_override is not None:
+            self.base = Path(base_override)
+        elif getattr(sys, "frozen", False):
             self.base = Path(sys.executable).resolve().parent
         else:
             self.base = Path(__file__).resolve().parents[2]
@@ -29,15 +44,41 @@ class AppPaths:
         local_appdata = os.environ.get("LOCALAPPDATA")
         if local_appdata:
             profile_root = Path(local_appdata)
-            self.user_root = profile_root / PRODUCT_DIR_NAME
-            self.legacy_user_roots = tuple(
+            self.per_user_root = profile_root / PRODUCT_DIR_NAME
+            self.legacy_profile_roots = tuple(
                 profile_root / name for name in LEGACY_PRODUCT_DIR_NAMES
             )
         else:
-            self.user_root = Path.home() / ".voucher-management"
-            self.legacy_user_roots = tuple(
-                Path.home() / f".{name.lower()}" for name in LEGACY_PRODUCT_DIR_NAMES
+            self.per_user_root = Path.home() / ".voucher-management"
+            self.legacy_profile_roots = tuple(
+                Path.home() / f".{name.lower()}"
+                for name in LEGACY_PRODUCT_DIR_NAMES
             )
+
+        marker_mode = self._deployment_mode()
+        self.shared_mode = (
+            shared_root_override is not None
+            or marker_mode == self.SHARED_MODE
+        )
+        if self.shared_mode:
+            if shared_root_override is not None:
+                self.user_root = Path(shared_root_override)
+            else:
+                program_data = os.environ.get("PROGRAMDATA")
+                if not program_data:
+                    raise RuntimeError(
+                        "Installazione condivisa non valida: PROGRAMDATA mancante"
+                    )
+                self.user_root = Path(program_data) / PRODUCT_DIR_NAME
+            # These roots are migration candidates only. Shared mode never
+            # imports them implicitly during ensure_writable().
+            self.legacy_user_roots = (
+                self.per_user_root,
+                *self.legacy_profile_roots,
+            )
+        else:
+            self.user_root = self.per_user_root
+            self.legacy_user_roots = self.legacy_profile_roots
 
         self.config = self.user_root / "config"
         self.data = self.user_root / "data"
@@ -48,13 +89,36 @@ class AppPaths:
         self.assets = self.base / "assets"
         self.history = self.data / "history.jsonl"
         self.history_lock = self.data / "history.lock"
-        # Milestone A is per-user; machine scope belongs to Milestone C.
+        # In shared mode this path is common to all Windows sessions, so the
+        # existing OS file lock becomes machine-wide across Fast User Switching.
         self.instance_lock = self.data / "application.instance.lock"
         self.pending_create = self.data / "pending_create_guard"
-        # Milestone A keeps the 5.0 SQLite store in the current per-user root.
         self.database = self.data / "voucher_management.db"
         self.settings = self.config / "settings.json"
         self._logo_warning = ""
+
+    def _deployment_mode(self) -> str:
+        """Read the installer-owned deployment marker without side effects."""
+
+        marker = self.base / self.DEPLOYMENT_MARKER
+        if not marker.exists():
+            return ""
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "Marker di installazione Voucher Management non valido"
+            ) from exc
+        if not isinstance(payload, dict) or payload.get("format") != 1:
+            raise RuntimeError(
+                "Marker di installazione Voucher Management non supportato"
+            )
+        mode = str(payload.get("mode", "") or "").strip()
+        if mode not in {"", self.SHARED_MODE}:
+            raise RuntimeError(
+                "Modalità di installazione Voucher Management non supportata"
+            )
+        return mode
 
     @staticmethod
     def _copy_file_if_missing(source: Path, target: Path) -> None:
@@ -184,8 +248,13 @@ class AppPaths:
         for folder in (self.config, self.data, self.logs, self.logos, self.prints):
             folder.mkdir(parents=True, exist_ok=True)
 
-        self._migrate_legacy_user_roots()
-        self._migrate_legacy_portable_data()
+        if not self.shared_mode:
+            # Portable/per-user compatibility can safely retain the historical
+            # implicit migration. Shared ProgramData requires an explicit
+            # operator-controlled migration because several Windows profiles
+            # may contain independent histories.
+            self._migrate_legacy_user_roots()
+            self._migrate_legacy_portable_data()
 
         for folder in (self.config, self.data, self.logs, self.logos, self.prints):
             probe = folder / f".write-test-{os.getpid()}"
