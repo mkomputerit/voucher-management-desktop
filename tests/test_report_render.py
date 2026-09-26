@@ -147,3 +147,27 @@ def test_empty_pdf_report_is_still_printable(tmp_path: Path):
     render_report_pdf(empty, output)
 
     assert output.read_bytes().startswith(b"%PDF-")
+
+
+def test_csv_neutralizes_formula_like_operator_text(tmp_path: Path):
+    output = tmp_path / "formula.csv"
+    dataset = _dataset()
+    dangerous_row = replace(
+        dataset.rows[0],
+        controller_name="=HYPERLINK(\"https://example.invalid\")",
+        recipient="+SUM(1,1)",
+        print_operators=("@operator",),
+    )
+    dangerous = replace(
+        dataset,
+        controller_label="-controller",
+        rows=(dangerous_row,),
+    )
+
+    render_report_csv(dangerous, output)
+
+    payload = output.read_text(encoding="utf-8-sig")
+    assert "'=HYPERLINK" in payload
+    assert "'+SUM" in payload
+    assert "'@operator" in payload
+    assert "'-controller" in payload
