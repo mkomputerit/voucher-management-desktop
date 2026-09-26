@@ -195,6 +195,26 @@ class HistoryService:
             local_fingerprint=local,
         )
 
+    def verified_identity_material(self) -> tuple[str, str]:
+        """Return the verified HMAC fingerprint/key for explicit migration.
+
+        The key remains memory-only for the caller and is never added to logs,
+        SQLite or migration metadata. Existing history with an unverified
+        identity fails closed rather than being correlated with a guessed key.
+        """
+
+        state = self.identity_state()
+        secret = self.secret_store.get()
+        if (
+            not state.ready
+            or not secret
+            or self.fingerprint(secret) != state.expected_fingerprint
+        ):
+            raise HistoryError(
+                "Identità della cronologia non verificata per la migrazione"
+            )
+        return state.expected_fingerprint, secret
+
     def status(self) -> tuple[bool, str]:
         state = self.identity_state()
         if state.ready:

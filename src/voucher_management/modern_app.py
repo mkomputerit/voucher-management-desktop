@@ -228,6 +228,29 @@ class SettingsDialog(tk.Toplevel):
         ).pack(side="left", padx=(8, 0))
 
         ttk.Separator(frame).pack(fill="x", pady=22)
+        ttk.Label(
+            frame,
+            text="Migrazione storico 4.x",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "Importa in SQLite lo storico HMAC delle versioni 4.x. "
+                "Vengono associate solo identità verificabili; gli eventi "
+                "ambigui o non associabili restano conservati come evidenza. "
+                "Prima di ogni migrazione viene creato un backup cifrato."
+            ),
+            style="Muted.TLabel",
+            wraplength=560,
+        ).pack(anchor="w", pady=(3, 10))
+        ttk.Button(
+            frame,
+            text="Analizza e migra storico 4.x…",
+            command=lambda: self.app.migrate_legacy_history(parent=self),
+        ).pack(anchor="w")
+
+        ttk.Separator(frame).pack(fill="x", pady=22)
         ttk.Label(frame, text="Backup e ripristino", style="SectionTitle.TLabel").pack(anchor="w")
         ttk.Label(frame, text="Il backup comprende configurazione, storico, PDF generati, loghi e la chiave portabile della cronologia. La API key UniFi non viene mai salvata.", style="Muted.TLabel", wraplength=560).pack(anchor="w", pady=(3, 12))
         actions = ttk.Frame(frame)

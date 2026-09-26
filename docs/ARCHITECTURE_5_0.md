@@ -129,9 +129,65 @@ partial, ambiguous and corrupt legacy data. It validates the portable history
 identity and may associate an HMAC history row with a plaintext voucher only
 when that voucher code is independently known and recomputes to the exact HMAC.
 
+The first Milestone B implementation boundary is deliberately read-only:
+`legacy_migration.py` validates the history fingerprint/key pair, parses the
+entire legacy audit file fail-closed, recomputes HMACs only from independently
+known voucher candidates and returns an immutable migration plan. A row is
+resolved only when exactly one voucher identity matches. Zero matches remain
+unresolved evidence; multiple voucher identities remain ambiguous evidence.
+Deterministic 5+5 display formatting may be derived from an independently known
+10-character code because that is the representation 4.x used when generating
+the audit HMAC.
+
+The planner itself remains read-only: it does not write SQLite, alter
+`history.jsonl`, rotate the history key or enable automatic migration at
+startup.
+
+The next Milestone B boundary persists that verified plan into schema version 2.
+`migration_runs` records each apply transaction and `legacy_audit_events`
+stores the original HMAC evidence with an explicit
+`RESOLVED`/`AMBIGUOUS`/`UNRESOLVED` state. A resolved row receives a
+foreign-key link only after the controller identity, UniFi voucher id and code
+are revalidated inside the same transaction. Existing resolved evidence may
+never regress to an unresolved/ambiguous state. Reapplying the same migration
+identity is idempotent, while a later plan may promote previously unresolved
+evidence when an independently known voucher becomes available.
+
+Schema 1 upgrades to schema 2 inside an explicit SQLite transaction so a DDL
+failure cannot leave a partial migration schema.
+
+Resolved evidence can then be materialized idempotently into operational facts.
+Legacy PDF-generation rows become `voucher_events` with source `MIGRATION`.
+Resolved physical-print rows create or verify `print_jobs`/`voucher_prints`;
+an existing Milestone A print job with the same audit id is verified and reused
+rather than duplicated. After inserting older historical prints, print
+sequences are deterministically renumbered so sequence 1 remains the earliest
+known physical print. Ambiguous and unresolved evidence is never materialized.
+
+Very old 4.x rows may predate stable `event_id`/`print_job_id` fields. Those
+rows remain supported through deterministic synthetic identities derived from
+their immutable legacy evidence. For print rows without `print_job_id`, job
+grouping cannot be proven from the source file, so each legacy print row becomes
+its own synthetic print job rather than guessing that multiple rows belonged to
+one physical submission. Generate rows without `event_id` likewise receive a
+deterministic synthetic event identity. Both fallbacks are covered end-to-end
+and remain idempotent across retries.
+
+A migration run is `EVIDENCE_READY` after the HMAC evidence transaction and
+becomes `COMPLETED` only in the materialization transaction. A materialization
+failure therefore leaves no partial operational print/event facts and can be
+retried from the preserved evidence.
+
+The core execution path requires a verified encrypted `.vmbk` safety backup
+before either phase begins and performs a final SQLite integrity check.
+`history.jsonl` and its key are never rewritten by migration.
+
 Unresolved rows are preserved as legacy audit evidence. They are never guessed
-into a voucher record. Migration creates a safety backup, supports rollback and
-is idempotent before SQLite becomes the default upgrade path.
+into a voucher record. The Milestone B UI exposes migration only as an explicit
+operator action under data maintenance: it uses voucher identities already
+known to SQLite, requires the verified legacy HMAC identity and an encrypted
+safety-backup password, shows resolved/ambiguous/unresolved counts before
+execution, and never enables automatic startup migration.
 
 ### Milestone C — shared Windows deployment
 

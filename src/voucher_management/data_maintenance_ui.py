@@ -7,8 +7,9 @@ main window and no controller/voucher-table behavior.
 
 from __future__ import annotations
 
+import secrets
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -17,6 +18,12 @@ from .database import Database
 from .dialogs import ask_password
 from .history import HistoryError
 from .history_exchange import HistoryExchangeError, HistoryExchangeService
+from .legacy_migration import (
+    LegacyMigrationError,
+    build_legacy_migration_plan,
+    execute_legacy_migration,
+    legacy_candidates_from_database,
+)
 from .utils import format_fingerprint
 
 
@@ -407,6 +414,186 @@ class DataMaintenanceMixin:
             lambda: service.prepare_import(source_path, password),
             prepared,
             prepare_failed,
+            busy_scope=self._dialog_busy_scope(parent),
+        )
+
+    def migrate_legacy_history(self, *, parent=None) -> None:
+        """Run the explicit 4.x history migration after operator review.
+
+        Candidate voucher identities are snapshotted on the Tk thread from the
+        already-open database. HMAC planning and the safety-backed apply run in
+        background workers; the worker opens its own SQLite connection because
+        the Tk connection must never cross thread boundaries.
+        """
+
+        parent = parent or self
+        try:
+            fingerprint, history_key = self.history.verified_identity_material()
+            candidates = legacy_candidates_from_database(self.database)
+        except Exception as exc:
+            detail = (
+                str(exc)
+                if isinstance(exc, (HistoryError, LegacyMigrationError))
+                else "Impossibile preparare la migrazione dello storico."
+            )
+            messagebox.showerror(
+                "Migrazione storico 4.x",
+                detail,
+                parent=parent,
+            )
+            return
+
+        history_path = Path(self.paths.history)
+
+        def planned(plan) -> None:
+            if plan.total_rows == 0:
+                messagebox.showinfo(
+                    "Migrazione storico 4.x",
+                    "Non risultano eventi nello storico 4.x da migrare.",
+                    parent=parent,
+                )
+                return
+
+            summary = (
+                f"Eventi analizzati: {plan.total_rows}\n"
+                f"Associati con certezza: {len(plan.resolved)}\n"
+                f"Con più possibili corrispondenze: {len(plan.ambiguous)}\n"
+                f"Senza una corrispondenza disponibile: "
+                f"{len(plan.unresolved)}\n\n"
+                "Gli eventi che non possono essere associati con certezza "
+                "verranno comunque conservati nello storico, ma non verranno "
+                "usati per ricostruire stampe o altri dati operativi. "
+                "Nessuna associazione verrà scelta automaticamente.\n\n"
+                "Prima della migrazione verrà creato un backup cifrato "
+                "obbligatorio. Procedere?"
+            )
+            if not messagebox.askyesno(
+                "Migrazione storico 4.x",
+                summary,
+                parent=parent,
+            ):
+                return
+
+            password = ask_password(
+                parent,
+                title="Backup pre-migrazione",
+                prompt=(
+                    "Inserire una password di almeno 12 caratteri per il "
+                    "backup di sicurezza pre-migrazione."
+                ),
+                confirm=True,
+            )
+            if password is None:
+                return
+
+            default = (
+                "VoucherManagement-pre-migration-"
+                f"{datetime.now().strftime('%Y%m%d-%H%M')}.vmbk"
+            )
+            target = filedialog.asksaveasfilename(
+                parent=parent,
+                title="Backup di sicurezza pre-migrazione",
+                defaultextension=".vmbk",
+                initialfile=default,
+                filetypes=[
+                    (
+                        "Backup cifrato Voucher Management",
+                        "*.vmbk",
+                    )
+                ],
+            )
+            if not target:
+                return
+
+            migration_uuid = secrets.token_hex(16)
+            applied_at = datetime.now(timezone.utc).isoformat(
+                timespec="seconds"
+            )
+            materialized_at = applied_at
+            database_path = Path(self.paths.database)
+            app_paths = self.paths
+
+            def worker():
+                migration_db = Database(database_path)
+                try:
+                    migration_db.initialize()
+                    migration_db.integrity_check()
+                    return execute_legacy_migration(
+                        database=migration_db,
+                        backup_service=BackupService(app_paths),
+                        backup_destination=Path(target),
+                        backup_password=password,
+                        plan=plan,
+                        migration_uuid=migration_uuid,
+                        applied_at=applied_at,
+                        materialized_at=materialized_at,
+                    )
+                finally:
+                    migration_db.close()
+
+            def completed(result) -> None:
+                self.populate()
+                messagebox.showinfo(
+                    "Migrazione storico 4.x",
+                    "Migrazione completata.\n\n"
+                    f"Eventi analizzati: {result.evidence.total_rows}\n"
+                    f"Associati con certezza: "
+                    f"{result.evidence.resolved_rows}\n"
+                    f"Con più possibili corrispondenze, conservati: "
+                    f"{result.evidence.ambiguous_rows}\n"
+                    f"Senza corrispondenza disponibile, conservati: "
+                    f"{result.evidence.unresolved_rows}\n"
+                    f"Eventi PDF materializzati: "
+                    f"{result.materialization.generated_events}\n"
+                    f"Stampe materializzate/verificate: "
+                    f"{result.materialization.print_rows}\n\n"
+                    f"Backup di sicurezza:\n{result.backup_path}\n\n"
+                    "Lo storico 4.x originale non è stato modificato.",
+                    parent=parent,
+                )
+
+            def failed(exc: Exception) -> None:
+                detail = (
+                    str(exc)
+                    if isinstance(exc, LegacyMigrationError)
+                    else "Migrazione dello storico non riuscita."
+                )
+                messagebox.showerror(
+                    "Migrazione storico 4.x",
+                    detail,
+                    parent=parent,
+                )
+
+            self._run_background_task(
+                "Migrazione storico 4.x…",
+                worker,
+                completed,
+                failed,
+                busy_scope=self._dialog_busy_scope(parent),
+            )
+
+        def planning_failed(exc: Exception) -> None:
+            detail = (
+                str(exc)
+                if isinstance(exc, LegacyMigrationError)
+                else "Analisi dello storico 4.x non riuscita."
+            )
+            messagebox.showerror(
+                "Migrazione storico 4.x",
+                detail,
+                parent=parent,
+            )
+
+        self._run_background_task(
+            "Analisi storico 4.x…",
+            lambda: build_legacy_migration_plan(
+                history_path=history_path,
+                expected_fingerprint=fingerprint,
+                secret=history_key,
+                candidates=candidates,
+            ),
+            planned,
+            planning_failed,
             busy_scope=self._dialog_busy_scope(parent),
         )
 

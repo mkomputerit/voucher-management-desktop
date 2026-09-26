@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 SCHEMA_SQL = """
@@ -189,6 +189,97 @@ CREATE TABLE IF NOT EXISTS backup_history (
     schema_version INTEGER,
     error_summary TEXT
 );
+
+CREATE TABLE IF NOT EXISTS migration_runs (
+    id INTEGER PRIMARY KEY,
+    migration_uuid TEXT NOT NULL UNIQUE,
+    source_kind TEXT NOT NULL CHECK (source_kind = 'LEGACY_4X_HISTORY'),
+    source_history_sha256 TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL CHECK (
+        status IN ('STARTED', 'EVIDENCE_READY', 'COMPLETED', 'FAILED')
+    ),
+    total_rows INTEGER NOT NULL DEFAULT 0 CHECK (total_rows >= 0),
+    resolved_rows INTEGER NOT NULL DEFAULT 0 CHECK (resolved_rows >= 0),
+    ambiguous_rows INTEGER NOT NULL DEFAULT 0 CHECK (ambiguous_rows >= 0),
+    unresolved_rows INTEGER NOT NULL DEFAULT 0 CHECK (unresolved_rows >= 0),
+    error_summary TEXT
+);
+
+CREATE TABLE IF NOT EXISTS legacy_audit_events (
+    legacy_event_key TEXT PRIMARY KEY,
+    source_line INTEGER NOT NULL CHECK (source_line >= 1),
+    voucher_digest TEXT NOT NULL,
+    event_type TEXT NOT NULL CHECK (event_type IN ('generate', 'print')),
+    occurred_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    resolution_status TEXT NOT NULL CHECK (
+        resolution_status IN ('RESOLVED', 'AMBIGUOUS', 'UNRESOLVED')
+    ),
+    voucher_id INTEGER REFERENCES vouchers(id),
+    first_migration_uuid TEXT NOT NULL REFERENCES migration_runs(migration_uuid),
+    last_migration_uuid TEXT NOT NULL REFERENCES migration_runs(migration_uuid),
+    materialized_at TEXT,
+    CHECK (
+        (resolution_status = 'RESOLVED' AND voucher_id IS NOT NULL)
+        OR
+        (resolution_status IN ('AMBIGUOUS', 'UNRESOLVED') AND voucher_id IS NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_legacy_audit_voucher
+ON legacy_audit_events(voucher_id, occurred_at);
+
+CREATE INDEX IF NOT EXISTS idx_legacy_audit_resolution
+ON legacy_audit_events(resolution_status, occurred_at);
+"""
+
+
+MIGRATION_1_TO_2_SQL = """
+CREATE TABLE IF NOT EXISTS migration_runs (
+    id INTEGER PRIMARY KEY,
+    migration_uuid TEXT NOT NULL UNIQUE,
+    source_kind TEXT NOT NULL CHECK (source_kind = 'LEGACY_4X_HISTORY'),
+    source_history_sha256 TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL CHECK (
+        status IN ('STARTED', 'EVIDENCE_READY', 'COMPLETED', 'FAILED')
+    ),
+    total_rows INTEGER NOT NULL DEFAULT 0 CHECK (total_rows >= 0),
+    resolved_rows INTEGER NOT NULL DEFAULT 0 CHECK (resolved_rows >= 0),
+    ambiguous_rows INTEGER NOT NULL DEFAULT 0 CHECK (ambiguous_rows >= 0),
+    unresolved_rows INTEGER NOT NULL DEFAULT 0 CHECK (unresolved_rows >= 0),
+    error_summary TEXT
+);
+
+CREATE TABLE IF NOT EXISTS legacy_audit_events (
+    legacy_event_key TEXT PRIMARY KEY,
+    source_line INTEGER NOT NULL CHECK (source_line >= 1),
+    voucher_digest TEXT NOT NULL,
+    event_type TEXT NOT NULL CHECK (event_type IN ('generate', 'print')),
+    occurred_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    resolution_status TEXT NOT NULL CHECK (
+        resolution_status IN ('RESOLVED', 'AMBIGUOUS', 'UNRESOLVED')
+    ),
+    voucher_id INTEGER REFERENCES vouchers(id),
+    first_migration_uuid TEXT NOT NULL REFERENCES migration_runs(migration_uuid),
+    last_migration_uuid TEXT NOT NULL REFERENCES migration_runs(migration_uuid),
+    materialized_at TEXT,
+    CHECK (
+        (resolution_status = 'RESOLVED' AND voucher_id IS NOT NULL)
+        OR
+        (resolution_status IN ('AMBIGUOUS', 'UNRESOLVED') AND voucher_id IS NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_legacy_audit_voucher
+ON legacy_audit_events(voucher_id, occurred_at);
+
+CREATE INDEX IF NOT EXISTS idx_legacy_audit_resolution
+ON legacy_audit_events(resolution_status, occurred_at);
 """
 
 
@@ -226,7 +317,7 @@ class Database:
         self.connection.close()
 
     def initialize(self) -> None:
-        """Create schema version 1 atomically and reject newer databases."""
+        """Create/upgrade the current schema and reject newer databases."""
 
         current = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
         if current > SCHEMA_VERSION:
@@ -241,6 +332,25 @@ class Database:
                     "INSERT OR REPLACE INTO app_metadata(key, value) VALUES (?, ?)",
                     ("schema_version", str(SCHEMA_VERSION)),
                 )
+        elif current == 1:
+            try:
+                # sqlite3.executescript() controls transaction boundaries on
+                # its own. Put BEGIN/COMMIT inside the script so an interrupted
+                # schema upgrade cannot leave only part of the v2 evidence
+                # schema installed.
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + MIGRATION_1_TO_2_SQL
+                    + """
+PRAGMA user_version = 2;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '2');
+COMMIT;
+"""
+                )
+            except Exception:
+                self.connection.rollback()
+                raise
         elif current < SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database schema migration {current}->{SCHEMA_VERSION} is not implemented"
