@@ -18,7 +18,19 @@ $shortcutPath = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Program
 if (Test-Path -LiteralPath $shortcutPath) {
     Remove-Item -LiteralPath $shortcutPath -Force
 }
-if (Test-Path -LiteralPath $InstallRoot) {
+$running = Get-Process -Name "VoucherManagement" -ErrorAction SilentlyContinue
+if ($running) {
+    throw "Chiudere Voucher Management prima della disinstallazione."
+}
+
+$installFull = [IO.Path]::GetFullPath($InstallRoot).TrimEnd("\")
+$scriptFull = [IO.Path]::GetFullPath($PSCommandPath)
+$selfInsideInstall = $scriptFull.StartsWith(
+    $installFull + "\",
+    [StringComparison]::OrdinalIgnoreCase
+)
+
+if (-not $selfInsideInstall -and (Test-Path -LiteralPath $InstallRoot)) {
     Remove-Item -LiteralPath $InstallRoot -Recurse -Force
 }
 
@@ -33,6 +45,12 @@ if ($RemoveData) {
     Write-Host "Dati condivisi rimossi."
 } else {
     Write-Host "Dati condivisi conservati in: $DataRoot"
+}
+
+if ($selfInsideInstall -and (Test-Path -LiteralPath $InstallRoot)) {
+    $escaped = $InstallRoot.Replace('"', '""')
+    $command = "timeout /t 2 /nobreak >nul & rmdir /s /q ""$escaped"""
+    Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/c", $command -WindowStyle Hidden
 }
 
 Write-Host "Voucher Management disinstallato."
