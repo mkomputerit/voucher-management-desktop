@@ -27,7 +27,22 @@ from .pdf_fonts import (
     ensure_pdf_fonts_registered,
     validate_pdf_text_support,
 )
+from .report_policy import voucher_code_policy
 from .reporting import ReportDataset
+
+
+def _validate_dataset_policy(dataset: ReportDataset) -> None:
+    """Reject renderer input that contradicts the central code policy."""
+
+    decision = voucher_code_policy(
+        dataset.purpose,
+        include_code_requested=dataset.code_exposed,
+    )
+    has_clear_code = any(bool(row.code) for row in dataset.rows)
+    if decision.expose_code != dataset.code_exposed:
+        raise ValueError("Report dataset code policy is inconsistent")
+    if has_clear_code != dataset.code_exposed:
+        raise ValueError("Report dataset contains unexpected voucher code data")
 
 
 def _paragraph(value: object, style: ParagraphStyle) -> Paragraph:
@@ -121,6 +136,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
 def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
     """Write an Excel-friendly CSV atomically from a sanitized dataset."""
 
+    _validate_dataset_policy(dataset)
     output_path = Path(output_path)
     handle, temp_path = _atomic_target(output_path, ".csv.tmp")
     os.close(handle)
@@ -157,6 +173,7 @@ def render_report_pdf(
     cannot bypass the reporting credential boundary.
     """
 
+    _validate_dataset_policy(dataset)
     ensure_pdf_fonts_registered()
     output_path = Path(output_path)
 
