@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from .backup_crypto import (
-    MIN_PASSWORD_CHARS,
     ProtectedBackupAuthenticationError,
     ProtectedBackupError,
     ProtectedBackupWriter,
