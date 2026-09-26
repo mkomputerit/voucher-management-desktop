@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from voucher_management.database import Database, SCHEMA_VERSION
+from voucher_management.database import Database, SCHEMA_SQL, SCHEMA_VERSION
 
 
 def _db(tmp_path):
@@ -348,5 +348,40 @@ def test_print_summaries_for_codes_normalizes_display_format(tmp_path):
         )
         assert summaries["1234567890"].print_jobs == 1
         assert summaries["1234567890"].physical_copies == 1
+    finally:
+        db.close()
+
+
+def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
+    path = tmp_path / "schema-one.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(SCHEMA_SQL)
+    raw.execute("DROP TABLE legacy_audit_events")
+    raw.execute("DROP TABLE migration_runs")
+    raw.execute("PRAGMA user_version = 1")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '1')"
+    )
+    raw.commit()
+    raw.close()
+
+    db = Database(path)
+    try:
+        db.initialize()
+        assert db.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        tables = {
+            row[0]
+            for row in db.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert {"migration_runs", "legacy_audit_events"} <= tables
+        assert (
+            db.connection.execute(
+                "SELECT value FROM app_metadata WHERE key='schema_version'"
+            ).fetchone()[0]
+            == "2"
+        )
+        db.integrity_check()
     finally:
         db.close()
