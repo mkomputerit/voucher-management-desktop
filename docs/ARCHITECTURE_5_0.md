@@ -74,6 +74,20 @@ The durable `pending_print_audit` mechanism from 4.x remains required around
 the Windows printer boundary. SQLite counters must never be used to guess
 whether an ambiguous OS print submission physically occurred.
 
+Milestone A now bridges the two audit layers with the same stable print
+`audit_id`. After Windows confirms submission, the HMAC history is written
+idempotently while the pending marker remains durable; SQLite then records the
+physical-print job and per-voucher reprint sequence; only after both stores
+verify the same job is the pending marker removed. A crash at any point therefore
+leaves a retryable marker rather than silently losing the SQLite print audit.
+Startup and manual recovery resolve the HMAC-only marker exclusively against
+voucher codes independently known from the local SQLite snapshot. No clear
+voucher code is added to `pending_print_audit.json`.
+
+After a confirmed Windows submission the printed vouchers are removed from the
+current UI selection. An ambiguous Windows submission does not claim success and
+still requires the existing explicit operator recovery decision.
+
 ## Retention
 
 Default policy:
