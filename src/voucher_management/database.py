@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -384,6 +385,129 @@ class Database:
             first_printed_at=str(row["first_at"]),
             last_printed_at=str(row["last_at"]),
         )
+
+    def record_print_audit(
+        self,
+        *,
+        controller_id: int,
+        audit_id: str,
+        codes: list[str],
+        output_file: str,
+        document_copies: int,
+        printed_at: str,
+        windows_user: str,
+    ) -> None:
+        """Persist one physical-print job exactly once.
+
+        The legacy HMAC history remains the crash boundary during Milestone A.
+        SQLite receives the same stable audit_id so an audit-only retry is
+        idempotent and can never create an extra reprint sequence.
+        """
+
+        normalized_audit_id = str(audit_id).strip()
+        normalized_user = str(windows_user).strip()
+        normalized_time = str(printed_at).strip()
+        if not normalized_audit_id:
+            raise ValueError("print audit id is required")
+        if not normalized_time:
+            raise ValueError("printed_at is required")
+        if not normalized_user:
+            raise ValueError("windows_user is required")
+        if document_copies < 1:
+            raise ValueError("document_copies must be positive")
+
+        counts = Counter(str(code).strip() for code in codes if str(code).strip())
+        if not counts:
+            raise ValueError("at least one voucher code is required")
+
+        with self.transaction() as db:
+            resolved: dict[str, int] = {}
+            for code in counts:
+                rows = db.execute(
+                    """SELECT id FROM vouchers
+                       WHERE controller_id=? AND code=?
+                       ORDER BY id""",
+                    (controller_id, code),
+                ).fetchall()
+                if len(rows) != 1:
+                    raise RuntimeError(
+                        "Voucher code is missing or ambiguous in the local database"
+                    )
+                resolved[code] = int(rows[0]["id"])
+
+            expected_prints = {
+                voucher_id: labels * document_copies
+                for code, labels in counts.items()
+                for voucher_id in (resolved[code],)
+            }
+            existing = db.execute(
+                "SELECT * FROM print_jobs WHERE print_job_uuid=?",
+                (normalized_audit_id,),
+            ).fetchone()
+            if existing is not None:
+                comparable = {
+                    "submitted_at": normalized_time,
+                    "windows_user": normalized_user,
+                    "output_file": str(output_file),
+                    "document_copies": document_copies,
+                    "status": "AUDITED",
+                }
+                if any(existing[key] != value for key, value in comparable.items()):
+                    raise RuntimeError(
+                        "Print audit id already exists with different job data"
+                    )
+                actual = {
+                    int(row["voucher_id"]): int(row["physical_copies"])
+                    for row in db.execute(
+                        """SELECT voucher_id, physical_copies
+                           FROM voucher_prints WHERE print_job_id=?""",
+                        (existing["id"],),
+                    )
+                }
+                if actual != expected_prints:
+                    raise RuntimeError(
+                        "Print audit id already exists with different voucher data"
+                    )
+                return
+
+            cursor = db.execute(
+                """INSERT INTO print_jobs
+                   (print_job_uuid, created_at, submitted_at, windows_user,
+                    output_file, document_copies, status)
+                   VALUES (?, ?, ?, ?, ?, ?, 'AUDITED')""",
+                (
+                    normalized_audit_id,
+                    normalized_time,
+                    normalized_time,
+                    normalized_user,
+                    str(output_file),
+                    document_copies,
+                ),
+            )
+            print_job_id = int(cursor.lastrowid)
+
+            for voucher_id, physical_copies in expected_prints.items():
+                row = db.execute(
+                    """SELECT COALESCE(MAX(print_sequence), 0) AS sequence
+                       FROM voucher_prints WHERE voucher_id=?""",
+                    (voucher_id,),
+                ).fetchone()
+                sequence = int(row["sequence"]) + 1
+                db.execute(
+                    """INSERT INTO voucher_prints
+                       (print_job_id, voucher_id, printed_at, windows_user,
+                        physical_copies, print_sequence, is_reprint)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        print_job_id,
+                        voucher_id,
+                        normalized_time,
+                        normalized_user,
+                        physical_copies,
+                        sequence,
+                        int(sequence > 1),
+                    ),
+                )
 
     @staticmethod
     def encode_event_details(details: dict | None) -> str | None:
