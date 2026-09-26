@@ -18,7 +18,10 @@ def test_installer_uses_programfiles_programdata_group_and_sid_acls():
     assert '*S-1-5-18:(OI)(CI)F' in script
     assert '*S-1-5-32-544:(OI)(CI)F' in script
     assert ':(OI)(CI)M' in script
+    assert '/reset /T /C' in script
     assert '/inheritance:r' in script
+    assert 'Get-Acl' in script
+    assert 'principal non autorizzato' in script
     assert 'voucher-management-deployment.json' in script
     assert 'shared_programdata' in script
     assert 'Get-Process -Name "VoucherManagement"' in script
