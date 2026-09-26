@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from voucher_management.database import Database
-from voucher_management.sync_store import persist_successful_snapshot
+from voucher_management.sync_store import load_local_vouchers, persist_successful_snapshot
 from voucher_management.unifi_api import ApiVoucher
 
 
@@ -86,5 +86,51 @@ def test_new_voucher_does_not_create_fake_change_history(tmp_path):
         assert db.connection.execute(
             "SELECT COUNT(*) FROM voucher_sync_observations"
         ).fetchone()[0] == 0
+    finally:
+        db.close()
+
+
+def test_local_snapshot_round_trips_into_existing_ui_shape(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    db.initialize()
+    controller = db.create_controller(name="A", api_root="https://a.example", created_at="t")
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("1", used=2, status="EXPIRED")],
+            observed_at="2026-09-26T06:00:00+00:00",
+            sync_uuid="sync-local",
+        )
+        local = load_local_vouchers(db, controller_id=controller)
+        assert len(local) == 1
+        restored = local[0]
+        assert restored.id == "1"
+        assert restored.code == "CODE-1"
+        assert restored.used == 2
+        assert restored.quota == 5
+        assert restored.status == "EXPIRED"
+        assert restored.create_time == 1_700_000_000
+        assert restored.start_time == 1_700_000_100
+        assert restored.end_time == 1_700_003_600
+    finally:
+        db.close()
+
+
+def test_local_snapshot_keeps_voucher_after_controller_absence(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    db.initialize()
+    controller = db.create_controller(name="A", api_root="https://a.example", created_at="t")
+    try:
+        persist_successful_snapshot(
+            db, controller_id=controller, vouchers=[voucher("1")],
+            observed_at="2026-09-26T06:00:00+00:00", sync_uuid="sync-present",
+        )
+        persist_successful_snapshot(
+            db, controller_id=controller, vouchers=[],
+            observed_at="2026-09-26T07:00:00+00:00", sync_uuid="sync-absent",
+        )
+        local = load_local_vouchers(db, controller_id=controller)
+        assert [item.id for item in local] == ["1"]
     finally:
         db.close()
