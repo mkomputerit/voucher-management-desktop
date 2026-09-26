@@ -21,7 +21,7 @@ from tkinter import messagebox
 from . import __version__
 from .background_tasks import BackgroundResult, start_background_task
 from .database import Database
-from .dialogs import PrintCopiesDialog
+from .dialogs import PrintCopiesDialog, ReprintConfirmDialog
 from .history import HistoryError, HistoryService
 from .identity import PRODUCT_NAME
 from .logging_utils import configure_logging
@@ -30,6 +30,7 @@ from .paths import AppPaths
 from .pdf_fonts import UnsupportedPdfTextError
 from .pdf_preview import PdfPreview
 from .pdf_render import render_batch_pdf
+from .reprint_policy import evaluate_reprint
 from .print_archive import (
     DEFAULT_PRINT_RETENTION_DAYS,
     cleanup_orphan_pdf_temps,
@@ -731,6 +732,55 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             return f"{domain}\\{username}"
         return username or "unknown"
 
+    def _confirm_physical_reprint(
+        self,
+        codes: list[str],
+        parent,
+    ) -> bool:
+        """Confirm physical duplicates using durable SQLite print facts."""
+
+        if self.active_controller_id is None:
+            messagebox.showerror(
+                "Stampa",
+                "Impossibile verificare lo storico delle ristampe senza "
+                "un controller locale associato.",
+                parent=parent,
+            )
+            return False
+
+        try:
+            summaries = self.database.print_summaries_for_codes(
+                controller_id=self.active_controller_id,
+                codes=list(codes),
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "reprint_preflight_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Stampa",
+                "Impossibile verificare in modo sicuro se i voucher siano "
+                "già stati stampati. La stampa viene sospesa.",
+                parent=parent,
+            )
+            return False
+
+        warnings = []
+        seen: set[str] = set()
+        for display_code in codes:
+            canonical = str(display_code).strip().replace("-", "")
+            if not canonical or canonical in seen:
+                continue
+            seen.add(canonical)
+            warning = evaluate_reprint(summaries[canonical])
+            if warning.required:
+                warnings.append((str(display_code), warning))
+
+        if not warnings:
+            return True
+        return bool(ReprintConfirmDialog(parent, warnings).result)
+
     def _record_sqlite_print_audit(
         self,
         pending: dict,
@@ -805,6 +855,10 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             on_print=self.populate,
             on_audit=self._record_sqlite_print_audit,
             on_submitted=lambda: self._deselect_printed_codes(codes),
+            confirm_print=lambda parent: self._confirm_physical_reprint(
+                codes,
+                parent,
+            ),
         )
 
     def open_existing_pdf(self):
