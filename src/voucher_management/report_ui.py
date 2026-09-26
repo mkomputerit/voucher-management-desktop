@@ -66,38 +66,40 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(grid, text="Contenuto").grid(
             row=0, column=0, sticky="w", pady=7, padx=(0, 16)
         )
-        ttk.Combobox(
+        self.kind_combo = ttk.Combobox(
             grid,
             textvariable=self.kind_var,
             state="readonly",
             values=tuple(label for label, _kind in REPORT_CHOICES),
             width=30,
-        ).grid(row=0, column=1, sticky="ew", pady=7)
+        )
+        self.kind_combo.grid(row=0, column=1, sticky="ew", pady=7)
 
         ttk.Label(grid, text="Ambito").grid(
             row=1, column=0, sticky="w", pady=7, padx=(0, 16)
         )
-        scope = ttk.Combobox(
+        self.scope_combo = ttk.Combobox(
             grid,
             textvariable=self.scope_var,
             state="readonly",
             values=("Controller attivo", "Tutti i controller"),
             width=30,
         )
-        scope.grid(row=1, column=1, sticky="ew", pady=7)
+        self.scope_combo.grid(row=1, column=1, sticky="ew", pady=7)
         if getattr(app, "active_controller_id", None) is None:
             self.scope_var.set("Tutti i controller")
 
         ttk.Label(grid, text="Formato").grid(
             row=2, column=0, sticky="w", pady=7, padx=(0, 16)
         )
-        ttk.Combobox(
+        self.format_combo = ttk.Combobox(
             grid,
             textvariable=self.format_var,
             state="readonly",
             values=("PDF", "CSV"),
             width=14,
-        ).grid(row=2, column=1, sticky="w", pady=7)
+        )
+        self.format_combo.grid(row=2, column=1, sticky="w", pady=7)
 
         grid.columnconfigure(1, weight=1)
 
@@ -119,19 +121,35 @@ class ReportDialog(tk.Toplevel):
             command=self.destroy,
             width=12,
         ).pack(side="right")
-        ttk.Button(
+        self.generate_button = ttk.Button(
             footer,
             text="Genera…",
             command=self._generate,
             style="Accent.TButton",
             width=12,
-        ).pack(side="right", padx=(0, 8))
+        )
+        self.generate_button.pack(side="right", padx=(0, 8))
 
         self.update_idletasks()
         width = max(590, self.winfo_reqwidth() + 30)
         height = max(360, self.winfo_reqheight() + 30)
         self.geometry(f"{width}x{height}")
         self.resizable(True, False)
+
+    def _set_busy(self, busy: bool) -> None:
+        """Prevent duplicate exports while the renderer worker is active."""
+
+        if busy:
+            self.generate_button.state(["disabled"])
+            self.kind_combo.state(["disabled"])
+            self.scope_combo.state(["disabled"])
+            self.format_combo.state(["disabled"])
+        else:
+            self.generate_button.state(["!disabled"])
+            self.kind_combo.state(["!disabled", "readonly"])
+            self.scope_combo.state(["!disabled", "readonly"])
+            self.format_combo.state(["!disabled", "readonly"])
+
 
     def _generate(self) -> None:
         kind = REPORT_KIND_BY_LABEL[self.kind_var.get()]
@@ -230,4 +248,5 @@ class ReportDialog(tk.Toplevel):
             worker,
             completed,
             failed,
+            busy_scope=self._set_busy,
         )
