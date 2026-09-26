@@ -13,6 +13,7 @@ from voucher_management.legacy_migration import (
     LegacyVoucherCandidate,
     apply_legacy_migration_plan,
     build_legacy_migration_plan,
+    execute_legacy_migration,
     materialize_resolved_legacy_events,
 )
 from voucher_management.database import Database
@@ -371,7 +372,7 @@ def test_apply_persists_resolved_and_unresolved_evidence_atomically(tmp_path):
         run = db.connection.execute(
             "SELECT * FROM migration_runs WHERE migration_uuid='migration-1'"
         ).fetchone()
-        assert run["status"] == "COMPLETED"
+        assert run["status"] == "EVIDENCE_READY"
         assert run["source_history_sha256"] == plan.source_history_sha256
     finally:
         db.close()
@@ -866,5 +867,267 @@ def test_conflicting_existing_print_job_rolls_back_materialization(tmp_path):
         assert db.connection.execute(
             "SELECT materialized_at FROM legacy_audit_events"
         ).fetchone()[0] is None
+    finally:
+        db.close()
+
+
+class _FakeEncryptedBackupService:
+    def __init__(self, db, *, fail=False, encrypted=True):
+        self.db = db
+        self.fail = fail
+        self.encrypted = encrypted
+        self.calls = []
+
+    def create(self, destination, *, password):
+        self.calls.append(("create", str(destination), bool(password)))
+        # The safety copy must happen before any migration row is committed.
+        assert self.db.connection.execute(
+            "SELECT COUNT(*) FROM migration_runs"
+        ).fetchone()[0] == 0
+        if self.fail:
+            raise RuntimeError("synthetic backup failure")
+        destination = Path(destination)
+        destination.write_bytes(b"synthetic-protected-backup")
+        return destination
+
+    def is_encrypted_backup(self, source):
+        self.calls.append(("verify", str(source)))
+        return self.encrypted
+
+
+def test_execute_requires_verified_encrypted_backup_before_migration(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "execute-event",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+    db, controller_id, _voucher_id = _database_with_voucher(tmp_path)
+    try:
+        plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    controller_id,
+                    "legacy-voucher-1",
+                    "1234567890",
+                )
+            ],
+        )
+        service = _FakeEncryptedBackupService(db)
+        backup = tmp_path / "pre-migration.vmbk"
+
+        result = execute_legacy_migration(
+            database=db,
+            backup_service=service,
+            backup_destination=backup,
+            backup_password="fixture-migration-passphrase",
+            plan=plan,
+            migration_uuid="migration-execute",
+            applied_at="2026-09-26T10:40:00+00:00",
+            materialized_at="2026-09-26T10:41:00+00:00",
+        )
+
+        assert result.backup_path == backup
+        assert backup.is_file()
+        assert [call[0] for call in service.calls] == ["create", "verify"]
+        run = db.connection.execute(
+            """SELECT status, completed_at FROM migration_runs
+               WHERE migration_uuid='migration-execute'"""
+        ).fetchone()
+        assert tuple(run) == (
+            "COMPLETED",
+            "2026-09-26T10:41:00+00:00",
+        )
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM voucher_events"
+        ).fetchone()[0] == 1
+        db.integrity_check()
+    finally:
+        db.close()
+
+
+def test_execute_backup_failure_leaves_database_unmodified(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "backup-failure-event",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+    db, controller_id, _voucher_id = _database_with_voucher(tmp_path)
+    try:
+        plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    controller_id,
+                    "legacy-voucher-1",
+                    "1234567890",
+                )
+            ],
+        )
+        service = _FakeEncryptedBackupService(db, fail=True)
+
+        with pytest.raises(
+            LegacyMigrationError,
+            match="Backup di sicurezza",
+        ):
+            execute_legacy_migration(
+                database=db,
+                backup_service=service,
+                backup_destination=tmp_path / "failed.vmbk",
+                backup_password="fixture-migration-passphrase",
+                plan=plan,
+                migration_uuid="migration-backup-failure",
+                applied_at="2026-09-26T10:40:00+00:00",
+                materialized_at="2026-09-26T10:41:00+00:00",
+            )
+
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM migration_runs"
+        ).fetchone()[0] == 0
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM legacy_audit_events"
+        ).fetchone()[0] == 0
+    finally:
+        db.close()
+
+
+def test_execute_rejects_unverified_backup_before_database_mutation(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "unencrypted-event",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+    db, controller_id, _voucher_id = _database_with_voucher(tmp_path)
+    try:
+        plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    controller_id,
+                    "legacy-voucher-1",
+                    "1234567890",
+                )
+            ],
+        )
+        service = _FakeEncryptedBackupService(db, encrypted=False)
+
+        with pytest.raises(
+            LegacyMigrationError,
+            match="non verificabile",
+        ):
+            execute_legacy_migration(
+                database=db,
+                backup_service=service,
+                backup_destination=tmp_path / "unsafe.vmbk",
+                backup_password="fixture-migration-passphrase",
+                plan=plan,
+                migration_uuid="migration-unverified-backup",
+                applied_at="2026-09-26T10:40:00+00:00",
+                materialized_at="2026-09-26T10:41:00+00:00",
+            )
+
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM migration_runs"
+        ).fetchone()[0] == 0
+    finally:
+        db.close()
+
+
+def test_materialization_failure_keeps_evidence_retryable_not_operational(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "print",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+                "output_file": "Voucher_Legacy.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+                "print_job_id": "execute-conflict",
+            }
+        ],
+    )
+    db, controller_id, _voucher_id = _database_with_voucher(tmp_path)
+    try:
+        plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    controller_id,
+                    "legacy-voucher-1",
+                    "1234567890",
+                )
+            ],
+        )
+        db.connection.execute(
+            """INSERT INTO print_jobs
+               (print_job_uuid, created_at, submitted_at, windows_user,
+                output_file, document_copies, status)
+               VALUES ('execute-conflict', 't', 'different', 'operator',
+                       'Other.pdf', 1, 'AUDITED')"""
+        )
+        db.connection.commit()
+        service = _FakeEncryptedBackupService(db)
+
+        with pytest.raises(
+            LegacyMigrationError,
+            match="Job stampa legacy già presente",
+        ):
+            execute_legacy_migration(
+                database=db,
+                backup_service=service,
+                backup_destination=tmp_path / "retryable.vmbk",
+                backup_password="fixture-migration-passphrase",
+                plan=plan,
+                migration_uuid="migration-materialize-failure",
+                applied_at="2026-09-26T10:40:00+00:00",
+                materialized_at="2026-09-26T10:41:00+00:00",
+            )
+
+        run = db.connection.execute(
+            """SELECT status FROM migration_runs
+               WHERE migration_uuid='migration-materialize-failure'"""
+        ).fetchone()
+        assert run["status"] == "EVIDENCE_READY"
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM legacy_audit_events"
+        ).fetchone()[0] == 1
+        assert db.connection.execute(
+            "SELECT materialized_at FROM legacy_audit_events"
+        ).fetchone()[0] is None
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM voucher_prints"
+        ).fetchone()[0] == 0
     finally:
         db.close()
