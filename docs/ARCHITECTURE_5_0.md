@@ -154,13 +154,30 @@ identity is idempotent, while a later plan may promote previously unresolved
 evidence when an independently known voucher becomes available.
 
 Schema 1 upgrades to schema 2 inside an explicit SQLite transaction so a DDL
-failure cannot leave a partial migration schema. Neither this evidence phase nor
-the planner materializes legacy physical-print counts into `print_jobs` yet.
+failure cannot leave a partial migration schema.
+
+Resolved evidence can then be materialized idempotently into operational facts.
+Legacy PDF-generation rows become `voucher_events` with source `MIGRATION`.
+Resolved physical-print rows create or verify `print_jobs`/`voucher_prints`;
+an existing Milestone A print job with the same audit id is verified and reused
+rather than duplicated. After inserting older historical prints, print
+sequences are deterministically renumbered so sequence 1 remains the earliest
+known physical print. Ambiguous and unresolved evidence is never materialized.
+
+A migration run is `EVIDENCE_READY` after the HMAC evidence transaction and
+becomes `COMPLETED` only in the materialization transaction. A materialization
+failure therefore leaves no partial operational print/event facts and can be
+retried from the preserved evidence.
+
+The core execution path requires a verified encrypted `.vmbk` safety backup
+before either phase begins and performs a final SQLite integrity check.
+`history.jsonl` and its key are never rewritten by migration.
 
 Unresolved rows are preserved as legacy audit evidence. They are never guessed
-into a voucher record. Before the final apply/materialization workflow becomes
-the default upgrade path it must create a safety backup, translate only verified
-legacy facts into operational tables, support rollback and remain idempotent.
+into a voucher record. The remaining Milestone B UI must make this workflow an
+explicit operator action, gather independently known candidate vouchers and a
+backup password, show unresolved/ambiguous counts before execution, and keep
+automatic startup migration disabled until that interaction is proven.
 
 ### Milestone C — shared Windows deployment
 
