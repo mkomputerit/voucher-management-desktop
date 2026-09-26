@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from voucher_management.report_policy import ReportPurpose
 from voucher_management.report_render import (
@@ -77,10 +80,23 @@ def test_csv_report_omits_voucher_column_when_policy_hides_code(tmp_path: Path):
     assert "Utilizzi controller osservati;2" in payload
 
 
-def test_csv_report_can_render_already_authorized_code_field(tmp_path: Path):
-    output = tmp_path / "handoff.csv"
+def test_renderer_rejects_clear_code_for_summary_purpose(tmp_path: Path):
+    output = tmp_path / "invalid.csv"
 
-    render_report_csv(_dataset(code="12345-67890"), output)
+    with pytest.raises(ValueError, match="code policy"):
+        render_report_csv(_dataset(code="12345-67890"), output)
+
+    assert not output.exists()
+
+
+def test_csv_can_render_explicit_operational_handoff_dataset(tmp_path: Path):
+    output = tmp_path / "handoff.csv"
+    dataset = replace(
+        _dataset(code="12345-67890"),
+        purpose=ReportPurpose.OPERATIONAL_HANDOFF,
+    )
+
+    render_report_csv(dataset, output)
 
     payload = output.read_text(encoding="utf-8-sig")
     assert "Voucher" in payload
