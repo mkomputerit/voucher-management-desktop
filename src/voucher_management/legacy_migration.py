@@ -261,6 +261,12 @@ def build_legacy_migration_plan(
     unresolved: list[UnresolvedLegacyRow] = []
 
     rows, source_history_sha256 = _validated_history_rows(history_path)
+    event_keys = [row.event_key for row in rows]
+    if len(event_keys) != len(set(event_keys)):
+        raise LegacyMigrationError(
+            "Identità evento legacy duplicata nella cronologia"
+        )
+
     for row in rows:
         matches = tuple(
             sorted(
