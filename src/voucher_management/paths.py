@@ -51,6 +51,8 @@ class AppPaths:
         # Milestone A is per-user; machine scope belongs to Milestone C.
         self.instance_lock = self.data / "application.instance.lock"
         self.pending_create = self.data / "pending_create_guard"
+        # Milestone A keeps the 5.0 SQLite store in the current per-user root.
+        self.database = self.data / "voucher_management.db"
         self.settings = self.config / "settings.json"
         self._logo_warning = ""
 
