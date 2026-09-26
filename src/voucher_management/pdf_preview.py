@@ -43,6 +43,7 @@ class PdfPreview(tk.Toplevel):
         settings: dict,
         on_print=None,
         on_audit=None,
+        on_submitted=None,
     ):
         super().__init__(parent)
         self.app = parent
@@ -55,6 +56,10 @@ class PdfPreview(tk.Toplevel):
         # thread after the crash-safe HMAC audit succeeds, so the SQLite
         # connection is never shared with the print worker.
         self.on_audit = on_audit
+        # Called only after the Windows submission returned successfully.
+        # This is distinct from on_print, which also refreshes UI around audit
+        # recovery and ambiguous prepared jobs.
+        self.on_submitted = on_submitted
         self.document = None
         self.page_index = 0
         self.photo = None
@@ -369,6 +374,10 @@ class PdfPreview(tk.Toplevel):
             pending, audit_error = result
             if not finish_controls():
                 return
+
+            on_submitted = getattr(self, "on_submitted", None)
+            if on_submitted:
+                on_submitted()
 
             if audit_error is None:
                 try:
