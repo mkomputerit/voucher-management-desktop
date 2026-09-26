@@ -658,6 +658,17 @@ COMMIT;
                     ),
                 )
 
+    def controller_name(self, controller_id: int) -> str | None:
+        """Return one persisted non-secret controller display name."""
+
+        row = self.connection.execute(
+            "SELECT name FROM controllers WHERE id=?",
+            (int(controller_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["name"] or "").strip() or None
+
     def report_voucher_rows(
         self,
         *,
