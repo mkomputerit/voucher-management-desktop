@@ -2,6 +2,17 @@
 
 Status: review implementation foundation.
 
+
+
+## Report credential exposure policy
+
+Voucher codes are reusable network credentials and are therefore excluded by
+default from every report. Summary and audit reports cannot expose a clear code
+even if a caller requests it. The only permitted exception is an explicit
+operational-handoff report requested by the operator. All report renderers must
+use `report_policy.py`; this rule is covered by dedicated tests so PDF/CSV
+implementations cannot silently choose a weaker policy.
+
 ## Data ownership
 
 Voucher Management 5.0 separates controller facts from local application facts.
