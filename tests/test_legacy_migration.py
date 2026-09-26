@@ -15,13 +15,13 @@ from voucher_management.legacy_migration import (
 )
 
 
-SECRET = "legacy-migration-secret-value"
-FINGERPRINT = hashlib.sha256(SECRET.encode("utf-8")).hexdigest()[:16]
+FIXTURE_KEY = "legacy-migration-secret-value"
+FINGERPRINT = hashlib.sha256(FIXTURE_KEY.encode("utf-8")).hexdigest()[:16]
 
 
 def _digest(code: str) -> str:
     return hmac.new(
-        SECRET.encode("utf-8"),
+        FIXTURE_KEY.encode("utf-8"),
         code.encode("ascii"),
         hashlib.sha256,
     ).hexdigest()
@@ -68,7 +68,7 @@ def test_plan_resolves_generate_and_print_rows_from_known_code(tmp_path):
     plan = build_legacy_migration_plan(
         history_path=history,
         expected_fingerprint=FINGERPRINT,
-        secret=SECRET,
+        secret=FIXTURE_KEY,
         candidates=[
             LegacyVoucherCandidate(
                 controller_id=7,
@@ -104,7 +104,7 @@ def test_plan_preserves_unknown_hmac_as_unresolved_evidence(tmp_path):
     plan = build_legacy_migration_plan(
         history_path=history,
         expected_fingerprint=FINGERPRINT,
-        secret=SECRET,
+        secret=FIXTURE_KEY,
         candidates=[
             LegacyVoucherCandidate(
                 controller_id=1,
@@ -139,7 +139,7 @@ def test_same_digest_on_two_voucher_identities_is_ambiguous(tmp_path):
     plan = build_legacy_migration_plan(
         history_path=history,
         expected_fingerprint=FINGERPRINT,
-        secret=SECRET,
+        secret=FIXTURE_KEY,
         candidates=[
             LegacyVoucherCandidate(1, "controller-a-id", code),
             LegacyVoucherCandidate(2, "controller-b-id", code),
@@ -174,7 +174,7 @@ def test_duplicate_candidate_spelling_does_not_create_false_ambiguity(tmp_path):
     plan = build_legacy_migration_plan(
         history_path=history,
         expected_fingerprint=FINGERPRINT,
-        secret=SECRET,
+        secret=FIXTURE_KEY,
         candidates=[
             LegacyVoucherCandidate(1, "v1", "11111-22222"),
             LegacyVoucherCandidate(1, "v1", "1111122222"),
@@ -188,9 +188,9 @@ def test_duplicate_candidate_spelling_does_not_create_false_ambiguity(tmp_path):
 @pytest.mark.parametrize(
     "expected,secret",
     [
-        ("deadbeefdeadbeef", SECRET),
+        ("deadbeefdeadbeef", FIXTURE_KEY),
         (FINGERPRINT, "different-secret"),
-        ("", SECRET),
+        ("", FIXTURE_KEY),
     ],
 )
 def test_identity_mismatch_fails_before_history_is_migrated(
@@ -261,7 +261,7 @@ def test_corrupt_or_unsupported_history_fails_closed(tmp_path, payload):
         build_legacy_migration_plan(
             history_path=history,
             expected_fingerprint=FINGERPRINT,
-            secret=SECRET,
+            secret=FIXTURE_KEY,
             candidates=[],
         )
 
@@ -282,7 +282,7 @@ def test_planning_is_read_only_and_idempotent(tmp_path):
     args = dict(
         history_path=history,
         expected_fingerprint=FINGERPRINT,
-        secret=SECRET,
+        secret=FIXTURE_KEY,
         candidates=[
             LegacyVoucherCandidate(1, "v1", "1234567890"),
         ],
