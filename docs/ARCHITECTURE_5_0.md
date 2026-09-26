@@ -191,21 +191,24 @@ execution, and never enables automatic startup migration.
 
 ### Milestone C — shared Windows deployment
 
-Installed 5.0 deployments opt into shared storage through the installer-owned
-`voucher-management-deployment.json` marker beside the executable. Portable
+Managed shared deployments opt into shared storage through the
+deployment-script-owned `voucher-management-deployment.json` marker beside
+the executable. Milestone C deliberately uses an elevated PowerShell deployment
+script rather than claiming MSI/EXE installer semantics: it does not register
+an Installed Apps entry or an UninstallString in Windows. Portable
 and source execution remain per-user for compatibility; the marker is therefore
 the explicit trust boundary that switches the runtime to
 `%ProgramData%\VoucherManagement`. A malformed/unsupported marker fails
 closed instead of silently falling back to another data root.
 
-The elevated Windows installer copies the reviewed onedir build under
+The elevated Windows deployment script copies the reviewed onedir build under
 `%ProgramFiles%\Voucher Management`, creates the local
 `Voucher Management Operators` group, adds the selected operator and applies
 ProgramData ACLs by SID. Before granting application rights, the installer
 resets stale explicit ACL state from a pre-existing data tree, removes
 inheritance from broader ProgramData ACLs, and rebuilds the allowed set:
 SYSTEM and BUILTIN\Administrators receive Full Control, while the dedicated
-operator group receives an explicit inheritable Modify ACE. The installer then
+operator group receives an explicit inheritable Modify ACE. The deployment script then
 enumerates the root and all existing descendants and fails closed if any
 Allow ACE belongs to a principal outside those three SIDs. Ordinary users
 outside that group therefore receive no application-data grant from Voucher
@@ -227,7 +230,7 @@ backup. The shared SQLite handle is closed before restore; the existing
 WAL-safe restore path supplies rollback. The original per-user tree is left
 unchanged and the application restarts after a successful migration.
 
-The installer does not auto-launch after adding a user to the local operator
+The deployment script does not auto-launch after adding a user to the local operator
 group because Windows group membership is reflected in a newly created logon
 token. A newly added operator may therefore need to sign out and sign in before
 the first shared-data launch.
