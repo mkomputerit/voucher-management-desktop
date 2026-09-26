@@ -52,6 +52,15 @@ function Set-SharedDataAcl {
         [Security.Principal.SecurityIdentifier]$OperatorGroupSid
     )
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
+
+    # /grant:r only replaces grants for principals explicitly named in the
+    # command. Reset first so stale explicit ACEs from manual/older installs
+    # cannot survive an upgrade, then rebuild the complete allowed set.
+    & icacls.exe $Path /reset /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Reset ACL ProgramData non riuscito."
+    }
+
     $rules = @(
         "*S-1-5-18:(OI)(CI)F",
         "*S-1-5-32-544:(OI)(CI)F",
@@ -60,6 +69,35 @@ function Set-SharedDataAcl {
     & icacls.exe $Path /inheritance:r /grant:r $rules /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Configurazione ACL ProgramData non riuscita."
+    }
+
+    $allowedSids = @(
+        "S-1-5-18",
+        "S-1-5-32-544",
+        $OperatorGroupSid.Value
+    )
+    $items = @((Get-Item -LiteralPath $Path)) + @(
+        Get-ChildItem -LiteralPath $Path -Force -Recurse
+    )
+    foreach ($item in $items) {
+        $acl = Get-Acl -LiteralPath $item.FullName
+        if (-not $acl.AreAccessRulesProtected) {
+            throw "ACL ProgramData non protetta: $($item.FullName)"
+        }
+        foreach ($ace in $acl.Access) {
+            if (
+                $ace.AccessControlType -ne
+                [Security.AccessControl.AccessControlType]::Allow
+            ) {
+                continue
+            }
+            $sid = $ace.IdentityReference.Translate(
+                [Security.Principal.SecurityIdentifier]
+            ).Value
+            if ($allowedSids -notcontains $sid) {
+                throw "ACL ProgramData contiene un principal non autorizzato: $sid"
+            }
+        }
     }
 }
 
