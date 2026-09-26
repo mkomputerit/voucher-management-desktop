@@ -717,3 +717,74 @@ def test_prepared_recovery_ui_can_discard_not_printed_job(monkeypatch):
     assert captured["label"] == "Annullamento stampa pendente…"
     assert captured["worker"]() is True
     assert calls == [("discard",)]
+
+
+def test_sqlite_audit_keeps_marker_until_secondary_commit(monkeypatch):
+    captured = {}
+    order = []
+    print_button = _Button()
+    register_button = _Button()
+
+    class History:
+        def assert_no_pending_print_audit(self):
+            order.append("assert")
+
+        def prepare_print_audit(self, *args, **kwargs):
+            order.append("prepare")
+
+        def mark_print_submitted(self, audit_id):
+            order.append(("submitted", audit_id))
+
+        def record_print(self, *args, **kwargs):
+            order.append(("history", kwargs.get("clear_pending", True)))
+
+        def finalize_pending_print_audit(self, audit_id):
+            order.append(("finalize", audit_id))
+
+    app = SimpleNamespace(
+        _run_background_task=lambda label, worker, success, error: (
+            captured.update(worker=worker, success=success, error=error) or True
+        )
+    )
+    fake = SimpleNamespace(
+        app=app,
+        _printing=False,
+        printer_var=_Var("Test printer"),
+        copies_var=_Var(1),
+        print_button=print_button,
+        register_print_button=register_button,
+        _print_windows=lambda *args: order.append("windows"),
+        history=History(),
+        codes=["12345-67890"],
+        pdf_path=Path("Voucher_Test.pdf"),
+        settings={},
+        _pending_print_audit=None,
+        on_print=None,
+        on_submitted=None,
+        on_audit=lambda pending, codes, path: order.append(
+            ("sqlite", pending["audit_id"], tuple(codes), path.name)
+        ),
+        winfo_exists=lambda: True,
+    )
+
+    monkeypatch.setattr(
+        "voucher_management.pdf_preview.messagebox.showinfo",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "voucher_management.pdf_preview.messagebox.showwarning",
+        lambda *args, **kwargs: None,
+    )
+
+    PdfPreview.print_document(fake)
+    result = captured["worker"]()
+    assert ("history", False) in order
+    assert not any(
+        isinstance(item, tuple) and item[0] == "finalize"
+        for item in order
+    )
+
+    captured["success"](result)
+    sqlite_index = next(i for i, item in enumerate(order) if isinstance(item, tuple) and item[0] == "sqlite")
+    finalize_index = next(i for i, item in enumerate(order) if isinstance(item, tuple) and item[0] == "finalize")
+    assert sqlite_index < finalize_index
