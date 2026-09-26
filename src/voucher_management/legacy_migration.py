@@ -111,6 +111,27 @@ class LegacyMigrationPlan:
         return not self.ambiguous and not self.unresolved
 
 
+def legacy_candidates_from_database(
+    database: "Database",
+) -> tuple[LegacyVoucherCandidate, ...]:
+    """Snapshot independently known clear-code voucher identities from SQLite."""
+
+    rows = database.connection.execute(
+        """SELECT controller_id, unifi_id, code
+           FROM vouchers
+           WHERE TRIM(code) <> ''
+           ORDER BY controller_id, unifi_id"""
+    ).fetchall()
+    return tuple(
+        LegacyVoucherCandidate(
+            controller_id=int(row["controller_id"]),
+            unifi_id=str(row["unifi_id"]),
+            code=str(row["code"]),
+        )
+        for row in rows
+    )
+
+
 _HEX = frozenset("0123456789abcdef")
 
 
