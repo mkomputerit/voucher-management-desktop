@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+from voucher_management import locking
 from voucher_management.locking import LockTimeout, exclusive_file_lock
 
 
@@ -78,3 +79,33 @@ def test_crashed_process_releases_os_lock_without_stale_cleanup(tmp_path):
 
     with exclusive_file_lock(path, timeout=2, stale_after=0):
         assert path.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows msvcrt error mapping")
+def test_windows_try_lock_retries_only_real_contention(monkeypatch, tmp_path):
+    """Unrelated Windows I/O errors must never masquerade as lock contention."""
+
+    import errno
+    import msvcrt
+
+    path = tmp_path / "windows.lock"
+    path.write_bytes(b"1")
+    fd = os.open(str(path), os.O_RDWR)
+    try:
+        monkeypatch.setattr(
+            msvcrt,
+            "locking",
+            lambda *_args: (_ for _ in ()).throw(OSError(errno.EACCES, "busy")),
+        )
+        assert locking._try_lock(fd) is False
+
+        monkeypatch.setattr(
+            msvcrt,
+            "locking",
+            lambda *_args: (_ for _ in ()).throw(OSError(errno.EPERM, "denied")),
+        )
+        with pytest.raises(OSError) as exc_info:
+            locking._try_lock(fd)
+        assert exc_info.value.errno == errno.EPERM
+    finally:
+        os.close(fd)
