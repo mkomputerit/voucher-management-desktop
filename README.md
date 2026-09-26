@@ -34,6 +34,9 @@ The application currently provides:
   separate stations remain distinct during convergence;
 - portable backup/restore of application-managed data, with optional
   password-protected authenticated `.vmbk` backups and legacy ZIP support;
+- SQLite-backed administrative reporting with printable PDF and CSV export for
+  summary, used, expired, printed-never-used, never-printed, nominal and
+  full-history views; administrative exports never expose voucher codes in clear;
 - persistent custom logo library;
 - Windows 11 light/dark themes.
 
