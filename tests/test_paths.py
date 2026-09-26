@@ -168,3 +168,70 @@ def test_unavailable_legacy_logo_does_not_break_startup_migration(
     migrated = paths.persist_configured_logo(str(external))
 
     assert migrated == str(external)
+
+
+def test_installed_marker_uses_shared_programdata_without_implicit_profile_import(
+    tmp_path,
+    monkeypatch,
+):
+    program = tmp_path / "ProgramFiles" / "VoucherManagement"
+    program.mkdir(parents=True)
+    (program / "voucher-management-deployment.json").write_text(
+        '{"format":1,"mode":"shared_programdata"}',
+        encoding="utf-8",
+    )
+    profile = tmp_path / "profile"
+    programdata = tmp_path / "ProgramData"
+    monkeypatch.setenv("LOCALAPPDATA", str(profile))
+    monkeypatch.setenv("PROGRAMDATA", str(programdata))
+
+    legacy = profile / "VoucherManagement" / "config"
+    legacy.mkdir(parents=True)
+    (legacy / "settings.json").write_text(
+        '{"wifi_title":"per-user"}',
+        encoding="utf-8",
+    )
+
+    paths = AppPaths(base_override=program)
+    paths.ensure_writable()
+
+    assert paths.shared_mode is True
+    assert paths.user_root == programdata / "VoucherManagement"
+    assert paths.per_user_root == profile / "VoucherManagement"
+    assert paths.database == (
+        programdata / "VoucherManagement" / "data" / "voucher_management.db"
+    )
+    assert not paths.settings.exists()
+    assert paths.per_user_root in paths.legacy_user_roots
+
+
+def test_portable_mode_remains_per_user_even_when_programdata_exists(
+    tmp_path,
+    monkeypatch,
+):
+    program = tmp_path / "portable"
+    program.mkdir()
+    profile = tmp_path / "profile"
+    monkeypatch.setenv("LOCALAPPDATA", str(profile))
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+
+    paths = AppPaths(base_override=program)
+
+    assert paths.shared_mode is False
+    assert paths.user_root == profile / "VoucherManagement"
+
+
+def test_invalid_deployment_marker_fails_closed(tmp_path):
+    program = tmp_path / "program"
+    program.mkdir()
+    (program / "voucher-management-deployment.json").write_text(
+        '{"format":99,"mode":"shared_programdata"}',
+        encoding="utf-8",
+    )
+
+    try:
+        AppPaths(base_override=program)
+    except RuntimeError as exc:
+        assert "Marker di installazione" in str(exc)
+    else:
+        raise AssertionError("invalid deployment marker must fail closed")
