@@ -9,6 +9,8 @@ the stable print path.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import getpass
+import os
 from pathlib import Path
 from queue import Empty
 import sys
@@ -696,8 +698,60 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             failed,
         )
 
+    @staticmethod
+    def _windows_operator_identity() -> str:
+        """Return a stable local audit label without persisting credentials."""
+
+        username = str(os.environ.get("USERNAME") or getpass.getuser()).strip()
+        domain = str(os.environ.get("USERDOMAIN") or "").strip()
+        if domain and username:
+            return f"{domain}\\{username}"
+        return username or "unknown"
+
+    def _record_sqlite_print_audit(
+        self,
+        pending: dict,
+        codes: list[str],
+        pdf_path: Path,
+    ) -> None:
+        """Mirror a confirmed physical print into the 5.0 SQLite audit."""
+
+        if self.active_controller_id is None:
+            raise RuntimeError(
+                "Controller locale non associato alla stampa"
+            )
+        self.database.record_print_audit(
+            controller_id=self.active_controller_id,
+            audit_id=str(pending["audit_id"]),
+            codes=list(codes),
+            output_file=Path(pdf_path).name,
+            document_copies=int(pending["copies"]),
+            printed_at=str(pending["submitted_at"]),
+            windows_user=self._windows_operator_identity(),
+        )
+
+    def _deselect_printed_codes(self, codes: list[str]) -> None:
+        """Clear only vouchers whose Windows print submission was confirmed."""
+
+        wanted = {str(code).replace("-", "") for code in codes}
+        self.checked_ids.difference_update(
+            voucher.id
+            for voucher in self.vouchers
+            if voucher.code_formatted.replace("-", "") in wanted
+        )
+        self.populate()
+
     def _preview(self, path: Path, codes: list[str]):
-        PdfPreview(self, path, codes, self.history, self.settings, on_print=self.populate)
+        PdfPreview(
+            self,
+            path,
+            codes,
+            self.history,
+            self.settings,
+            on_print=self.populate,
+            on_audit=self._record_sqlite_print_audit,
+            on_submitted=lambda: self._deselect_printed_codes(codes),
+        )
 
     def open_existing_pdf(self):
         selected = self.selected()
