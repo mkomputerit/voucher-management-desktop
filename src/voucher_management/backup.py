@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -41,6 +42,12 @@ SUPPORTED_BACKUP_FORMATS = {1, BACKUP_FORMAT}
 MAX_ARCHIVE_FILES = 10_000
 MAX_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_MANIFEST_BYTES = 64 * 1024
+SQLITE_MEMBER = "data/voucher_management.db"
+SQLITE_SIDECAR_MEMBERS = {
+    "data/voucher_management.db-wal",
+    "data/voucher_management.db-shm",
+    "data/voucher_management.db-journal",
+}
 
 WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -71,6 +78,107 @@ class BackupService:
     def __init__(self, paths):
         self.paths = paths
         self._restore_warnings: list[str] = []
+
+    def _database_path(self) -> Path:
+        """Return the live 5.0 SQLite path, including lightweight test paths."""
+
+        return Path(
+            getattr(
+                self.paths,
+                "database",
+                self.paths.data / "voucher_management.db",
+            )
+        )
+
+    @staticmethod
+    def _sqlite_integrity_from_bytes(payload: bytes) -> int:
+        """Verify one standalone SQLite image and return PRAGMA user_version."""
+
+        if not payload:
+            raise BackupError("Backup SQLite vuoto")
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.deserialize(payload)
+            rows = connection.execute("PRAGMA integrity_check").fetchall()
+            if rows != [("ok",)]:
+                raise BackupError("Backup SQLite non integro")
+            return int(
+                connection.execute("PRAGMA user_version").fetchone()[0]
+            )
+        except (sqlite3.DatabaseError, sqlite3.OperationalError) as exc:
+            raise BackupError(
+                "Backup SQLite danneggiato o non leggibile"
+            ) from exc
+        finally:
+            connection.close()
+
+    def _sqlite_snapshot_bytes(self) -> tuple[bytes, int, str] | None:
+        """Create a transactionally consistent snapshot with SQLite backup().
+
+        The source may be in WAL mode. Opening a separate read connection lets
+        SQLite include committed WAL pages in the online backup without copying
+        the live .db/-wal/-shm files directly.
+        """
+
+        source = self._database_path()
+        if not source.is_file():
+            return None
+
+        source_connection = None
+        snapshot_connection = sqlite3.connect(":memory:")
+        try:
+            source_connection = sqlite3.connect(
+                source,
+                timeout=5.0,
+            )
+            source_connection.backup(snapshot_connection)
+            # backup() copies page 1 verbatim, including WAL read/write flags
+            # from the source. VACUUM rebuilds only the in-memory snapshot under
+            # its own rollback-journal mode, producing a standalone image that
+            # never requires a -wal sidecar after archive/restore.
+            snapshot_connection.execute("VACUUM")
+            rows = snapshot_connection.execute(
+                "PRAGMA integrity_check"
+            ).fetchall()
+            if rows != [("ok",)]:
+                raise BackupError("Snapshot SQLite non integro")
+            user_version = int(
+                snapshot_connection.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0]
+            )
+            payload = snapshot_connection.serialize()
+            digest = hashlib.sha256(payload).hexdigest()
+            return payload, user_version, digest
+        except BackupError:
+            raise
+        except (sqlite3.DatabaseError, sqlite3.OperationalError, OSError) as exc:
+            raise BackupError(
+                "Impossibile creare uno snapshot SQLite consistente"
+            ) from exc
+        finally:
+            if source_connection is not None:
+                source_connection.close()
+            snapshot_connection.close()
+
+    @staticmethod
+    def _copytree_without_live_sqlite(source: Path, destination: Path) -> None:
+        """Copy application data while excluding live SQLite/WAL artifacts."""
+
+        database_names = {
+            "voucher_management.db",
+            "voucher_management.db-wal",
+            "voucher_management.db-shm",
+            "voucher_management.db-journal",
+        }
+
+        def ignore(path, names):
+            current = Path(path)
+            if current.name == "data":
+                return [name for name in names if name in database_names]
+            return []
+
+        shutil.copytree(source, destination, ignore=ignore)
 
     def consume_restore_warnings(self) -> tuple[str, ...]:
         """Return and clear non-fatal compatibility warnings from restore."""
@@ -299,8 +407,9 @@ class BackupService:
             ) from exc
 
     def _write_archive_contents(self, archive: zipfile.ZipFile) -> None:
-        """Write the portable logical backup into an already-open ZIP."""
+        """Write one verified logical backup into an already-open ZIP."""
 
+        sqlite_snapshot = self._sqlite_snapshot_bytes()
         manifest = {
             "format": BACKUP_FORMAT,
             "created_utc": datetime.now(timezone.utc).isoformat(),
@@ -310,10 +419,22 @@ class BackupService:
                 self.paths.data / "history_secret.key"
             ).is_file(),
         }
+        if sqlite_snapshot is not None:
+            payload, user_version, digest = sqlite_snapshot
+            manifest["sqlite_snapshot"] = {
+                "member": SQLITE_MEMBER,
+                "method": "sqlite3.Connection.backup",
+                "integrity_check": "ok",
+                "user_version": user_version,
+                "sha256": digest,
+            }
+
         archive.writestr(
             self.MANIFEST,
             json.dumps(manifest, indent=2, ensure_ascii=False),
         )
+        if sqlite_snapshot is not None:
+            archive.writestr(SQLITE_MEMBER, sqlite_snapshot[0])
         for dirname in self.DATA_DIRS:
             root = self.paths.user_root / dirname
             if not root.exists():
@@ -343,6 +464,10 @@ class BackupService:
                 relative = source.relative_to(
                     self.paths.user_root
                 ).as_posix()
+                if relative == SQLITE_MEMBER or relative in SQLITE_SIDECAR_MEMBERS:
+                    # The main database is archived only from the online SQLite
+                    # snapshot above. WAL/SHM/journal files are never portable.
+                    continue
                 if relative == "config/settings.json":
                     archive.writestr(
                         relative,
@@ -508,6 +633,54 @@ class BackupService:
                 ):
                     raise BackupError(
                         "Il backup non appartiene a Voucher Management"
+                    )
+
+                if names.intersection(SQLITE_SIDECAR_MEMBERS):
+                    raise BackupError(
+                        "Il backup contiene file SQLite WAL/SHM non portabili"
+                    )
+
+                sqlite_meta = manifest.get("sqlite_snapshot")
+                has_sqlite = SQLITE_MEMBER in names
+                if sqlite_meta is not None:
+                    if not isinstance(sqlite_meta, dict) or not has_sqlite:
+                        raise BackupError(
+                            "Metadati snapshot SQLite incoerenti"
+                        )
+                    if sqlite_meta.get("member") != SQLITE_MEMBER:
+                        raise BackupError(
+                            "Metadati snapshot SQLite non validi"
+                        )
+                    if sqlite_meta.get("method") != "sqlite3.Connection.backup":
+                        raise BackupError(
+                            "Metodo snapshot SQLite non riconosciuto"
+                        )
+                    payload = archive.read(SQLITE_MEMBER)
+                    user_version = self._sqlite_integrity_from_bytes(payload)
+                    expected_hash = str(
+                        sqlite_meta.get("sha256", "")
+                    ).strip().lower()
+                    if (
+                        len(expected_hash) != 64
+                        or hashlib.sha256(payload).hexdigest() != expected_hash
+                    ):
+                        raise BackupError(
+                            "Hash dello snapshot SQLite non corrispondente"
+                        )
+                    if sqlite_meta.get("integrity_check") != "ok":
+                        raise BackupError(
+                            "Snapshot SQLite non dichiarato integro"
+                        )
+                    if sqlite_meta.get("user_version") != user_version:
+                        raise BackupError(
+                            "Versione schema SQLite del backup non coerente"
+                        )
+                elif has_sqlite:
+                    # Early 5.0 beta archives copied the live .db directly.
+                    # They cannot prove that committed WAL pages were captured,
+                    # even when the main file itself passes integrity_check.
+                    raise BackupError(
+                        "Backup SQLite privo di metadati snapshot verificabili"
                     )
                 return manifest
         except (
@@ -701,10 +874,23 @@ class BackupService:
             self._validate_staged_history_identity(staging)
 
             if had_existing_root:
-                # Do not touch user_root until this copy is complete. The final
-                # rename is on the same filesystem and makes rollback existence
-                # a reliable "snapshot complete" signal.
-                shutil.copytree(self.paths.user_root, rollback_build)
+                # The rollback must be safe under WAL for the same reason as a
+                # portable backup. Copy non-SQLite data normally, then inject a
+                # verified online snapshot instead of copying live DB sidecars.
+                rollback_sqlite = self._sqlite_snapshot_bytes()
+                self._copytree_without_live_sqlite(
+                    self.paths.user_root,
+                    rollback_build,
+                )
+                if rollback_sqlite is not None:
+                    rollback_db = (
+                        rollback_build / "data" / "voucher_management.db"
+                    )
+                    rollback_db.parent.mkdir(parents=True, exist_ok=True)
+                    rollback_db.write_bytes(rollback_sqlite[0])
+                    self._sqlite_integrity_from_bytes(
+                        rollback_db.read_bytes()
+                    )
                 os.replace(rollback_build, rollback)
                 rollback_ready = True
 

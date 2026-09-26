@@ -8,7 +8,9 @@ the stable print path.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+import getpass
+import os
 from pathlib import Path
 from queue import Empty
 import sys
@@ -18,7 +20,8 @@ from tkinter import messagebox
 
 from . import __version__
 from .background_tasks import BackgroundResult, start_background_task
-from .dialogs import PrintCopiesDialog
+from .database import Database
+from .dialogs import PrintCopiesDialog, ReprintConfirmDialog
 from .history import HistoryError, HistoryService
 from .identity import PRODUCT_NAME
 from .logging_utils import configure_logging
@@ -27,12 +30,15 @@ from .paths import AppPaths
 from .pdf_fonts import UnsupportedPdfTextError
 from .pdf_preview import PdfPreview
 from .pdf_render import render_batch_pdf
+from .reprint_policy import evaluate_reprint
 from .print_archive import (
     DEFAULT_PRINT_RETENTION_DAYS,
     cleanup_orphan_pdf_temps,
     cleanup_print_archive,
 )
 from .settings import SettingsStore
+from .single_instance import InstanceAlreadyRunning, SingleInstanceGuard
+from .sync_store import load_local_vouchers, persist_successful_snapshot
 from .voucher_creation_ui import VoucherCreationMixin
 from .security.history_key import HistoryKeyStore
 from .unifi_api import ApiVoucher, UniFiApiError
@@ -91,12 +97,34 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self.minsize(1120, 650)
         self.geometry("1420x780")
         self.paths = AppPaths()
+        self.instance_guard = SingleInstanceGuard(self.paths.instance_lock)
+        try:
+            self.instance_guard.acquire()
+        except InstanceAlreadyRunning as exc:
+            messagebox.showwarning("Voucher Management già aperto", str(exc), parent=self)
+            self.destroy()
+            return
         try:
             self.paths.ensure_writable()
         except Exception as exc:
+            # The <Destroy> release hook is installed only after this check.
+            # Release explicitly so a recoverable startup error never keeps
+            # this Windows user locked out for the lifetime of the process.
+            self.instance_guard.release()
             messagebox.showerror("Avvio impossibile", f"Cartella dell'applicazione non scrivibile.\n\n{exc}")
             self.destroy()
             return
+        # Keep ownership until the root window is destroyed.
+        self.bind("<Destroy>", self._release_instance_guard, add="+")
+        self.database = Database(self.paths.database)
+        try:
+            self.database.initialize()
+            self.database.integrity_check()
+        except Exception:
+            self.database.close()
+            self.instance_guard.release()
+            raise
+        self.active_controller_id = None
         self.create_guard = CreateMutationGuard(self.paths.pending_create)
         self.settings_store = SettingsStore(self.paths.settings)
         self.settings = self.settings_store.load()
@@ -128,16 +156,10 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         # Keep the UI copy synchronized so later saves cannot erase it.
         self.settings = self.settings_store.load()
 
+        # Recovery is delayed until the SQLite controller snapshot is loaded.
+        # A submitted print marker must not be cleared after repairing only the
+        # HMAC history, otherwise a crash could permanently omit the 5.0 audit.
         pending_print_recovery_error = None
-        try:
-            if self.history.recover_pending_print_audit():
-                self.logger.info("pending_print_audit_recovered")
-        except HistoryError as exc:
-            pending_print_recovery_error = str(exc)
-            self.logger.warning(
-                "pending_print_audit_recovery_failed type=%s",
-                type(exc).__name__,
-            )
 
         self._cleanup_print_archive()
         if settings_warning:
@@ -147,7 +169,50 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 parent=self,
             )
         self.client = None
-        self.vouchers = []
+        # Milestone A can reopen the last durable snapshot before any network
+        # request. The timestamp/status remains explicitly local until connect.
+        saved_api_root = str(self.settings.get("controller_api_root", "")).strip()
+        if saved_api_root:
+            self.active_controller_id = self.database.find_controller_by_api_root(
+                saved_api_root
+            )
+        self.vouchers = (
+            load_local_vouchers(
+                self.database,
+                controller_id=self.active_controller_id,
+            )
+            if self.active_controller_id is not None
+            else []
+        )
+
+        try:
+            pending_state = self.history.pending_print_state()
+            if pending_state == "submitted":
+                if self.history.recover_pending_print_audit(
+                    clear_pending=False
+                ):
+                    self._record_pending_print_sqlite_and_finalize()
+                    self.logger.info("pending_print_audit_recovered")
+            elif pending_state == "prepared":
+                # Preserve the existing fail-closed behavior: only an operator
+                # may decide whether an interrupted Windows submission printed.
+                self.history.recover_pending_print_audit()
+        except HistoryError as exc:
+            pending_print_recovery_error = str(exc)
+            self.logger.warning(
+                "pending_print_audit_recovery_failed type=%s",
+                type(exc).__name__,
+            )
+        except Exception as exc:
+            pending_print_recovery_error = (
+                "Lo storico della stampa è disponibile, ma l'archivio SQLite "
+                "non è stato completato. Usare Recupera stampa pendente."
+            )
+            self.logger.warning(
+                "pending_sqlite_print_recovery_failed type=%s",
+                type(exc).__name__,
+            )
+
         self.by_iid = {}
         self.checked_ids = set()
         self.last_pdf = None
@@ -162,13 +227,20 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             value=self.settings.get("controller_api_root", "")
         )
         self.api_key_var = tk.StringVar()
-        self.connection_var = tk.StringVar(value="Non connesso")
+        self.connection_var = tk.StringVar(
+            value=(
+                "Modalità locale"
+                if self.active_controller_id is not None
+                else "Non connesso"
+            )
+        )
         # Default to the operator's real task rather than the complete archive.
         self.filter_var = tk.StringVar(value="Da stampare")
         self.search_var = tk.StringVar()
         self.count_var = tk.StringVar(value="0 voucher")
         self.action_var = tk.StringVar(value="PREPARA STAMPA")
         self._build_ui()
+        self._populate_initial_snapshot()
         if logo_warning:
             messagebox.showwarning(
                 "Logo rimosso",
@@ -193,6 +265,27 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 "l'elenco prima di creare altri voucher.",
                 parent=self,
             )
+
+    def _populate_initial_snapshot(self) -> None:
+        """Render the already-loaded SQLite snapshot on first UI display.
+
+        The local snapshot is loaded before widgets are created. Populate only
+        after _build_ui() so offline startup immediately shows durable vouchers
+        instead of waiting for an operator refresh/filter action.
+        """
+
+        self.populate()
+
+    def _release_instance_guard(self, event) -> None:
+        """Release ownership only when the root Tk window is destroyed."""
+        if event.widget is self:
+            database = getattr(self, "database", None)
+            if database is not None:
+                try:
+                    database.close()
+                finally:
+                    self.database = None
+            self.instance_guard.release()
 
     def _cleanup_orphan_pdf_temps(self) -> None:
         """Remove stale renderer temp files left behind by a hard crash."""
@@ -433,7 +526,16 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         client = self.client
 
         def completed(vouchers) -> None:
-            self.vouchers = list(vouchers)
+            snapshot = list(vouchers)
+            controller_id = getattr(self, "active_controller_id", None)
+            if controller_id is not None:
+                persist_successful_snapshot(
+                    self.database,
+                    controller_id=controller_id,
+                    vouchers=snapshot,
+                    observed_at=datetime.now(timezone.utc).isoformat(),
+                )
+            self.vouchers = snapshot
             try:
                 self.create_guard.clear()
             except CreateMutationGuardError as exc:
@@ -631,8 +733,144 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             failed,
         )
 
+    @staticmethod
+    def _windows_operator_identity() -> str:
+        """Return a stable local audit label without persisting credentials."""
+
+        username = str(os.environ.get("USERNAME") or getpass.getuser()).strip()
+        domain = str(os.environ.get("USERDOMAIN") or "").strip()
+        if domain and username:
+            return f"{domain}\\{username}"
+        return username or "unknown"
+
+    def _confirm_physical_reprint(
+        self,
+        codes: list[str],
+        parent,
+    ) -> bool:
+        """Confirm physical duplicates using durable SQLite print facts."""
+
+        if self.active_controller_id is None:
+            messagebox.showerror(
+                "Stampa",
+                "Impossibile verificare lo storico delle ristampe senza "
+                "un controller locale associato.",
+                parent=parent,
+            )
+            return False
+
+        try:
+            summaries = self.database.print_summaries_for_codes(
+                controller_id=self.active_controller_id,
+                codes=list(codes),
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "reprint_preflight_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Stampa",
+                "Impossibile verificare in modo sicuro se i voucher siano "
+                "già stati stampati. La stampa viene sospesa.",
+                parent=parent,
+            )
+            return False
+
+        warnings = []
+        seen: set[str] = set()
+        for display_code in codes:
+            canonical = str(display_code).strip().replace("-", "")
+            if not canonical or canonical in seen:
+                continue
+            seen.add(canonical)
+            warning = evaluate_reprint(summaries[canonical])
+            if warning.required:
+                warnings.append((str(display_code), warning))
+
+        if not warnings:
+            return True
+        return bool(ReprintConfirmDialog(parent, warnings).result)
+
+    def _record_sqlite_print_audit(
+        self,
+        pending: dict,
+        codes: list[str],
+        pdf_path: Path,
+    ) -> None:
+        """Mirror a confirmed physical print into the 5.0 SQLite audit."""
+
+        if self.active_controller_id is None:
+            raise RuntimeError(
+                "Controller locale non associato alla stampa"
+            )
+        self.database.record_print_audit(
+            controller_id=self.active_controller_id,
+            audit_id=str(pending["audit_id"]),
+            codes=list(codes),
+            output_file=Path(pdf_path).name,
+            document_copies=int(pending["copies"]),
+            printed_at=str(pending["submitted_at"]),
+            windows_user=self._windows_operator_identity(),
+        )
+
+    def _record_pending_print_sqlite_and_finalize(self) -> bool:
+        """Complete SQLite audit for a submitted crash-recovery marker.
+
+        Milestone A data is per Windows user, so reopening the same LocalAppData
+        root also identifies the same operator scope. The HMAC descriptor is
+        resolved only against voucher codes already present in SQLite.
+        """
+
+        details = self.history.resolve_pending_print(
+            [voucher.code_formatted for voucher in self.vouchers],
+            self.settings,
+        )
+        if details is None:
+            return False
+        if details.state != "submitted":
+            raise HistoryError(
+                "La stampa pendente non è ancora confermata come inviata"
+            )
+
+        self._record_sqlite_print_audit(
+            {
+                "audit_id": details.audit_id,
+                "copies": details.document_copies,
+                "submitted_at": details.submitted_at,
+            },
+            list(details.codes),
+            Path(details.output_file),
+        )
+        self.history.finalize_pending_print_audit(details.audit_id)
+        return True
+
+    def _deselect_printed_codes(self, codes: list[str]) -> None:
+        """Clear only vouchers whose Windows print submission was confirmed."""
+
+        wanted = {str(code).replace("-", "") for code in codes}
+        self.checked_ids.difference_update(
+            voucher.id
+            for voucher in self.vouchers
+            if voucher.code_formatted.replace("-", "") in wanted
+        )
+        self.populate()
+
     def _preview(self, path: Path, codes: list[str]):
-        PdfPreview(self, path, codes, self.history, self.settings, on_print=self.populate)
+        PdfPreview(
+            self,
+            path,
+            codes,
+            self.history,
+            self.settings,
+            on_print=self.populate,
+            on_audit=self._record_sqlite_print_audit,
+            on_submitted=lambda: self._deselect_printed_codes(codes),
+            confirm_print=lambda parent: self._confirm_physical_reprint(
+                codes,
+                parent,
+            ),
+        )
 
     def open_existing_pdf(self):
         selected = self.selected()

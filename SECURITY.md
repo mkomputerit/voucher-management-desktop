@@ -76,6 +76,35 @@ print event verifies successfully. While it exists, new physical prints,
 backup/restore and history exchange are blocked to prevent lifecycle state from
 moving backwards. This descriptor is excluded from portable backups.
 
+## Voucher database security in 5.0
+
+Voucher Management 5.0 deliberately changes the storage model for voucher
+codes. The legacy append-only history continues to identify vouchers by HMAC,
+but the new SQLite operational database stores the actual voucher code because
+the application must support durable local history, reprint decisions and
+reports after a voucher is no longer available from the controller.
+
+This is an explicit security trade-off, not a weakening of the diagnostic-log
+policy. The SQLite database must be treated as sensitive operational data.
+
+The 5.0 deployment model therefore requires these compensating controls:
+
+- voucher codes never enter ordinary diagnostic logs or filenames;
+- controller API keys, passwords and authentication tokens never enter SQLite;
+- backups containing the SQLite database are sensitive; the normal 5.0 backup
+  path is password-protected and encrypted, while plaintext backup remains only
+  a legacy-compatibility/import concern rather than a recommended choice;
+- when shared ProgramData deployment is introduced, installer ACLs must grant
+  database access only to the Windows principals intended to operate Voucher
+  Management, rather than making the database broadly readable;
+- reports expose voucher codes only when the report purpose requires them;
+- temporary copies of the live SQLite database are not used for backup; SQLite
+  backup/snapshot facilities must produce a transactionally consistent image.
+
+Encrypting voucher-code columns with a key stored beside the database would not
+provide a meaningful security boundary and is therefore not used as a cosmetic
+substitute for Windows access control and protected backups.
+
 ## Diagnostic logs
 
 Application logs contain timestamps, severity, OS family/architecture and
@@ -115,7 +144,7 @@ Backups contain application-managed settings, audit data, the portable history
 key, generated PDFs and custom logos. They can therefore contain recipient
 labels and voucher codes in the generated PDFs.
 
-Voucher Management can create an optional password-protected `.vmbk` container.
+Voucher Management 5.0 uses the password-protected `.vmbk` container as its normal backup format.
 The logical ZIP snapshot is streamed directly into AES-256-GCM rather than
 being written to a plaintext intermediate archive. The 256-bit AES key is derived
 from the operator password with Scrypt (random 16-byte salt, N=131072, r=8,
@@ -123,9 +152,10 @@ p=1). The container header is authenticated as additional data. A wrong
 password or modified encrypted file fails authentication before restore staging
 or rollback creation begins. The password is never persisted.
 
-Unencrypted ZIP backups remain supported for backward compatibility and
-explicit operator choice; they must still be protected as sensitive operational
-data. Encrypted backup validation and restore decrypt into an OS-managed
+Unencrypted ZIP backups remain readable for backward compatibility. They are
+not the normal 5.0 backup output because the SQLite database contains reusable
+voucher codes in clear text; any legacy plaintext archive must still be treated
+as sensitive operational data. Encrypted backup validation and restore decrypt into an OS-managed
 anonymous/auto-delete seekable temporary file because ZIP validation needs
 random access; no named decrypted ZIP is created below the application-data
 tree. Authentication/validation complete before live application data or the

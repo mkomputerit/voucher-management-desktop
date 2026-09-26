@@ -13,6 +13,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox
 
 from .backup import BackupError, BackupService
+from .database import Database
 from .dialogs import ask_password
 from .history import HistoryError
 from .history_exchange import HistoryExchangeError, HistoryExchangeService
@@ -24,6 +25,29 @@ class DataMaintenanceMixin:
 
     def _backup_service(self) -> BackupService:
         return BackupService(self.paths)
+
+    def _close_database_for_restore(self) -> None:
+        """Release the live SQLite handle before replacing the data tree."""
+
+        database = getattr(self, "database", None)
+        if database is None:
+            return
+        database.close()
+        self.database = None
+
+    def _reopen_database_after_failed_restore(self) -> None:
+        """Reattach the rolled-back database after an unsuccessful restore."""
+
+        if getattr(self, "database", None) is not None:
+            return
+        database = Database(self.paths.database)
+        try:
+            database.initialize()
+            database.integrity_check()
+        except Exception:
+            database.close()
+            raise
+        self.database = database
 
     def _dialog_busy_scope(self, parent):
         """Return a callback that disables a modal caller while work runs."""
@@ -106,14 +130,50 @@ class DataMaintenanceMixin:
                 )
                 return
 
-            recovery_worker = lambda: self.history.recover_pending_print_audit(
-                assume_submitted=True
-            )
+            if callable(
+                getattr(self, "_record_pending_print_sqlite_and_finalize", None)
+            ):
+                recovery_worker = lambda: self.history.recover_pending_print_audit(
+                    assume_submitted=True,
+                    clear_pending=False,
+                )
+            else:
+                recovery_worker = lambda: self.history.recover_pending_print_audit(
+                    assume_submitted=True
+                )
         else:
-            recovery_worker = self.history.recover_pending_print_audit
+            if callable(
+                getattr(self, "_record_pending_print_sqlite_and_finalize", None)
+            ):
+                recovery_worker = lambda: self.history.recover_pending_print_audit(
+                    clear_pending=False
+                )
+            else:
+                recovery_worker = self.history.recover_pending_print_audit
 
         def completed(recovered) -> None:
             if recovered:
+                sqlite_recovery = getattr(
+                    self,
+                    "_record_pending_print_sqlite_and_finalize",
+                    None,
+                )
+                if callable(sqlite_recovery):
+                    try:
+                        sqlite_recovery()
+                    except Exception as exc:
+                        self.logger.warning(
+                            "pending_sqlite_print_recovery_failed type=%s",
+                            type(exc).__name__,
+                        )
+                        messagebox.showerror(
+                            "Registrazione stampa",
+                            "Lo storico HMAC è stato verificato, ma l'archivio "
+                            "SQLite non è stato completato. La registrazione "
+                            "pendente resta protetta e può essere ritentata.",
+                            parent=parent,
+                        )
+                        return
                 self.populate()
                 messagebox.showinfo(
                     "Registrazione stampa",
@@ -499,6 +559,22 @@ class DataMaintenanceMixin:
                 self.destroy()
 
             def restore_failed(exc: Exception) -> None:
+                try:
+                    DataMaintenanceMixin._reopen_database_after_failed_restore(self)
+                except Exception as reopen_exc:
+                    self.logger.error(
+                        "database_reopen_after_restore_failed type=%s",
+                        type(reopen_exc).__name__,
+                    )
+                    messagebox.showerror(
+                        "Ripristino",
+                        "Il ripristino non è riuscito e il database locale "
+                        "non può essere riaperto in sicurezza. Chiudere e "
+                        "riavviare Voucher Management.",
+                        parent=parent,
+                    )
+                    return
+
                 detail = (
                     str(exc)
                     if isinstance(exc, BackupError)
@@ -510,7 +586,24 @@ class DataMaintenanceMixin:
                     parent=parent,
                 )
 
-            self._run_background_task(
+            try:
+                # SQLite is opened on the Tk thread. Close it here before the
+                # worker can replace data/voucher_management.db on Windows.
+                DataMaintenanceMixin._close_database_for_restore(self)
+            except Exception as exc:
+                self.logger.error(
+                    "database_close_before_restore_failed type=%s",
+                    type(exc).__name__,
+                )
+                messagebox.showerror(
+                    "Ripristino",
+                    "Impossibile chiudere il database locale prima del "
+                    "ripristino.",
+                    parent=parent,
+                )
+                return
+
+            started = self._run_background_task(
                 "Ripristino backup…",
                 lambda: service.restore(
                     source_path,
@@ -520,6 +613,14 @@ class DataMaintenanceMixin:
                 restore_failed,
                 busy_scope=self._dialog_busy_scope(parent),
             )
+            if not started:
+                try:
+                    DataMaintenanceMixin._reopen_database_after_failed_restore(self)
+                except Exception as exc:
+                    self.logger.error(
+                        "database_reopen_after_restore_cancelled type=%s",
+                        type(exc).__name__,
+                    )
 
         def validate_worker():
             if password is None:

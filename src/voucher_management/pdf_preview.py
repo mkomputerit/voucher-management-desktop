@@ -34,7 +34,18 @@ except ImportError:  # Allows source inspection/tests on non-Windows hosts.
 class PdfPreview(tk.Toplevel):
     """End-user viewer that always fits one complete A4 page in its viewport."""
 
-    def __init__(self, parent, pdf_path: Path, codes: list[str], history, settings: dict, on_print=None):
+    def __init__(
+        self,
+        parent,
+        pdf_path: Path,
+        codes: list[str],
+        history,
+        settings: dict,
+        on_print=None,
+        on_audit=None,
+        on_submitted=None,
+        confirm_print=None,
+    ):
         super().__init__(parent)
         self.app = parent
         self.pdf_path = Path(pdf_path)
@@ -42,6 +53,15 @@ class PdfPreview(tk.Toplevel):
         self.history = history
         self.settings = settings
         self.on_print = on_print
+        # Optional application-level audit (SQLite in 5.0). It runs on the Tk
+        # thread after the crash-safe HMAC audit succeeds, so the SQLite
+        # connection is never shared with the print worker.
+        self.on_audit = on_audit
+        # Called only after the Windows submission returned successfully.
+        # This is distinct from on_print, which also refreshes UI around audit
+        # recovery and ambiguous prepared jobs.
+        self.on_submitted = on_submitted
+        self.confirm_print = confirm_print
         self.document = None
         self.page_index = 0
         self.photo = None
@@ -290,6 +310,26 @@ class PdfPreview(tk.Toplevel):
             )
             return
 
+        confirm_print = getattr(self, "confirm_print", None)
+        if confirm_print is not None:
+            try:
+                if not confirm_print(self):
+                    return
+            except Exception as exc:
+                logger = getattr(self.app, "logger", None)
+                if logger is not None:
+                    logger.warning(
+                        "reprint_preflight_failed type=%s",
+                        type(exc).__name__,
+                    )
+                messagebox.showerror(
+                    "Stampa",
+                    "Impossibile verificare lo storico delle ristampe. "
+                    "La stampa viene sospesa.",
+                    parent=self,
+                )
+                return
+
         self._printing = True
         self.print_button.state(["disabled"])
         self.register_print_button.state(["disabled"])
@@ -298,6 +338,7 @@ class PdfPreview(tk.Toplevel):
         codes = list(self.codes)
         history = self.history
         settings = dict(self.settings)
+        application_audit = getattr(self, "on_audit", None)
 
         def worker():
             history.assert_no_pending_print_audit()
@@ -326,6 +367,11 @@ class PdfPreview(tk.Toplevel):
 
             try:
                 history.mark_print_submitted(pending["audit_id"])
+                record_kwargs = {}
+                if application_audit is not None:
+                    # Keep the durable descriptor until SQLite commits the
+                    # same audit_id on the Tk thread.
+                    record_kwargs["clear_pending"] = False
                 history.record_print(
                     codes,
                     pdf_path,
@@ -333,6 +379,7 @@ class PdfPreview(tk.Toplevel):
                     settings,
                     audit_id=pending["audit_id"],
                     submitted_at=pending["submitted_at"],
+                    **record_kwargs,
                 )
             except Exception as exc:
                 # Physical submission has already returned successfully. Keep
@@ -356,18 +403,40 @@ class PdfPreview(tk.Toplevel):
             pending, audit_error = result
             if not finish_controls():
                 return
+
+            on_submitted = getattr(self, "on_submitted", None)
+            if on_submitted:
+                on_submitted()
+
+            if audit_error is None:
+                try:
+                    if application_audit:
+                        application_audit(
+                            dict(pending),
+                            list(codes),
+                            Path(pdf_path),
+                        )
+                        history.finalize_pending_print_audit(
+                            str(pending["audit_id"])
+                        )
+                except Exception as exc:
+                    # The physical print and HMAC history are already durable.
+                    # Keep an in-memory audit-only retry path; never resend the
+                    # document because SQLite persistence failed.
+                    audit_error = exc
+
             if audit_error is not None:
                 self._pending_print_audit = pending
                 self.register_print_button.grid()
                 if self.on_print:
                     self.on_print()
                 messagebox.showwarning(
-                    "Stampa inviata - storico non aggiornato",
-                    f"Il documento è stato inviato a {printer}, ma lo storico "
-                    "locale non è stato aggiornato.\n\n"
+                    "Stampa inviata - archivio non aggiornato",
+                    f"Il documento è stato inviato a {printer}, ma una parte "
+                    "dell'archivio locale non è stata aggiornata.\n\n"
                     f"{audit_error}\n\n"
                     "Non ristampare il voucher. Usare REGISTRA STAMPA per "
-                    "ritentare soltanto la registrazione nello storico.",
+                    "ritentare soltanto la registrazione.",
                     parent=self,
                 )
                 return
@@ -438,8 +507,12 @@ class PdfPreview(tk.Toplevel):
         pdf_path = self.pdf_path
         settings = dict(self.settings)
         stable_pending = dict(pending)
+        application_audit = getattr(self, "on_audit", None)
 
         def worker():
+            record_kwargs = {}
+            if application_audit is not None:
+                record_kwargs["clear_pending"] = False
             history.record_print(
                 codes,
                 pdf_path,
@@ -447,6 +520,7 @@ class PdfPreview(tk.Toplevel):
                 settings,
                 audit_id=str(stable_pending["audit_id"]),
                 submitted_at=str(stable_pending["submitted_at"]),
+                **record_kwargs,
             )
 
         def finish_controls() -> bool:
@@ -463,6 +537,26 @@ class PdfPreview(tk.Toplevel):
         def completed(_result) -> None:
             if not finish_controls():
                 return
+            try:
+                if application_audit:
+                    application_audit(
+                        dict(stable_pending),
+                        list(codes),
+                        Path(pdf_path),
+                    )
+                    history.finalize_pending_print_audit(
+                        str(stable_pending["audit_id"])
+                    )
+            except Exception as exc:
+                messagebox.showerror(
+                    "Registrazione stampa",
+                    "Lo storico HMAC è disponibile, ma l'archivio SQLite "
+                    "non è stato aggiornato. Non ristampare il voucher.\n\n"
+                    f"{exc}",
+                    parent=self,
+                )
+                return
+
             self._pending_print_audit = None
             self.register_print_button.grid_remove()
             if self.on_print:

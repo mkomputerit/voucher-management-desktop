@@ -55,3 +55,12 @@ def test_temp_cleanup_contains_unexpected_failure(monkeypatch):
     VoucherApp._cleanup_orphan_pdf_temps(fake)
 
     logger.warning.assert_called_once()
+
+
+def test_initial_sqlite_snapshot_is_rendered_after_ui_build():
+    populate = Mock()
+    fake = SimpleNamespace(populate=populate)
+
+    VoucherApp._populate_initial_snapshot(fake)
+
+    populate.assert_called_once_with()

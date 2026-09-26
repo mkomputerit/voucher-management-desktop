@@ -74,3 +74,35 @@ def test_connection_and_maintenance_mixins_do_not_define_main_window_layout():
     assert "_build_ui" not in DataMaintenanceMixin.__dict__
     assert "_build_ui" not in VoucherDeletionMixin.__dict__
     assert "_build_ui" not in VoucherCreationMixin.__dict__
+
+
+def test_restore_closes_live_database_before_replacement():
+    calls = []
+
+    class Database:
+        def close(self):
+            calls.append("close")
+
+    fake = SimpleNamespace(database=Database())
+
+    DataMaintenanceMixin._close_database_for_restore(fake)
+
+    assert calls == ["close"]
+    assert fake.database is None
+
+
+def test_failed_restore_reopens_and_verifies_database(tmp_path):
+    fake = SimpleNamespace(
+        database=None,
+        paths=SimpleNamespace(
+            database=tmp_path / "voucher_management.db",
+        ),
+    )
+
+    DataMaintenanceMixin._reopen_database_after_failed_restore(fake)
+
+    try:
+        assert fake.database is not None
+        fake.database.integrity_check()
+    finally:
+        fake.database.close()

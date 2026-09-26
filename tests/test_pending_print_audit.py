@@ -202,3 +202,66 @@ def test_prepared_print_can_be_discarded_when_operator_confirms_not_printed(
     )[code]
     assert stats.print_jobs == 0
     assert stats.printed_copies == 0
+
+
+def test_print_audit_can_remain_pending_until_secondary_audit_commits(tmp_path):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    code = "12345-67890"
+    audit_id = "1" * 32
+
+    history.record_print(
+        [code],
+        Path("Voucher_SQLite_Bridge.pdf"),
+        1,
+        settings,
+        audit_id=audit_id,
+        submitted_at="2026-09-26T09:30:00+00:00",
+        clear_pending=False,
+    )
+
+    assert history.pending_print_state() == "submitted"
+    stats = history.stats_for_codes([code], settings_store.load())[code]
+    assert stats.print_jobs == 1
+
+    # Repeating the HMAC side is safe while the second durable audit retries.
+    assert history.recover_pending_print_audit(clear_pending=False) is True
+    stats = history.stats_for_codes([code], settings_store.load())[code]
+    assert stats.print_jobs == 1
+
+    history.finalize_pending_print_audit(audit_id)
+    assert history.pending_print_state() == ""
+
+
+def test_pending_hmac_records_resolve_only_against_known_candidate_codes(tmp_path):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    code = "77777-88888"
+    audit_id = "2" * 32
+
+    history.prepare_print_audit(
+        [code, code],
+        Path("Voucher_Recover.pdf"),
+        3,
+        settings,
+        audit_id=audit_id,
+        submitted_at="2026-09-26T09:35:00+00:00",
+    )
+    history.mark_print_submitted(audit_id)
+
+    details = history.resolve_pending_print(
+        ["11111-22222", code],
+        settings_store.load(),
+    )
+    assert details is not None
+    assert details.state == "submitted"
+    assert details.audit_id == audit_id
+    assert details.codes == (code, code)
+    assert details.output_file == "Voucher_Recover.pdf"
+    assert details.document_copies == 3
+
+    with pytest.raises(HistoryError, match="associare un voucher"):
+        history.resolve_pending_print(
+            ["11111-22222"],
+            settings_store.load(),
+        )
