@@ -9,6 +9,7 @@ be modified without detection.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -26,6 +27,8 @@ KEY_BYTES = 32
 CHUNK_BYTES = 1024 * 1024
 MIN_PASSWORD_CHARS = 12
 MAX_PASSWORD_CHARS = 1024
+
+LOGGER = logging.getLogger("voucher_management.backup_crypto")
 
 # ~128 MiB memory cost. Parameters are fixed by container version so untrusted
 # backup metadata cannot request attacker-controlled KDF resource usage.
@@ -354,8 +357,12 @@ def decrypt_backup_to_file(
         try:
             target.seek(0)
             target.truncate(0)
-        except Exception:
-            pass
+        except Exception as cleanup_exc:
+            LOGGER.warning(
+                "protected_backup_target_cleanup_failed "
+                "stage=authentication_failure type=%s",
+                type(cleanup_exc).__name__,
+            )
         raise ProtectedBackupAuthenticationError(
             "Autenticazione backup protetto non riuscita"
         ) from exc
@@ -363,8 +370,12 @@ def decrypt_backup_to_file(
         try:
             target.seek(0)
             target.truncate(0)
-        except Exception:
-            pass
+        except Exception as cleanup_exc:
+            LOGGER.warning(
+                "protected_backup_target_cleanup_failed "
+                "stage=general_failure type=%s",
+                type(cleanup_exc).__name__,
+            )
         raise
 
 
