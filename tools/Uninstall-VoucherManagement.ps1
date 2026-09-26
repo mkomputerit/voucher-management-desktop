@@ -39,6 +39,21 @@ if (-not $selfInsideInstall -and (Test-Path -LiteralPath $InstallRoot)) {
 
 if ($RemoveData) {
     if (Test-Path -LiteralPath $DataRoot) {
+        # Shared mode deliberately protects every descendant with explicit,
+        # non-inherited ACLs. Before destructive removal, restore an
+        # administrator-deletable tree; otherwise Remove-Item can fail on
+        # descendants even from an elevated uninstall process.
+        & icacls.exe $DataRoot /reset /T /C | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Ripristino ACL prima della rimozione dati non riuscito."
+        }
+        & icacls.exe $DataRoot /grant:r `
+            "*S-1-5-18:(OI)(CI)F" `
+            "*S-1-5-32-544:(OI)(CI)F" `
+            /T /C | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Preparazione ACL per la rimozione dati non riuscita."
+        }
         Remove-Item -LiteralPath $DataRoot -Recurse -Force
     }
     $group = Get-LocalGroup -Name $OperatorGroup -ErrorAction SilentlyContinue
