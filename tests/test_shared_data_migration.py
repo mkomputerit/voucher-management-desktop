@@ -66,6 +66,51 @@ def test_shared_target_stops_being_pristine_after_real_data(tmp_path):
         database.close()
 
 
+def test_future_schema_table_with_data_makes_target_non_pristine(tmp_path):
+    root = tmp_path / "ProgramData" / "VoucherManagement"
+    paths = AppPaths(
+        base_override=tmp_path / "program",
+        shared_root_override=root,
+    )
+    paths.ensure_writable()
+    database = Database(paths.database)
+    try:
+        database.initialize()
+        _initialize_history(root)
+        database.connection.execute(
+            "CREATE TABLE future_schema_data (id INTEGER PRIMARY KEY, value TEXT)"
+        )
+        database.connection.execute(
+            "INSERT INTO future_schema_data(value) VALUES ('operational')"
+        )
+        database.connection.commit()
+
+        assert shared_target_is_pristine(database, paths) is False
+    finally:
+        database.close()
+
+
+def test_only_schema_metadata_is_allowed_in_pristine_target(tmp_path):
+    root = tmp_path / "ProgramData" / "VoucherManagement"
+    paths = AppPaths(
+        base_override=tmp_path / "program",
+        shared_root_override=root,
+    )
+    paths.ensure_writable()
+    database = Database(paths.database)
+    try:
+        database.initialize()
+        _initialize_history(root)
+        database.connection.execute(
+            "INSERT INTO app_metadata(key, value) VALUES ('future_marker', '1')"
+        )
+        database.connection.commit()
+
+        assert shared_target_is_pristine(database, paths) is False
+    finally:
+        database.close()
+
+
 def test_source_detection_ignores_empty_tree_but_finds_settings(tmp_path):
     root = tmp_path / "profile" / "VoucherManagement"
     (root / "data").mkdir(parents=True)
