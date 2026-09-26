@@ -32,6 +32,8 @@ class ReportDialog(tk.Toplevel):
         self.title("Report")
         self.transient(app)
         self.grab_set()
+        self._busy = False
+        self.protocol("WM_DELETE_WINDOW", self._close)
 
         self.kind_var = tk.StringVar(value=REPORT_CHOICES[0][0])
         self.scope_var = tk.StringVar(
@@ -115,12 +117,13 @@ class ReportDialog(tk.Toplevel):
 
         footer = ttk.Frame(shell)
         footer.pack(fill="x", pady=(22, 0))
-        ttk.Button(
+        self.cancel_button = ttk.Button(
             footer,
             text="Annulla",
-            command=self.destroy,
+            command=self._close,
             width=12,
-        ).pack(side="right")
+        )
+        self.cancel_button.pack(side="right")
         self.generate_button = ttk.Button(
             footer,
             text="Genera…",
@@ -136,15 +139,27 @@ class ReportDialog(tk.Toplevel):
         self.geometry(f"{width}x{height}")
         self.resizable(True, False)
 
+    def _close(self) -> None:
+        """Do not destroy Tk widgets while a renderer callback is pending."""
+
+        if self._busy:
+            self.bell()
+            return
+        self.destroy()
+
+
     def _set_busy(self, busy: bool) -> None:
         """Prevent duplicate exports while the renderer worker is active."""
 
+        self._busy = bool(busy)
         if busy:
+            self.cancel_button.state(["disabled"])
             self.generate_button.state(["disabled"])
             self.kind_combo.state(["disabled"])
             self.scope_combo.state(["disabled"])
             self.format_combo.state(["disabled"])
         else:
+            self.cancel_button.state(["!disabled"])
             self.generate_button.state(["!disabled"])
             self.kind_combo.state(["!disabled", "readonly"])
             self.scope_combo.state(["!disabled", "readonly"])
@@ -230,6 +245,7 @@ class ReportDialog(tk.Toplevel):
                 f"Report creato:\n{path}",
                 parent=self,
             )
+            self._busy = False
             self.destroy()
 
         def failed(exc: Exception) -> None:
