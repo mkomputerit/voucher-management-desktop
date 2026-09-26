@@ -345,18 +345,19 @@ def apply_legacy_migration_plan(
         if existing_run is not None:
             expected = (
                 plan.source_history_sha256,
-                "COMPLETED",
                 *counts,
             )
             actual = (
                 existing_run["source_history_sha256"],
-                existing_run["status"],
                 existing_run["total_rows"],
                 existing_run["resolved_rows"],
                 existing_run["ambiguous_rows"],
                 existing_run["unresolved_rows"],
             )
-            if actual != expected:
+            if actual != expected or existing_run["status"] not in {
+                "EVIDENCE_READY",
+                "COMPLETED",
+            }:
                 raise LegacyMigrationError(
                     "Identificativo migrazione già usato con dati diversi"
                 )
@@ -498,9 +499,9 @@ def apply_legacy_migration_plan(
 
         db.execute(
             """UPDATE migration_runs
-               SET completed_at=?, status='COMPLETED'
+               SET status='EVIDENCE_READY'
                WHERE migration_uuid=?""",
-            (applied_at, migration_uuid),
+            (migration_uuid,),
         )
 
     return LegacyMigrationApplyResult(
@@ -545,6 +546,7 @@ def materialize_resolved_legacy_events(
     *,
     database: "Database",
     materialized_at: str,
+    migration_uuid: str | None = None,
 ) -> LegacyMaterializationResult:
     """Translate only RESOLVED evidence into operational SQLite facts.
 
@@ -800,6 +802,27 @@ def materialize_resolved_legacy_events(
                     ),
                 )
 
+        if migration_uuid is not None:
+            run_id = str(migration_uuid).strip()
+            run = db.execute(
+                """SELECT status FROM migration_runs
+                   WHERE migration_uuid=?""",
+                (run_id,),
+            ).fetchone()
+            if run is None or run["status"] not in {
+                "EVIDENCE_READY",
+                "COMPLETED",
+            }:
+                raise LegacyMigrationError(
+                    "Run migrazione non pronto per la materializzazione"
+                )
+            db.execute(
+                """UPDATE migration_runs
+                   SET status='COMPLETED', completed_at=?
+                   WHERE migration_uuid=?""",
+                (materialized_at, run_id),
+            )
+
     return LegacyMaterializationResult(
         generated_events=generated_events,
         print_rows=print_rows,
@@ -871,6 +894,7 @@ def execute_legacy_migration(
     materialization = materialize_resolved_legacy_events(
         database=database,
         materialized_at=materialized_at,
+        migration_uuid=migration_uuid,
     )
     database.integrity_check()
 
