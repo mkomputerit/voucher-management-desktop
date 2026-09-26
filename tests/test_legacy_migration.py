@@ -11,8 +11,10 @@ import pytest
 from voucher_management.legacy_migration import (
     LegacyMigrationError,
     LegacyVoucherCandidate,
+    apply_legacy_migration_plan,
     build_legacy_migration_plan,
 )
+from voucher_management.database import Database
 
 
 FIXTURE_KEY = "legacy-migration-secret-value"
@@ -293,3 +295,261 @@ def test_planning_is_read_only_and_idempotent(tmp_path):
 
     assert first == second
     assert history.read_bytes() == before
+
+
+def _database_with_voucher(tmp_path, *, code="1234567890"):
+    db = Database(tmp_path / "voucher-management.db")
+    db.initialize()
+    controller_id = db.create_controller(
+        name="Migration fixture",
+        api_root="https://controller.example",
+        created_at="2026-09-26T10:00:00+00:00",
+    )
+    voucher_id = db.upsert_voucher(
+        controller_id=controller_id,
+        unifi_id="legacy-voucher-1",
+        code=code,
+        imported_at="2026-09-26T10:00:00+00:00",
+        last_synced_at="2026-09-26T10:00:00+00:00",
+    )
+    return db, controller_id, voucher_id
+
+
+def test_apply_persists_resolved_and_unresolved_evidence_atomically(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "resolved-event",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            },
+            {
+                "event": "generate",
+                "event_id": "unresolved-event",
+                "voucher_id": _digest("99999-00000"),
+                "timestamp": "2026-09-20T11:00:00+00:00",
+            },
+        ],
+    )
+    db, controller_id, voucher_id = _database_with_voucher(tmp_path)
+    try:
+        plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    controller_id,
+                    "legacy-voucher-1",
+                    "1234567890",
+                )
+            ],
+        )
+
+        result = apply_legacy_migration_plan(
+            database=db,
+            plan=plan,
+            migration_uuid="migration-1",
+            applied_at="2026-09-26T10:05:00+00:00",
+        )
+
+        assert result.total_rows == 2
+        assert result.resolved_rows == 1
+        assert result.unresolved_rows == 1
+        rows = db.connection.execute(
+            """SELECT legacy_event_key, resolution_status, voucher_id
+               FROM legacy_audit_events ORDER BY source_line"""
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [
+            ("generate:resolved-event", "RESOLVED", voucher_id),
+            ("generate:unresolved-event", "UNRESOLVED", None),
+        ]
+        run = db.connection.execute(
+            "SELECT * FROM migration_runs WHERE migration_uuid='migration-1'"
+        ).fetchone()
+        assert run["status"] == "COMPLETED"
+        assert run["source_history_sha256"] == plan.source_history_sha256
+    finally:
+        db.close()
+
+
+def test_apply_same_migration_uuid_is_idempotent(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "event-1",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+    db, controller_id, _voucher_id = _database_with_voucher(tmp_path)
+    try:
+        plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    controller_id,
+                    "legacy-voucher-1",
+                    "1234567890",
+                )
+            ],
+        )
+        first = apply_legacy_migration_plan(
+            database=db,
+            plan=plan,
+            migration_uuid="migration-repeat",
+            applied_at="2026-09-26T10:05:00+00:00",
+        )
+        second = apply_legacy_migration_plan(
+            database=db,
+            plan=plan,
+            migration_uuid="migration-repeat",
+            applied_at="2026-09-26T10:06:00+00:00",
+        )
+
+        assert first.already_applied is False
+        assert second.already_applied is True
+        assert (
+            db.connection.execute(
+                "SELECT COUNT(*) FROM legacy_audit_events"
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            db.connection.execute(
+                "SELECT COUNT(*) FROM migration_runs"
+            ).fetchone()[0]
+            == 1
+        )
+    finally:
+        db.close()
+
+
+def test_later_plan_can_resolve_previously_unresolved_evidence(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "late-event",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+    db, controller_id, voucher_id = _database_with_voucher(tmp_path)
+    try:
+        unresolved_plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[],
+        )
+        apply_legacy_migration_plan(
+            database=db,
+            plan=unresolved_plan,
+            migration_uuid="migration-unresolved",
+            applied_at="2026-09-26T10:05:00+00:00",
+        )
+
+        resolved_plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    controller_id,
+                    "legacy-voucher-1",
+                    "1234567890",
+                )
+            ],
+        )
+        apply_legacy_migration_plan(
+            database=db,
+            plan=resolved_plan,
+            migration_uuid="migration-resolved",
+            applied_at="2026-09-26T10:10:00+00:00",
+        )
+
+        row = db.connection.execute(
+            """SELECT resolution_status, voucher_id, first_migration_uuid,
+                      last_migration_uuid
+               FROM legacy_audit_events
+               WHERE legacy_event_key='generate:late-event'"""
+        ).fetchone()
+        assert row["resolution_status"] == "RESOLVED"
+        assert row["voucher_id"] == voucher_id
+        assert row["first_migration_uuid"] == "migration-unresolved"
+        assert row["last_migration_uuid"] == "migration-resolved"
+    finally:
+        db.close()
+
+
+def test_stale_resolved_plan_rolls_back_all_evidence_writes(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "stale-event",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+    db, controller_id, voucher_id = _database_with_voucher(tmp_path)
+    try:
+        plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    controller_id,
+                    "legacy-voucher-1",
+                    "1234567890",
+                )
+            ],
+        )
+        db.connection.execute(
+            "UPDATE vouchers SET code='0000000000' WHERE id=?",
+            (voucher_id,),
+        )
+        db.connection.commit()
+
+        with pytest.raises(
+            LegacyMigrationError,
+            match="Codice voucher cambiato",
+        ):
+            apply_legacy_migration_plan(
+                database=db,
+                plan=plan,
+                migration_uuid="migration-stale",
+                applied_at="2026-09-26T10:05:00+00:00",
+            )
+
+        assert (
+            db.connection.execute(
+                "SELECT COUNT(*) FROM migration_runs"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            db.connection.execute(
+                "SELECT COUNT(*) FROM legacy_audit_events"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        db.close()
