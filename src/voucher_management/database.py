@@ -198,7 +198,7 @@ CREATE TABLE IF NOT EXISTS migration_runs (
     started_at TEXT NOT NULL,
     completed_at TEXT,
     status TEXT NOT NULL CHECK (
-        status IN ('STARTED', 'COMPLETED', 'FAILED')
+        status IN ('STARTED', 'EVIDENCE_READY', 'COMPLETED', 'FAILED')
     ),
     total_rows INTEGER NOT NULL DEFAULT 0 CHECK (total_rows >= 0),
     resolved_rows INTEGER NOT NULL DEFAULT 0 CHECK (resolved_rows >= 0),
@@ -245,7 +245,7 @@ CREATE TABLE IF NOT EXISTS migration_runs (
     started_at TEXT NOT NULL,
     completed_at TEXT,
     status TEXT NOT NULL CHECK (
-        status IN ('STARTED', 'COMPLETED', 'FAILED')
+        status IN ('STARTED', 'EVIDENCE_READY', 'COMPLETED', 'FAILED')
     ),
     total_rows INTEGER NOT NULL DEFAULT 0 CHECK (total_rows >= 0),
     resolved_rows INTEGER NOT NULL DEFAULT 0 CHECK (resolved_rows >= 0),
