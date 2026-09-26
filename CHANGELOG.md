@@ -1,5 +1,28 @@
 # Changelog
 
+## 5.0.0 - Unreleased
+
+- Introduced the SQLite 5.0 persistence foundation with WAL mode, integrity
+  checks, durable controller/voucher snapshots, local/offline startup and
+  application-level audit facts.
+- Added crash-safe physical-print auditing across the existing HMAC history and
+  SQLite using one stable audit identity, including recovery without automatic
+  print replay and explicit reprint policy.
+- Added explicit 4.x history migration with verified HMAC association,
+  resolved/ambiguous/unresolved evidence, idempotent materialization and
+  encrypted pre-migration safety backups.
+- Added installer-controlled shared Windows deployment under ProgramData with a
+  dedicated operator group, machine-wide file locking, restrictive verified
+  NTFS ACLs and explicit LocalAppData-to-ProgramData migration.
+- Added WAL-safe SQLite backup/restore using `sqlite3.Connection.backup()`,
+  standalone snapshot normalization, `PRAGMA integrity_check`, schema/hash
+  verification and exclusion of live WAL/SHM/journal sidecars.
+- Added real Windows CI coverage for shared deployment ACLs, upgrade behavior,
+  preserved-data uninstall and explicit `-RemoveData` cleanup.
+- 5.0 remains unreleased: `version.txt`, package metadata and the Windows
+  executable continue to report 4.3.3 until the remaining 5.0 release gates
+  are complete. No 5.0 tag or stable package is produced from this branch.
+
 ## 4.3.3 - 2026-09-23
 
 - Harden protected backup and history-exchange decryption with a bounded-memory
