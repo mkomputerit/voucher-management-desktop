@@ -51,3 +51,20 @@ def test_windows_build_packages_installer_and_uninstaller():
         "Copy-Item tools\\Uninstall-VoucherManagement.ps1 "
         "dist\\VoucherManagement\\Uninstall-VoucherManagement.ps1"
     ) in workflow
+
+
+def test_windows_ci_executes_real_installer_acl_integration():
+    workflow = (ROOT / ".github" / "workflows" / "build-windows.yml").read_text(
+        encoding="utf-8"
+    )
+    integration = (
+        ROOT / "tools" / "Test-WindowsSharedInstall.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "Test shared Windows installer and ACLs" in workflow
+    assert "Test-WindowsSharedInstall.ps1" in workflow
+    assert "Get-Acl" in integration
+    assert "AreAccessRulesProtected" in integration
+    assert "S-1-1-0" in integration
+    assert "S-1-5-11" in integration
+    assert "RemoveData" in integration
