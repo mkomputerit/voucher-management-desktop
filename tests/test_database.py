@@ -314,3 +314,39 @@ def test_record_print_audit_fails_closed_on_missing_or_ambiguous_code(tmp_path):
         assert db.connection.execute("SELECT COUNT(*) FROM print_jobs").fetchone()[0] == 0
     finally:
         db.close()
+
+
+def test_print_summaries_for_codes_normalizes_display_format(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(name="A", api_root="https://a.example", created_at="t")
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="v1",
+            code="1234567890",
+            imported_at="t",
+            last_synced_at="t",
+        )
+        job = db.connection.execute(
+            """INSERT INTO print_jobs
+               (print_job_uuid, created_at, submitted_at, windows_user,
+                document_copies, status)
+               VALUES ('job-summary', 't', 't', 'operator', 1, 'AUDITED')"""
+        )
+        db.connection.execute(
+            """INSERT INTO voucher_prints
+               (print_job_id, voucher_id, printed_at, windows_user,
+                physical_copies, print_sequence, is_reprint)
+               VALUES (?, ?, 't', 'operator', 1, 1, 0)""",
+            (job.lastrowid, voucher),
+        )
+        db.connection.commit()
+
+        summaries = db.print_summaries_for_codes(
+            controller_id=controller,
+            codes=["12345-67890"],
+        )
+        assert summaries["1234567890"].print_jobs == 1
+        assert summaries["1234567890"].physical_copies == 1
+    finally:
+        db.close()
