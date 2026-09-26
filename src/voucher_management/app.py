@@ -35,7 +35,7 @@ from .print_archive import (
 )
 from .settings import SettingsStore
 from .single_instance import InstanceAlreadyRunning, SingleInstanceGuard
-from .sync_store import persist_successful_snapshot
+from .sync_store import load_local_vouchers, persist_successful_snapshot
 from .voucher_creation_ui import VoucherCreationMixin
 from .security.history_key import HistoryKeyStore
 from .unifi_api import ApiVoucher, UniFiApiError
@@ -168,7 +168,21 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 parent=self,
             )
         self.client = None
-        self.vouchers = []
+        # Milestone A can reopen the last durable snapshot before any network
+        # request. The timestamp/status remains explicitly local until connect.
+        saved_api_root = str(self.settings.get("controller_api_root", "")).strip()
+        if saved_api_root:
+            self.active_controller_id = self.database.find_controller_by_api_root(
+                saved_api_root
+            )
+        self.vouchers = (
+            load_local_vouchers(
+                self.database,
+                controller_id=self.active_controller_id,
+            )
+            if self.active_controller_id is not None
+            else []
+        )
         self.by_iid = {}
         self.checked_ids = set()
         self.last_pdf = None
@@ -183,7 +197,13 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             value=self.settings.get("controller_api_root", "")
         )
         self.api_key_var = tk.StringVar()
-        self.connection_var = tk.StringVar(value="Non connesso")
+        self.connection_var = tk.StringVar(
+            value=(
+                "Modalità locale"
+                if self.active_controller_id is not None
+                else "Non connesso"
+            )
+        )
         # Default to the operator's real task rather than the complete archive.
         self.filter_var = tk.StringVar(value="Da stampare")
         self.search_var = tk.StringVar()
