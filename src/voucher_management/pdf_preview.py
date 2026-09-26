@@ -44,6 +44,7 @@ class PdfPreview(tk.Toplevel):
         on_print=None,
         on_audit=None,
         on_submitted=None,
+        confirm_print=None,
     ):
         super().__init__(parent)
         self.app = parent
@@ -60,6 +61,7 @@ class PdfPreview(tk.Toplevel):
         # This is distinct from on_print, which also refreshes UI around audit
         # recovery and ambiguous prepared jobs.
         self.on_submitted = on_submitted
+        self.confirm_print = confirm_print
         self.document = None
         self.page_index = 0
         self.photo = None
@@ -307,6 +309,26 @@ class PdfPreview(tk.Toplevel):
                 parent=self,
             )
             return
+
+        confirm_print = getattr(self, "confirm_print", None)
+        if confirm_print is not None:
+            try:
+                if not confirm_print(self):
+                    return
+            except Exception as exc:
+                logger = getattr(self.app, "logger", None)
+                if logger is not None:
+                    logger.warning(
+                        "reprint_preflight_failed type=%s",
+                        type(exc).__name__,
+                    )
+                messagebox.showerror(
+                    "Stampa",
+                    "Impossibile verificare lo storico delle ristampe. "
+                    "La stampa viene sospesa.",
+                    parent=self,
+                )
+                return
 
         self._printing = True
         self.print_button.state(["disabled"])
