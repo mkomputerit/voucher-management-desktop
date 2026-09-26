@@ -391,7 +391,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             )
         except Exception as dialog_exc:
             # Tk may itself be tearing down; logging above remains available.
-            self.logger.debug(
+            LOGGER.debug(
                 "unhandled_error_dialog_failed type=%s",
                 type(dialog_exc).__name__,
             )
