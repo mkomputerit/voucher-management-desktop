@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Mapping, Sequence
 
 if TYPE_CHECKING:
+    from .backup import BackupService
     from .database import Database
 
 
@@ -803,4 +804,78 @@ def materialize_resolved_legacy_events(
         generated_events=generated_events,
         print_rows=print_rows,
         affected_vouchers=len(affected_vouchers),
+    )
+
+
+@dataclass(frozen=True)
+class LegacyMigrationExecutionResult:
+    """Result of one safety-backed migration execution."""
+
+    backup_path: Path
+    evidence: LegacyMigrationApplyResult
+    materialization: LegacyMaterializationResult
+
+
+def execute_legacy_migration(
+    *,
+    database: "Database",
+    backup_service: "BackupService",
+    backup_destination: Path,
+    backup_password: str,
+    plan: LegacyMigrationPlan,
+    migration_uuid: str,
+    applied_at: str,
+    materialized_at: str,
+) -> LegacyMigrationExecutionResult:
+    """Execute the explicit migration only after a verified encrypted backup.
+
+    Evidence persistence and operational materialization are individually
+    transactional. If materialization fails, no partial print/event facts are
+    committed; the already-persisted evidence is deliberately harmless and
+    idempotent, so the operator can repair/retry without rewriting legacy files.
+    """
+
+    password = str(backup_password or "")
+    if not password:
+        raise LegacyMigrationError(
+            "La migrazione richiede un backup cifrato pre-migrazione"
+        )
+
+    destination = Path(backup_destination)
+    try:
+        backup_path = Path(
+            backup_service.create(
+                destination,
+                password=password,
+            )
+        )
+    except Exception as exc:
+        raise LegacyMigrationError(
+            "Backup di sicurezza pre-migrazione non riuscito"
+        ) from exc
+
+    if (
+        not backup_path.is_file()
+        or not backup_service.is_encrypted_backup(backup_path)
+    ):
+        raise LegacyMigrationError(
+            "Backup di sicurezza pre-migrazione non verificabile"
+        )
+
+    evidence = apply_legacy_migration_plan(
+        database=database,
+        plan=plan,
+        migration_uuid=migration_uuid,
+        applied_at=applied_at,
+    )
+    materialization = materialize_resolved_legacy_events(
+        database=database,
+        materialized_at=materialized_at,
+    )
+    database.integrity_check()
+
+    return LegacyMigrationExecutionResult(
+        backup_path=backup_path,
+        evidence=evidence,
+        materialization=materialization,
     )
