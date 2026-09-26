@@ -201,3 +201,116 @@ def test_get_or_create_controller_reuses_api_root_without_credentials(tmp_path):
         assert db.connection.execute("SELECT COUNT(*) FROM controllers").fetchone()[0] == 1
     finally:
         db.close()
+
+
+def test_record_print_audit_is_idempotent_and_sequences_reprints(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="Sala",
+            api_root="https://controller.example",
+            created_at="t",
+        )
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="voucher-1",
+            code="12345-67890",
+            imported_at="t",
+            last_synced_at="t",
+        )
+
+        common = dict(
+            controller_id=controller,
+            codes=["12345-67890"],
+            output_file="Voucher_Test.pdf",
+            document_copies=2,
+            printed_at="2026-09-26T08:00:00+00:00",
+            windows_user=r"SALA\\operatore",
+        )
+        db.record_print_audit(audit_id="audit-1", **common)
+        db.record_print_audit(audit_id="audit-1", **common)
+
+        summary = db.print_summary(voucher)
+        assert summary.print_jobs == 1
+        assert summary.physical_copies == 2
+
+        db.record_print_audit(
+            audit_id="audit-2",
+            **{
+                **common,
+                "document_copies": 1,
+                "printed_at": "2026-09-26T08:05:00+00:00",
+            },
+        )
+        rows = db.connection.execute(
+            """SELECT print_sequence, is_reprint, physical_copies
+               FROM voucher_prints WHERE voucher_id=? ORDER BY print_sequence""",
+            (voucher,),
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [(1, 0, 2), (2, 1, 1)]
+    finally:
+        db.close()
+
+
+def test_record_print_audit_counts_repeated_labels_on_same_document(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(name="A", api_root="https://a.example", created_at="t")
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="v1",
+            code="11111-22222",
+            imported_at="t",
+            last_synced_at="t",
+        )
+
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="audit-labels",
+            codes=["11111-22222", "11111-22222", "11111-22222"],
+            output_file="Voucher_Multi.pdf",
+            document_copies=2,
+            printed_at="2026-09-26T08:10:00+00:00",
+            windows_user="operator",
+        )
+
+        summary = db.print_summary(voucher)
+        assert summary.print_jobs == 1
+        assert summary.physical_copies == 6
+    finally:
+        db.close()
+
+
+def test_record_print_audit_fails_closed_on_missing_or_ambiguous_code(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(name="A", api_root="https://a.example", created_at="t")
+        db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="v1",
+            code="DUPLICATE",
+            imported_at="t",
+            last_synced_at="t",
+        )
+        db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="v2",
+            code="DUPLICATE",
+            imported_at="t",
+            last_synced_at="t",
+        )
+
+        with pytest.raises(RuntimeError, match="missing or ambiguous"):
+            db.record_print_audit(
+                controller_id=controller,
+                audit_id="audit-ambiguous",
+                codes=["DUPLICATE"],
+                output_file="Voucher.pdf",
+                document_copies=1,
+                printed_at="2026-09-26T08:20:00+00:00",
+                windows_user="operator",
+            )
+
+        assert db.connection.execute("SELECT COUNT(*) FROM print_jobs").fetchone()[0] == 0
+    finally:
+        db.close()
