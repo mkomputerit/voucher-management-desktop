@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$SourcePath = (Split-Path -Parent $PSScriptRoot),
+    [string]$SourcePath = $PSScriptRoot,
     [string]$InstallRoot = (Join-Path $env:ProgramFiles "Voucher Management"),
     [string]$DataRoot = (Join-Path $env:ProgramData "VoucherManagement"),
     [string]$OperatorGroup = "Voucher Management Operators",
@@ -69,9 +69,17 @@ if ($destination.StartsWith($source, [StringComparison]::OrdinalIgnoreCase)) {
     throw "La cartella di installazione non può essere contenuta nella sorgente."
 }
 
+$running = Get-Process -Name "VoucherManagement" -ErrorAction SilentlyContinue
+if ($running) {
+    throw "Chiudere Voucher Management prima di installare o aggiornare."
+}
+
 $operator = Resolve-InteractiveUser -ExplicitUser $OperatorUser
 $group = Ensure-OperatorGroup -Name $OperatorGroup -Member $operator
 
+if (Test-Path -LiteralPath $destination) {
+    Remove-Item -LiteralPath $destination -Recurse -Force
+}
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
 Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force
