@@ -788,3 +788,37 @@ def test_sqlite_audit_keeps_marker_until_secondary_commit(monkeypatch):
     sqlite_index = next(i for i, item in enumerate(order) if isinstance(item, tuple) and item[0] == "sqlite")
     finalize_index = next(i for i, item in enumerate(order) if isinstance(item, tuple) and item[0] == "finalize")
     assert sqlite_index < finalize_index
+
+
+def test_cancelled_reprint_preflight_never_starts_print_worker(monkeypatch):
+    print_button = _Button()
+    register_button = _Button()
+    started = []
+
+    app = SimpleNamespace(
+        _run_background_task=lambda *args, **kwargs: (
+            started.append(True) or True
+        ),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+    fake = SimpleNamespace(
+        app=app,
+        _printing=False,
+        printer_var=_Var("Test printer"),
+        copies_var=_Var(1),
+        print_button=print_button,
+        register_print_button=register_button,
+        confirm_print=lambda parent: False,
+    )
+
+    monkeypatch.setattr(
+        "voucher_management.pdf_preview.messagebox.showerror",
+        lambda *args, **kwargs: None,
+    )
+
+    PdfPreview.print_document(fake)
+
+    assert started == []
+    assert fake._printing is False
+    assert print_button.states == []
+    assert register_button.states == []
