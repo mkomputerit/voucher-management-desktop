@@ -188,6 +188,8 @@ jobs:
           New-Item -ItemType Directory -Force dist\VoucherManagement\docs | Out-Null
           Copy-Item docs\ARCHITECTURE.md dist\VoucherManagement\docs\ARCHITECTURE.md
           Copy-Item SECURITY.md dist\VoucherManagement\SECURITY.md
+          Copy-Item tools\Install-VoucherManagement.ps1 dist\VoucherManagement\Install-VoucherManagement.ps1
+          Copy-Item tools\Uninstall-VoucherManagement.ps1 dist\VoucherManagement\Uninstall-VoucherManagement.ps1
           .\.venv\Scripts\python.exe -m pip freeze --all | Out-File -Encoding utf8 dist\VoucherManagement\DEPENDENCIES.txt
           .\.venv\Scripts\python.exe tools\collect_dependency_licenses.py dist\VoucherManagement\THIRD_PARTY_LICENSES
           New-Item -ItemType Directory -Force dist\VoucherManagement\THIRD_PARTY_LICENSES\pypdfium2 | Out-Null
