@@ -856,6 +856,9 @@ def main() -> int:
                 "Controllare le impostazioni locali o ripristinare un backup "
                 "valido, quindi riprovare.",
             )
-        except Exception:
-            pass
+        except Exception as dialog_exc:
+            logging.getLogger("voucher_management").debug(
+                "startup_error_dialog_failed type=%s",
+                type(dialog_exc).__name__,
+            )
         return 1
