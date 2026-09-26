@@ -315,7 +315,7 @@ class Database:
         self.connection.close()
 
     def initialize(self) -> None:
-        """Create schema version 1 atomically and reject newer databases."""
+        """Create/upgrade the current schema and reject newer databases."""
 
         current = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
         if current > SCHEMA_VERSION:
@@ -331,13 +331,24 @@ class Database:
                     ("schema_version", str(SCHEMA_VERSION)),
                 )
         elif current == 1:
-            with self.transaction():
-                self.connection.executescript(MIGRATION_1_TO_2_SQL)
-                self.connection.execute("PRAGMA user_version = 2")
-                self.connection.execute(
-                    "INSERT OR REPLACE INTO app_metadata(key, value) VALUES (?, ?)",
-                    ("schema_version", "2"),
+            try:
+                # sqlite3.executescript() controls transaction boundaries on
+                # its own. Put BEGIN/COMMIT inside the script so an interrupted
+                # schema upgrade cannot leave only part of the v2 evidence
+                # schema installed.
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + MIGRATION_1_TO_2_SQL
+                    + """
+PRAGMA user_version = 2;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '2');
+COMMIT;
+"""
                 )
+            except Exception:
+                self.connection.rollback()
+                raise
         elif current < SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database schema migration {current}->{SCHEMA_VERSION} is not implemented"
