@@ -225,11 +225,17 @@ def build_report_dataset(
         if _matches(kind, row):
             rows.append(row)
 
-    controller_label = (
-        next(iter(controllers))
-        if controller_id is not None and len(controllers) == 1
-        else "Tutti i controller"
-    )
+    if controller_id is None:
+        controller_label = "Tutti i controller"
+    else:
+        controller_label = (
+            database.controller_name(controller_id)
+            or (
+                next(iter(controllers))
+                if len(controllers) == 1
+                else "Controller selezionato"
+            )
+        )
 
     materialized = tuple(rows)
     return ReportDataset(
