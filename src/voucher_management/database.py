@@ -658,6 +658,71 @@ COMMIT;
                     ),
                 )
 
+    def report_voucher_rows(
+        self,
+        *,
+        controller_id: int | None = None,
+    ) -> list[sqlite3.Row]:
+        """Return durable voucher facts aggregated for reporting.
+
+        The query deliberately returns atomic/current facts plus print
+        aggregates. It does not precompute business labels such as "used" or
+        "printed but never used"; those remain pure reporting policy so the
+        same database facts can support multiple report views.
+        """
+
+        where = ""
+        params: tuple[object, ...] = ()
+        if controller_id is not None:
+            where = "WHERE v.controller_id=?"
+            params = (int(controller_id),)
+
+        return self.connection.execute(
+            f"""SELECT
+                    v.id AS voucher_id,
+                    v.controller_id,
+                    c.name AS controller_name,
+                    v.code,
+                    v.name,
+                    v.assigned_to,
+                    v.created_at,
+                    v.imported_at,
+                    v.duration_minutes,
+                    v.authorized_guest_limit,
+                    v.authorized_guest_count,
+                    v.activated_at,
+                    v.expires_at,
+                    v.expired,
+                    v.present_on_controller,
+                    v.last_seen_at,
+                    v.last_synced_at,
+                    v.archived_at,
+                    COUNT(vp.id) AS print_jobs,
+                    COALESCE(SUM(vp.physical_copies), 0) AS physical_copies,
+                    COALESCE(SUM(CASE WHEN vp.is_reprint=1 THEN 1 ELSE 0 END), 0)
+                        AS reprint_jobs,
+                    COALESCE(
+                        SUM(
+                            CASE WHEN vp.is_reprint=1
+                                 THEN vp.physical_copies ELSE 0 END
+                        ),
+                        0
+                    ) AS reprint_copies,
+                    COALESCE(MIN(vp.printed_at), '') AS first_printed_at,
+                    COALESCE(MAX(vp.printed_at), '') AS last_printed_at,
+                    COALESCE(GROUP_CONCAT(DISTINCT vp.windows_user), '')
+                        AS print_operators
+               FROM vouchers AS v
+               JOIN controllers AS c ON c.id=v.controller_id
+               LEFT JOIN voucher_prints AS vp ON vp.voucher_id=v.id
+               {where}
+               GROUP BY v.id
+               ORDER BY
+                   COALESCE(v.created_at, v.imported_at) DESC,
+                   v.id DESC""",
+            params,
+        ).fetchall()
+
     @staticmethod
     def encode_event_details(details: dict | None) -> str | None:
         """Serialize optional structured audit details deterministically."""
