@@ -163,6 +163,43 @@ def test_same_digest_on_two_voucher_identities_is_ambiguous(tmp_path):
     }
 
 
+
+def test_same_unifi_id_on_different_controllers_is_still_ambiguous(tmp_path):
+    history = tmp_path / "history.jsonl"
+    code = "44444-55555"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "voucher_id": _digest(code),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+
+    plan = build_legacy_migration_plan(
+        history_path=history,
+        expected_fingerprint=FINGERPRINT,
+        secret=FIXTURE_KEY,
+        candidates=[
+            LegacyVoucherCandidate(1, "same-unifi-id", code),
+            LegacyVoucherCandidate(2, "same-unifi-id", code),
+        ],
+    )
+
+    assert plan.resolved == ()
+    assert plan.unresolved == ()
+    assert len(plan.ambiguous) == 1
+    assert {
+        candidate.key
+        for candidate in plan.ambiguous[0].candidates
+    } == {
+        (1, "same-unifi-id"),
+        (2, "same-unifi-id"),
+    }
+
+
 def test_duplicate_candidate_spelling_does_not_create_false_ambiguity(tmp_path):
     history = tmp_path / "history.jsonl"
     _write_history(
@@ -722,6 +759,66 @@ def test_materializes_legacy_print_and_reorders_existing_v5_sequence(tmp_path):
         assert [tuple(row) for row in rows] == [
             ("legacy-job-1", 1, 0),
             ("current-job-1", 2, 1),
+        ]
+    finally:
+        db.close()
+
+
+
+def test_materializes_print_without_legacy_print_job_id_idempotently(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "print",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T09:00:00+00:00",
+                "output_file": "Voucher_NoJobId.pdf",
+                "document_copies": 2,
+                "physical_copies": 2,
+            }
+        ],
+    )
+    db, controller_id, voucher_id = _database_with_voucher(tmp_path)
+    try:
+        _plan_and_apply(
+            db=db,
+            history=history,
+            controller_id=controller_id,
+        )
+
+        first = materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:30:00+00:00",
+        )
+        rows = db.connection.execute(
+            """SELECT pj.print_job_uuid, vp.physical_copies
+               FROM voucher_prints AS vp
+               JOIN print_jobs AS pj ON pj.id=vp.print_job_id
+               WHERE vp.voucher_id=?""",
+            (voucher_id,),
+        ).fetchall()
+        assert first.print_rows == 1
+        assert len(rows) == 1
+        assert rows[0]["print_job_uuid"].startswith("legacy-")
+        assert rows[0]["physical_copies"] == 2
+        synthetic_job_id = rows[0]["print_job_uuid"]
+
+        second = materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:31:00+00:00",
+        )
+        rows_after = db.connection.execute(
+            """SELECT pj.print_job_uuid
+               FROM voucher_prints AS vp
+               JOIN print_jobs AS pj ON pj.id=vp.print_job_id
+               WHERE vp.voucher_id=?""",
+            (voucher_id,),
+        ).fetchall()
+        assert second.print_rows == 1
+        assert [row["print_job_uuid"] for row in rows_after] == [
+            synthetic_job_id
         ]
     finally:
         db.close()
