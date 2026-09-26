@@ -121,6 +121,16 @@ per-user LocalAppData to a shared ProgramData database. This milestone owns
 installer elevation, Program Files/ProgramData placement, ACLs, UAC behavior,
 Fast User Switching and a machine-wide single-instance guard.
 
+The installer must create a dedicated local Windows group for Voucher
+Management operators. ProgramData is not made writable/readable to all
+authenticated users: Administrators and SYSTEM retain full control, while the
+dedicated operator group receives only the modify/read permissions required by
+the application data tree. Ordinary users outside that group receive no
+application-data access. The installer performs ACL creation while elevated;
+the application itself must not broaden ACLs at runtime. Uninstall/repair and
+upgrade tests must verify that permissions remain restrictive and that Fast
+User Switching cannot create two concurrent writers.
+
 ### Milestone A.1 — per-user single-instance gate
 
 Before shared deployment work begins, the current LocalAppData application must
@@ -175,8 +185,12 @@ SQLite backups must be transactionally consistent; copying only the main
 use SQLite's backup API or a verified checkpoint/snapshot strategy, then verify
 integrity and archive metadata before publishing the backup.
 
-Automatic backup-on-close is enabled by default. A failed backup offers Retry,
-Close anyway and Cancel; it must not trap the operator permanently.
+Automatic backup-on-close is enabled by default. Because the 5.0 SQLite
+database contains clear voucher codes, the normal 5.0 backup path is encrypted
+and password-protected. Unencrypted ZIP import remains supported for legacy
+compatibility, but the 5.0 UI must not present plaintext backup as the default
+or recommended choice. A failed backup offers Retry, Close anyway and Cancel;
+it must not trap the operator permanently.
 
 ## Reporting
 
