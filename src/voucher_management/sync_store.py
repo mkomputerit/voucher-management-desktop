@@ -151,3 +151,55 @@ def persist_successful_snapshot(
         )
 
     return run_uuid
+
+
+def _epoch_from_iso(value: str | None) -> int:
+    """Convert persisted UTC text back to the ApiVoucher compatibility shape."""
+
+    if not value:
+        return 0
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp())
+
+
+def load_local_vouchers(database: Database, *, controller_id: int) -> list[ApiVoucher]:
+    """Load the last durable voucher state without contacting UniFi.
+
+    This is a cache/history view, not a fresh controller assertion. Rows that
+    disappeared from UniFi remain available because local history is permanent.
+    """
+
+    rows = database.connection.execute(
+        """SELECT * FROM vouchers
+           WHERE controller_id=?
+           ORDER BY COALESCE(created_at, imported_at) DESC, id DESC""",
+        (controller_id,),
+    ).fetchall()
+    vouchers: list[ApiVoucher] = []
+    for row in rows:
+        if row["expired"]:
+            status = "EXPIRED"
+        elif row["authorized_guest_count"] > 0:
+            status = "USED_MULTIPLE"
+        else:
+            status = "VALID_MULTI"
+        vouchers.append(
+            ApiVoucher(
+                id=str(row["unifi_id"]),
+                code=str(row["code"]),
+                recipient=str(row["name"]),
+                duration_minutes=int(row["duration_minutes"] or 0),
+                create_time=_epoch_from_iso(row["created_at"]),
+                quota=int(row["authorized_guest_limit"] or 0),
+                used=int(row["authorized_guest_count"]),
+                status=status,
+                start_time=_epoch_from_iso(row["activated_at"]),
+                end_time=_epoch_from_iso(row["expires_at"]),
+                data_mb=row["data_limit_mb"],
+                down_kbps=row["download_limit_kbps"],
+                up_kbps=row["upload_limit_kbps"],
+            )
+        )
+    return vouchers
