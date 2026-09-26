@@ -316,6 +316,7 @@ class PdfPreview(tk.Toplevel):
         codes = list(self.codes)
         history = self.history
         settings = dict(self.settings)
+        application_audit = getattr(self, "on_audit", None)
 
         def worker():
             history.assert_no_pending_print_audit()
@@ -344,6 +345,11 @@ class PdfPreview(tk.Toplevel):
 
             try:
                 history.mark_print_submitted(pending["audit_id"])
+                record_kwargs = {}
+                if application_audit is not None:
+                    # Keep the durable descriptor until SQLite commits the
+                    # same audit_id on the Tk thread.
+                    record_kwargs["clear_pending"] = False
                 history.record_print(
                     codes,
                     pdf_path,
@@ -351,6 +357,7 @@ class PdfPreview(tk.Toplevel):
                     settings,
                     audit_id=pending["audit_id"],
                     submitted_at=pending["submitted_at"],
+                    **record_kwargs,
                 )
             except Exception as exc:
                 # Physical submission has already returned successfully. Keep
@@ -381,12 +388,14 @@ class PdfPreview(tk.Toplevel):
 
             if audit_error is None:
                 try:
-                    on_audit = getattr(self, "on_audit", None)
-                    if on_audit:
-                        on_audit(
+                    if application_audit:
+                        application_audit(
                             dict(pending),
                             list(codes),
                             Path(pdf_path),
+                        )
+                        history.finalize_pending_print_audit(
+                            str(pending["audit_id"])
                         )
                 except Exception as exc:
                     # The physical print and HMAC history are already durable.
@@ -476,8 +485,12 @@ class PdfPreview(tk.Toplevel):
         pdf_path = self.pdf_path
         settings = dict(self.settings)
         stable_pending = dict(pending)
+        application_audit = getattr(self, "on_audit", None)
 
         def worker():
+            record_kwargs = {}
+            if application_audit is not None:
+                record_kwargs["clear_pending"] = False
             history.record_print(
                 codes,
                 pdf_path,
@@ -485,6 +498,7 @@ class PdfPreview(tk.Toplevel):
                 settings,
                 audit_id=str(stable_pending["audit_id"]),
                 submitted_at=str(stable_pending["submitted_at"]),
+                **record_kwargs,
             )
 
         def finish_controls() -> bool:
@@ -502,12 +516,14 @@ class PdfPreview(tk.Toplevel):
             if not finish_controls():
                 return
             try:
-                on_audit = getattr(self, "on_audit", None)
-                if on_audit:
-                    on_audit(
+                if application_audit:
+                    application_audit(
                         dict(stable_pending),
                         list(codes),
                         Path(pdf_path),
+                    )
+                    history.finalize_pending_print_audit(
+                        str(stable_pending["audit_id"])
                     )
             except Exception as exc:
                 messagebox.showerror(
