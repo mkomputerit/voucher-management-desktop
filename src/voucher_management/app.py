@@ -8,7 +8,7 @@ the stable print path.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty
 import sys
@@ -18,6 +18,7 @@ from tkinter import messagebox
 
 from . import __version__
 from .background_tasks import BackgroundResult, start_background_task
+from .database import Database
 from .dialogs import PrintCopiesDialog
 from .history import HistoryError, HistoryService
 from .identity import PRODUCT_NAME
@@ -34,6 +35,7 @@ from .print_archive import (
 )
 from .settings import SettingsStore
 from .single_instance import InstanceAlreadyRunning, SingleInstanceGuard
+from .sync_store import persist_successful_snapshot
 from .voucher_creation_ui import VoucherCreationMixin
 from .security.history_key import HistoryKeyStore
 from .unifi_api import ApiVoucher, UniFiApiError
@@ -107,6 +109,15 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             return
         # Keep ownership until the root window is destroyed.
         self.bind("<Destroy>", self._release_instance_guard, add="+")
+        self.database = Database(self.paths.database)
+        try:
+            self.database.initialize()
+            self.database.integrity_check()
+        except Exception:
+            self.database.close()
+            self.instance_guard.release()
+            raise
+        self.active_controller_id = None
         self.create_guard = CreateMutationGuard(self.paths.pending_create)
         self.settings_store = SettingsStore(self.paths.settings)
         self.settings = self.settings_store.load()
@@ -207,6 +218,12 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
     def _release_instance_guard(self, event) -> None:
         """Release ownership only when the root Tk window is destroyed."""
         if event.widget is self:
+            database = getattr(self, "database", None)
+            if database is not None:
+                try:
+                    database.close()
+                finally:
+                    self.database = None
             self.instance_guard.release()
 
     def _cleanup_orphan_pdf_temps(self) -> None:
@@ -448,7 +465,15 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         client = self.client
 
         def completed(vouchers) -> None:
-            self.vouchers = list(vouchers)
+            snapshot = list(vouchers)
+            if self.active_controller_id is not None:
+                persist_successful_snapshot(
+                    self.database,
+                    controller_id=self.active_controller_id,
+                    vouchers=snapshot,
+                    observed_at=datetime.now(timezone.utc).isoformat(),
+                )
+            self.vouchers = snapshot
             try:
                 self.create_guard.clear()
             except CreateMutationGuardError as exc:
