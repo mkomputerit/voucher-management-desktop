@@ -884,6 +884,15 @@ def execute_legacy_migration(
         raise LegacyMigrationError(
             "Backup di sicurezza pre-migrazione non verificabile"
         )
+    try:
+        backup_service.validate_encrypted(
+            backup_path,
+            password,
+        )
+    except Exception as exc:
+        raise LegacyMigrationError(
+            "Backup di sicurezza pre-migrazione non verificabile"
+        ) from exc
 
     evidence = apply_legacy_migration_plan(
         database=database,
