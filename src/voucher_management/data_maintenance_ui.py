@@ -430,7 +430,7 @@ class DataMaintenanceMixin:
         try:
             fingerprint, history_key = self.history.verified_identity_material()
             candidates = legacy_candidates_from_database(self.database)
-        except (HistoryError, LegacyMigrationError, Exception) as exc:
+        except Exception as exc:
             detail = (
                 str(exc)
                 if isinstance(exc, (HistoryError, LegacyMigrationError))
@@ -457,11 +457,13 @@ class DataMaintenanceMixin:
             summary = (
                 f"Eventi analizzati: {plan.total_rows}\n"
                 f"Associati con certezza: {len(plan.resolved)}\n"
-                f"Ambigui: {len(plan.ambiguous)}\n"
-                f"Non associabili: {len(plan.unresolved)}\n\n"
-                "Gli eventi ambigui o non associabili verranno conservati "
-                "come evidenza, ma non produrranno dati operativi di stampa. "
-                "Nessuna associazione verrà indovinata.\n\n"
+                f"Con più possibili corrispondenze: {len(plan.ambiguous)}\n"
+                f"Senza una corrispondenza disponibile: "
+                f"{len(plan.unresolved)}\n\n"
+                "Gli eventi che non possono essere associati con certezza "
+                "verranno comunque conservati nello storico, ma non verranno "
+                "usati per ricostruire stampe o altri dati operativi. "
+                "Nessuna associazione verrà scelta automaticamente.\n\n"
                 "Prima della migrazione verrà creato un backup cifrato "
                 "obbligatorio. Procedere?"
             )
@@ -535,9 +537,11 @@ class DataMaintenanceMixin:
                     "Migrazione storico 4.x",
                     "Migrazione completata.\n\n"
                     f"Eventi analizzati: {result.evidence.total_rows}\n"
-                    f"Associati: {result.evidence.resolved_rows}\n"
-                    f"Ambigui conservati: {result.evidence.ambiguous_rows}\n"
-                    f"Non associabili conservati: "
+                    f"Associati con certezza: "
+                    f"{result.evidence.resolved_rows}\n"
+                    f"Con più possibili corrispondenze, conservati: "
+                    f"{result.evidence.ambiguous_rows}\n"
+                    f"Senza corrispondenza disponibile, conservati: "
                     f"{result.evidence.unresolved_rows}\n"
                     f"Eventi PDF materializzati: "
                     f"{result.materialization.generated_events}\n"
