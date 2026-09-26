@@ -172,11 +172,20 @@ class BackupService:
             "voucher_management.db-journal",
         }
 
+        source_root = Path(source).resolve()
+
         def ignore(path, names):
-            current = Path(path)
+            current = Path(path).resolve()
+            ignored: list[str] = []
+            if current == source_root and "application.instance.lock" in names:
+                ignored.append("application.instance.lock")
             if current.name == "data":
-                return [name for name in names if name in database_names]
-            return []
+                ignored.extend(
+                    name for name in names if name in database_names
+                )
+                if "application.instance.lock" in names:
+                    ignored.append("application.instance.lock")
+            return ignored
 
         shutil.copytree(source, destination, ignore=ignore)
 
