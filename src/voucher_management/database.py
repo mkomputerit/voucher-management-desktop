@@ -220,6 +220,7 @@ CREATE TABLE IF NOT EXISTS legacy_audit_events (
     voucher_id INTEGER REFERENCES vouchers(id),
     first_migration_uuid TEXT NOT NULL REFERENCES migration_runs(migration_uuid),
     last_migration_uuid TEXT NOT NULL REFERENCES migration_runs(migration_uuid),
+    materialized_at TEXT,
     CHECK (
         (resolution_status = 'RESOLVED' AND voucher_id IS NOT NULL)
         OR
@@ -266,6 +267,7 @@ CREATE TABLE IF NOT EXISTS legacy_audit_events (
     voucher_id INTEGER REFERENCES vouchers(id),
     first_migration_uuid TEXT NOT NULL REFERENCES migration_runs(migration_uuid),
     last_migration_uuid TEXT NOT NULL REFERENCES migration_runs(migration_uuid),
+    materialized_at TEXT,
     CHECK (
         (resolution_status = 'RESOLVED' AND voucher_id IS NOT NULL)
         OR
