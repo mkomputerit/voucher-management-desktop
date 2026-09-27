@@ -94,6 +94,10 @@ The 5.0 deployment model therefore requires these compensating controls:
 - backups containing the SQLite database are sensitive; the normal 5.0 backup
   path is password-protected and encrypted, while plaintext backup remains only
   a legacy-compatibility/import concern rather than a recommended choice;
+- backup audit rows never persist backup passwords, full destination paths or
+  exception messages; successful rows use the SHA-256 of the final verified
+  container plus validated format/schema metadata, while failed rows keep no
+  unverified digest/format/schema claims;
 - installed shared ProgramData deployment rebuilds the application-data ACL
   from a clean inherited baseline, removes parent inheritance, grants access
   only to SYSTEM, BUILTIN\Administrators and the dedicated Voucher Management
