@@ -1098,6 +1098,30 @@ def test_failed_close_backup_can_close_anyway(monkeypatch, tmp_path):
     ]
 
 
+def test_cancelling_close_backup_notifies_modal_caller(
+    monkeypatch,
+    tmp_path,
+):
+    aborted = []
+    fake = SimpleNamespace(
+        settings={"backup_on_close": True},
+        _background_results=None,
+        paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
+    )
+    monkeypatch.setattr(
+        maintenance_ui,
+        "ask_password",
+        lambda parent, **kwargs: None,
+    )
+
+    modern_app.ModernVoucherApp.request_close(
+        fake,
+        on_abort=lambda: aborted.append(True),
+    )
+
+    assert aborted == [True]
+
+
 def test_cancelling_close_backup_password_keeps_application_open(
     monkeypatch,
     tmp_path,
