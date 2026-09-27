@@ -1,6 +1,6 @@
 # Voucher Management 5.0 architecture
 
-Status: release candidate; final release review pending.
+Status: released 2026-09-27; maintained as the 5.0 architecture baseline.
 
 
 

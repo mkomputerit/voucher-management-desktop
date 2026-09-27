@@ -1,6 +1,6 @@
 # Changelog
 
-## 5.0.0 - Unreleased
+## 5.0.0 - 2026-09-27
 
 - Introduced the SQLite 5.0 persistence foundation with WAL mode, integrity
   checks, durable controller/voucher snapshots, local/offline startup and
@@ -61,10 +61,10 @@
   printed-never-used, never-printed, nominal and full-history views, plus atomic
   printable PDF and CSV export. Summary/audit report rows are sanitized through
   the central report credential policy and never expose voucher codes in clear.
-- The reviewed release-candidate branch reports 5.0.0 in package and Windows
-  metadata, but 5.0 remains unpublished until the final release review is
-  approved and an explicit `[release]` commit reaches `main`. No 5.0 tag or
-  stable package is produced by the release-candidate branch itself.
+- Final release review completed with no release blocker. Package metadata,
+  Windows executable metadata and the public release archive are aligned to
+  5.0.0; publication is performed only by the verified `[release]` workflow
+  from this reviewed `main` commit.
 
 ## 4.3.3 - 2026-09-23
 

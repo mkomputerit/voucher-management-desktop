@@ -26,7 +26,7 @@ The project follows these rules:
 
 ## Authentication
 
-The Voucher Management 5.0.0 release candidate uses the documented UniFi Network API and X-API-Key
+Voucher Management 5.0.0 uses the documented UniFi Network API and X-API-Key
 authentication.
 
 The API key is accepted only for the active connection. It is never persisted
