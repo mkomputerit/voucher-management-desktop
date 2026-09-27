@@ -1,5 +1,8 @@
 #ifndef AppVersion
-  #define AppVersion "0.0.0"
+  #define AppVersion GetEnv("VM_APP_VERSION")
+  #if AppVersion == ""
+    #define AppVersion "0.0.0"
+  #endif
 #endif
 
 #define AppName "Voucher Management"
