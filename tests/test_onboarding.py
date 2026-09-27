@@ -16,6 +16,7 @@ from voucher_management.onboarding import (
     onboarding_state,
 )
 from voucher_management.onboarding_ui import schedule_first_run_onboarding
+from voucher_management.retention import retention_intro_seen
 from voucher_management.settings import SettingsStore
 
 
@@ -105,6 +106,7 @@ def test_complete_onboarding_persists_profile_retention_and_nonsecret_settings(
         assert retention["unused_unprinted_days"] == DEFAULT_VOUCHER_RETENTION_DAYS
         assert retention["protect_used"] == 1
         assert retention["protect_printed"] == 1
+        assert retention_intro_seen(database) is True
 
         assert settings["structure_name"] == "Sala Assemblee"
         assert settings["wifi_title"] == "Wi-Fi ospiti"
