@@ -26,6 +26,14 @@
 - Wired the existing `application_sessions` schema into runtime lifecycle
   auditing so a clean close records its controller and backup outcome while a
   hard crash remains distinguishable by an open session record.
+- Added review-driven 5.0 voucher retention. The installation defaults to
+  180 days and permanently protects vouchers that were used or physically
+  printed. Only old vouchers that are no longer present on the controller,
+  were never used and were never printed are proposed as candidates.
+  Retention never runs silently: the operator reviews and explicitly selects
+  rows. Approved rows remain as historical records but their reusable voucher
+  code, recipient, assignment and notes are removed and the action is audited.
+  A later controller reappearance reactivates the same durable row.
 - Added real Windows CI coverage for shared deployment ACLs, upgrade behavior,
   preserved-data uninstall and explicit `-RemoveData` cleanup.
 - Added SQLite-backed administrative reporting with summary, used, expired,
