@@ -15,6 +15,7 @@ from voucher_management.onboarding import (
     complete_onboarding,
     onboarding_state,
 )
+from voucher_management.onboarding_ui import schedule_first_run_onboarding
 from voucher_management.settings import SettingsStore
 
 
@@ -212,5 +213,56 @@ def test_onboarding_rejects_unsafe_retention(days, tmp_path):
             )
 
         assert database.installation_profile() is None
+    finally:
+        database.close()
+
+
+def test_scheduler_runs_wizard_only_for_required_first_run(tmp_path):
+    database = _database(tmp_path)
+    scheduled = []
+    launched = []
+    app = type(
+        "FakeApp",
+        (),
+        {
+            "database": database,
+            "after_idle": lambda self, callback: scheduled.append(callback),
+        },
+    )()
+    try:
+        state = schedule_first_run_onboarding(
+            app,
+            wizard_factory=lambda current: launched.append(current),
+        )
+        assert state is OnboardingState.REQUIRED
+        assert len(scheduled) == 1
+        assert launched == []
+
+        scheduled[0]()
+        assert launched == [app]
+    finally:
+        database.close()
+
+
+def test_scheduler_does_not_force_existing_installation(tmp_path):
+    database = _database(tmp_path)
+    database.create_controller(
+        name="Existing",
+        api_root="https://controller.example/proxy/network/integration/v1",
+        created_at=NOW,
+    )
+    scheduled = []
+    app = type(
+        "FakeApp",
+        (),
+        {
+            "database": database,
+            "after_idle": lambda self, callback: scheduled.append(callback),
+        },
+    )()
+    try:
+        state = schedule_first_run_onboarding(app)
+        assert state is OnboardingState.EXISTING_INSTALLATION
+        assert scheduled == []
     finally:
         database.close()
