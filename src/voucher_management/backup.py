@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -56,6 +57,17 @@ WINDOWS_RESERVED_NAMES = {
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
 }
+
+
+@dataclass(frozen=True)
+class BackupArtifactInfo:
+    """Verified metadata for one final backup artifact."""
+
+    path: Path
+    sha256: str
+    backup_format: int
+    schema_version: int | None
+    encrypted: bool
 
 
 class BackupError(RuntimeError):
@@ -356,6 +368,75 @@ class BackupService:
         if rows:
             payload += "\n"
         return payload.encode("utf-8")
+
+    @staticmethod
+    def _file_sha256(path: Path) -> str:
+        """Hash the final backup container without loading it fully in memory."""
+
+        digest = hashlib.sha256()
+        try:
+            with Path(path).open("rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+        except OSError as exc:
+            raise BackupError("Impossibile calcolare l'hash del backup") from exc
+        return digest.hexdigest()
+
+    @staticmethod
+    def _manifest_schema_version(manifest: dict) -> int | None:
+        sqlite_meta = manifest.get("sqlite_snapshot")
+        if sqlite_meta is None:
+            return None
+        if not isinstance(sqlite_meta, dict):
+            raise BackupError("Metadati snapshot SQLite incoerenti")
+        value = sqlite_meta.get("user_version")
+        if type(value) is not int or value < 0:
+            raise BackupError("Versione schema SQLite del backup non valida")
+        return value
+
+    def describe_backup(
+        self,
+        source: Path,
+        *,
+        password: str | None = None,
+    ) -> BackupArtifactInfo:
+        """Validate one final artifact and return privacy-safe audit metadata."""
+
+        source = Path(source)
+        encrypted = self.is_encrypted_backup(source)
+        if encrypted:
+            if password is None:
+                raise BackupError(
+                    "La password è necessaria per verificare il backup cifrato"
+                )
+            manifest = self.validate_encrypted(source, password)
+        else:
+            manifest = self.validate(source)
+
+        backup_format = manifest.get("format")
+        if type(backup_format) is not int:
+            raise BackupError("Formato backup non valido")
+        return BackupArtifactInfo(
+            path=source,
+            sha256=self._file_sha256(source),
+            backup_format=backup_format,
+            schema_version=self._manifest_schema_version(manifest),
+            encrypted=encrypted,
+        )
+
+    def create_verified(
+        self,
+        destination: Path,
+        *,
+        password: str | None = None,
+    ) -> BackupArtifactInfo:
+        """Create a backup and independently describe the final file."""
+
+        path = self.create(destination, password=password)
+        return self.describe_backup(path, password=password)
 
     def create(
         self,
