@@ -6,6 +6,7 @@ import tkinter as tk
 from datetime import datetime, timezone
 from tkinter import messagebox, ttk
 
+from .history import HistoryError
 from .retention import (
     ensure_retention_policy,
     load_retention_policy,
@@ -201,13 +202,27 @@ class RetentionReviewDialog(tk.Toplevel):
 
     def _refresh(self) -> None:
         self.tree.delete(*self.tree.get_children())
-        candidates = reviewable_retention_candidates(
-            self.app.database,
-            history=self.app.history,
-            settings=self.app.settings,
-            now=self._now(),
-            controller_id=None,
-        )
+        try:
+            candidates = reviewable_retention_candidates(
+                self.app.database,
+                history=self.app.history,
+                settings=self.app.settings,
+                now=self._now(),
+                controller_id=None,
+            )
+        except HistoryError:
+            self._candidates = {}
+            self.status.set(
+                "Candidati non disponibili: cronologia non verificabile."
+            )
+            messagebox.showerror(
+                "Conservazione non disponibile",
+                "La cronologia locale non è verificabile. La conservazione "
+                "viene bloccata per evitare di minimizzare un voucher che "
+                "potrebbe avere un PDF o una stampa registrata.",
+                parent=self,
+            )
+            return
         self._candidates = {
             candidate.voucher_id: candidate for candidate in candidates
         }
@@ -271,14 +286,35 @@ class RetentionReviewDialog(tk.Toplevel):
         ):
             return
 
-        result = archive_retention_candidates(
-            self.app.database,
-            voucher_ids=selected,
-            archived_at=self._now(),
-            windows_user=self.app._windows_operator_identity(),
-            history=self.app.history,
-            settings=self.app.settings,
-        )
+        try:
+            result = archive_retention_candidates(
+                self.app.database,
+                voucher_ids=selected,
+                archived_at=self._now(),
+                windows_user=self.app._windows_operator_identity(),
+                history=self.app.history,
+                settings=self.app.settings,
+            )
+        except HistoryError:
+            messagebox.showerror(
+                "Conservazione non disponibile",
+                "La cronologia locale non è verificabile. Nessun voucher è "
+                "stato archiviato.",
+                parent=self,
+            )
+            return
+        except Exception as exc:
+            self.app.logger.warning(
+                "retention_archive_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Conservazione",
+                "Impossibile completare l'archiviazione selezionata. Nessun "
+                "voucher è stato minimizzato parzialmente.",
+                parent=self,
+            )
+            return
         if self.app.active_controller_id is not None:
             self.app.vouchers = load_local_vouchers(
                 self.app.database,
