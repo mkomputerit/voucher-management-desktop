@@ -39,6 +39,92 @@ class DataMaintenanceMixin:
     def _backup_service(self) -> BackupService:
         return BackupService(self.paths)
 
+    def request_close(self) -> None:
+        """Close safely, creating the configured encrypted recovery snapshot.
+
+        The password exists only for this close attempt. Cancelling either the
+        password prompt or a failed-backup decision leaves the application
+        open. A running background operation is never interrupted by shutdown.
+        """
+
+        if getattr(self, "_background_results", None) is not None:
+            messagebox.showinfo(
+                "Operazione in corso",
+                "Attendere il completamento dell'operazione corrente prima "
+                "di chiudere Voucher Management.",
+                parent=self,
+            )
+            return
+
+        if not bool(self.settings.get("backup_on_close", True)):
+            self.destroy()
+            return
+
+        password = ask_password(
+            self,
+            title="Backup alla chiusura",
+            prompt=(
+                "Prima di chiudere verrà creato un backup cifrato e "
+                "autenticato dell'archivio locale. Inserire la password "
+                "del backup (almeno 12 caratteri). La password non viene "
+                "salvata."
+            ),
+        )
+        if password is None:
+            return
+
+        target = (
+            Path(self.paths.automatic_backups)
+            / (
+                "VoucherManagement-auto-"
+                f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.vmbk"
+            )
+        )
+        self._start_close_backup(target, password)
+
+    def _start_close_backup(self, target: Path, password: str) -> None:
+        """Run one encrypted shutdown backup attempt without blocking Tk."""
+
+        service = self._backup_service()
+
+        def completed(_result) -> None:
+            self.destroy()
+
+        def failed(exc: Exception) -> None:
+            self.logger.warning(
+                "shutdown_backup_failed type=%s",
+                type(exc).__name__,
+            )
+            decision = messagebox.askyesnocancel(
+                "Backup di chiusura non riuscito",
+                "Non è stato possibile creare e verificare il backup cifrato.\n\n"
+                "Sì: riprova il backup.\n"
+                "No: chiudi comunque senza un nuovo backup.\n"
+                "Annulla: resta nel programma.",
+                parent=self,
+            )
+            if decision is True:
+                self._start_close_backup(target, password)
+            elif decision is False:
+                self.destroy()
+
+        started = self._run_background_task(
+            "Backup di chiusura…",
+            lambda: service.create(
+                Path(target),
+                password=password,
+            ),
+            completed,
+            failed,
+        )
+        if not started:
+            messagebox.showinfo(
+                "Operazione in corso",
+                "Il backup di chiusura non può iniziare mentre è attiva "
+                "un'altra operazione.",
+                parent=self,
+            )
+
     def _close_database_for_restore(self) -> None:
         """Release the live SQLite handle before replacing the data tree."""
 
@@ -773,44 +859,33 @@ class DataMaintenanceMixin:
                 )
 
     def create_backup(self, *, parent=None) -> None:
+        """Create the normal 5.0 backup only through the encrypted format."""
+
         parent = parent or self
-        choice = messagebox.askyesnocancel(
-            "Crea backup",
-            "Proteggere il backup con una password?\n\n"
-            "Sì: backup cifrato e autenticato (.vmbk).\n"
-            "No: ZIP compatibile non cifrato.",
-            parent=parent,
+        password = ask_password(
+            parent,
+            title="Password backup",
+            prompt=(
+                "Inserire una password di almeno 12 caratteri per proteggere "
+                "il backup cifrato e autenticato."
+            ),
+            confirm=True,
         )
-        if choice is None:
+        if password is None:
             return
 
-        password = None
-        suffix = ".vmbk" if choice else ".zip"
-        if choice:
-            password = ask_password(
-                parent,
-                title="Password backup",
-                prompt="Inserire una password di almeno 12 caratteri.",
-                confirm=True,
-            )
-            if password is None:
-                return
-
         default = (
-            f"VoucherManagement-backup-"
-            f"{datetime.now().strftime('%Y%m%d-%H%M')}{suffix}"
-        )
-        filetypes = (
-            [("Backup cifrato Voucher Management", "*.vmbk")]
-            if choice
-            else [("Backup ZIP Voucher Management", "*.zip")]
+            "VoucherManagement-backup-"
+            f"{datetime.now().strftime('%Y%m%d-%H%M')}.vmbk"
         )
         target = filedialog.asksaveasfilename(
             parent=parent,
-            title="Crea backup",
-            defaultextension=suffix,
+            title="Crea backup cifrato",
+            defaultextension=".vmbk",
             initialfile=default,
-            filetypes=filetypes,
+            filetypes=[
+                ("Backup cifrato Voucher Management", "*.vmbk"),
+            ],
         )
         if not target:
             return
