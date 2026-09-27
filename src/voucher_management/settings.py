@@ -33,6 +33,9 @@ DEFAULT_SETTINGS = {
     "history_key_fingerprint": "",
     "log_retention_days": 30,
     "print_retention_days": 0,
+    # 5.0 protects the SQLite operational archive with an encrypted snapshot
+    # before an ordinary operator-requested application close.
+    "backup_on_close": True,
 }
 
 
@@ -40,6 +43,7 @@ _INT_SETTING_RANGES = {
     "log_retention_days": (1, 3650),
     "print_retention_days": (0, 3650),
 }
+_BOOL_SETTINGS = {"backup_on_close"}
 
 
 class SettingsStore:
@@ -47,7 +51,12 @@ class SettingsStore:
 
     @staticmethod
     def _validated_value(key: str, value):
-        """Return a schema-safe value, rejecting bools and out-of-range ints."""
+        """Return a schema-safe value for typed persisted settings."""
+
+        if key in _BOOL_SETTINGS:
+            if type(value) is bool:
+                return value, False
+            return DEFAULT_SETTINGS[key], True
 
         bounds = _INT_SETTING_RANGES.get(key)
         if bounds is None:
@@ -133,7 +142,7 @@ class SettingsStore:
 
             if invalid_keys:
                 self.last_load_warning = (
-                    "Alcune impostazioni numeriche non erano valide e sono "
+                    "Alcune impostazioni non erano valide e sono "
                     "state ripristinate a valori sicuri: "
                     + ", ".join(sorted(invalid_keys))
                     + "."
