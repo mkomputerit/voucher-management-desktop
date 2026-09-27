@@ -176,6 +176,16 @@ def test_public_workflow_release_permissions_are_isolated(tmp_path: Path):
     assert "github.event.repository.private == false" in workflow
 
 
+def test_release_changelog_changes_trigger_public_workflow(tmp_path: Path):
+    output = export_snapshot(tmp_path / "public")
+    workflow = (
+        output / ".github" / "workflows" / "build-windows.yml"
+    ).read_text(encoding="utf-8")
+
+    push_header = workflow.split("  workflow_dispatch:", 1)[0]
+    assert "- 'CHANGELOG.md'" in push_header
+
+
 def test_public_release_notes_follow_archive_version(tmp_path: Path):
     output = export_snapshot(tmp_path / "public")
     workflow = (

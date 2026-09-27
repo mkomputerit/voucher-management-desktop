@@ -19,6 +19,7 @@ on:
       - 'version.txt'
       - 'windows_version_info.txt'
       - 'README.md'
+      - 'CHANGELOG.md'
       - 'LICENSE'
       - 'PRIVACY.md'
       - 'SECURITY.md'

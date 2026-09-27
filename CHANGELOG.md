@@ -54,6 +54,9 @@
   A later controller reappearance reactivates the same durable row.
 - Added real Windows CI coverage for shared deployment ACLs, upgrade behavior,
   preserved-data uninstall and explicit `-RemoveData` cleanup.
+- Hardened the stable-release trigger so a final `CHANGELOG.md` release-date
+  commit is itself sufficient to run the complete Windows verification and
+  explicit `[release]` publication path on `main`.
 - Added SQLite-backed administrative reporting with summary, used, expired,
   printed-never-used, never-printed, nominal and full-history views, plus atomic
   printable PDF and CSV export. Summary/audit report rows are sanitized through
