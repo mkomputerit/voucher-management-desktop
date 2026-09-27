@@ -374,6 +374,54 @@ COMMIT;
         if result != "ok":
             raise RuntimeError(f"SQLite integrity check failed: {result}")
 
+    def metadata_value(self, key: str) -> str | None:
+        """Return one non-secret application metadata value."""
+
+        row = self.connection.execute(
+            "SELECT value FROM app_metadata WHERE key=?",
+            (str(key),),
+        ).fetchone()
+        return None if row is None else str(row["value"])
+
+    def set_metadata_value(
+        self,
+        key: str,
+        value: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        """Set one non-secret application metadata value."""
+
+        def write(db: sqlite3.Connection) -> None:
+            db.execute(
+                """INSERT INTO app_metadata(key, value) VALUES (?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                (str(key), str(value)),
+            )
+
+        if connection is not None:
+            write(connection)
+            return
+        with self.transaction() as db:
+            write(db)
+
+    def delete_metadata_value(
+        self,
+        key: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        """Delete one application metadata key."""
+
+        def write(db: sqlite3.Connection) -> None:
+            db.execute("DELETE FROM app_metadata WHERE key=?", (str(key),))
+
+        if connection is not None:
+            write(connection)
+            return
+        with self.transaction() as db:
+            write(db)
+
     def installation_profile(self) -> sqlite3.Row | None:
         """Return the singleton installation profile, if onboarding completed."""
 
