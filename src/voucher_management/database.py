@@ -20,6 +20,15 @@ from typing import Iterator
 
 SCHEMA_VERSION = 2
 
+BACKUP_AUDIT_DESTINATIONS = frozenset(
+    {
+        "MANUAL",
+        "SHUTDOWN_AUTO",
+        "PRE_MIGRATION",
+        "SHARED_DATA_MIGRATION",
+    }
+)
+
 
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -400,6 +409,8 @@ COMMIT;
             raise ValueError("backup audit filename must be a basename")
         if normalized_status not in {"SUCCESS", "FAILED"}:
             raise ValueError("unsupported backup audit status")
+        if destination_kind not in BACKUP_AUDIT_DESTINATIONS:
+            raise ValueError("unsupported backup audit destination")
 
         digest = None if sha256 is None else str(sha256).strip().lower()
         if normalized_status == "SUCCESS":
