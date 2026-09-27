@@ -21,9 +21,11 @@ from .onboarding import (
     OnboardingDraft,
     OnboardingState,
     begin_onboarding,
+    choose_shared_fresh_start,
     complete_onboarding,
     legacy_installation_has_evidence,
     onboarding_state,
+    shared_fresh_start_selected,
 )
 from .unifi_api import (
     UniFiApiError,
@@ -61,6 +63,7 @@ def startup_onboarding_state(app) -> OnboardingState:
 
     if (
         getattr(app.paths, "shared_mode", False)
+        and not shared_fresh_start_selected(app.database)
         and source_has_migratable_data(app.paths.per_user_root)
     ):
         # Shared ProgramData must remain pristine until the explicit per-user

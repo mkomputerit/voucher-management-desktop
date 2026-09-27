@@ -12,6 +12,11 @@
 - Add Home operational metrics/recent activity and an embedded Report overview.
 - Make voucher row highlighting track the actual print selection so the
   operator sees one unambiguous selection concept.
+- Add explicit first-start choices when legacy per-user data is detected:
+  migrate it, restore a backup, or deliberately begin a separate new shared
+  installation without deleting the old profile data.
+- Make the Home synchronization action context-sensitive: synchronize an active
+  session, otherwise guide the operator directly to Controller settings.
 
 ## 5.0.0 - 2026-09-27
 

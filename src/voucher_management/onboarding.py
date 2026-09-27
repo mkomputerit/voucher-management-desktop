@@ -18,6 +18,8 @@ from .settings import DEFAULT_SETTINGS, SettingsStore
 
 DEFAULT_VOUCHER_RETENTION_DAYS = 180
 ONBOARDING_IN_PROGRESS_KEY = "onboarding_in_progress"
+SHARED_FRESH_START_KEY = "shared_per_user_migration_decision"
+SHARED_FRESH_START_VALUE = "fresh_start"
 
 
 class OnboardingState(str, Enum):
@@ -110,6 +112,24 @@ def begin_onboarding(database: Database) -> None:
     """Persist a retry marker before any controller snapshot can be written."""
 
     database.set_metadata_value(ONBOARDING_IN_PROGRESS_KEY, "1")
+
+
+def choose_shared_fresh_start(database: Database) -> None:
+    """Persist an explicit decision to ignore, not delete, old per-user data."""
+
+    database.set_metadata_value(
+        SHARED_FRESH_START_KEY,
+        SHARED_FRESH_START_VALUE,
+    )
+
+
+def shared_fresh_start_selected(database: Database) -> bool:
+    """Return whether the operator explicitly chose a separate new archive."""
+
+    return (
+        database.metadata_value(SHARED_FRESH_START_KEY)
+        == SHARED_FRESH_START_VALUE
+    )
 
 
 def validate_onboarding_draft(draft: OnboardingDraft) -> OnboardingDraft:

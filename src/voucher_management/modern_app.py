@@ -21,7 +21,7 @@ from .identity import (
     PRODUCT_NAME,
 )
 from .logo_validation import LogoValidationError, validate_logo_image
-from .onboarding import OnboardingState
+from .onboarding import OnboardingState, choose_shared_fresh_start
 from .onboarding_ui import schedule_first_run_onboarding, startup_onboarding_state
 from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
@@ -605,9 +605,9 @@ class MigrationRequiredDialog(tk.Toplevel):
             text=(
                 "Questa installazione condivisa ha rilevato dati della "
                 "precedente installazione nel profilo Windows corrente. "
-                "Per evitare sovrascritture, Voucher Management non abilita "
-                "le normali operazioni finché la migrazione non viene "
-                "completata o l'applicazione viene chiusa."
+                "Puoi migrarli, ripristinare un backup oppure iniziare una "
+                "nuova installazione separata. I dati precedenti non vengono "
+                "mai cancellati automaticamente."
             ),
             style="Muted.TLabel",
             wraplength=620,
@@ -622,11 +622,52 @@ class MigrationRequiredDialog(tk.Toplevel):
         ).pack(side="right")
         ttk.Button(
             actions,
-            text="Migra dati…",
+            text="Inizia nuova installazione",
+            command=self._start_fresh_installation,
+        ).pack(side="right", padx=(0, 8))
+        ttk.Button(
+            actions,
+            text="Ripristina backup…",
+            command=lambda: app.restore_backup(parent=self),
+        ).pack(side="right", padx=(0, 8))
+        ttk.Button(
+            actions,
+            text="Migra dati precedenti…",
             command=lambda: app.migrate_per_user_data_to_shared(parent=self),
             style="Accent.TButton",
         ).pack(side="right", padx=(0, 8))
-        fit_dialog(self, app, min_width=680, min_height=260)
+        fit_dialog(self, app, min_width=860, min_height=290)
+
+    def _start_fresh_installation(self) -> None:
+        if not messagebox.askyesno(
+            "Nuova installazione",
+            "Iniziare una nuova installazione condivisa senza importare i "
+            "dati trovati nel profilo Windows corrente?\n\n"
+            "I dati precedenti resteranno invariati e potranno essere "
+            "recuperati manualmente in seguito.",
+            parent=self,
+        ):
+            return
+        try:
+            choose_shared_fresh_start(self.app.database)
+        except Exception as exc:
+            self.app.logger.error(
+                "shared_fresh_start_marker_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Nuova installazione",
+                "Impossibile registrare in sicurezza la scelta. "
+                "Nessun dato è stato modificato.",
+                parent=self,
+            )
+            return
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
+        self.app.after_idle(lambda: FirstRunWizard(self.app))
 
     def _close_application(self) -> None:
         try:
@@ -688,6 +729,7 @@ class ModernVoucherApp(
         self.controller_health_var = tk.StringVar()
         self.controller_health_detail_var = tk.StringVar()
         self.home_ready_var = tk.StringVar(value="Pronto")
+        self.home_sync_action_var = tk.StringVar(value="Riconnetti")
         self.home_to_print_var = tk.StringVar(value="0")
         self.home_active_var = tk.StringVar(value="0")
         self.home_used_var = tk.StringVar(value="0")
@@ -850,8 +892,8 @@ class ModernVoucherApp(
         self.home_create_button.pack(side="left")
         self.home_sync_button = ttk.Button(
             quick,
-            text="Sincronizza",
-            command=self.refresh,
+            textvariable=self.home_sync_action_var,
+            command=self._home_sync_or_connect,
         )
         self.home_sync_button.pack(side="left", padx=(10, 0))
 
@@ -1338,6 +1380,23 @@ class ModernVoucherApp(
         self.controller_health_var.set(status.title)
         self.controller_health_detail_var.set(status.detail)
         self.home_ready_var.set(status.title)
+        self._controller_workspace_status = status
+        if status.key == "connected":
+            self.home_sync_action_var.set("Sincronizza")
+        elif status.key == "unconfigured":
+            self.home_sync_action_var.set("Configura controller")
+        else:
+            self.home_sync_action_var.set("Riconnetti")
+
+    def _home_sync_or_connect(self) -> None:
+        if self.client is not None:
+            self.refresh()
+            return
+        self._show_workspace("settings")
+        try:
+            self.api_key_entry.focus_set()
+        except tk.TclError:
+            pass
 
     def _controller_operation_failed(self) -> None:
         self._controller_status_failed = True
