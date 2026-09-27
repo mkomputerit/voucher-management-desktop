@@ -121,6 +121,17 @@ def shared_target_is_pristine(database, paths) -> bool:
                 return False
             continue
 
+        if table == "application_sessions":
+            # Startup auditing begins before the operator can choose migration.
+            # Session rows with no controller association are bootstrap-only
+            # evidence and must not make a fresh ProgramData target look used.
+            rows = database.connection.execute(
+                "SELECT controller_id FROM application_sessions"
+            ).fetchall()
+            if any(row["controller_id"] is not None for row in rows):
+                return False
+            continue
+
         quoted = '"' + table.replace('"', '""') + '"'
         row = database.connection.execute(
             f"SELECT COUNT(*) FROM {quoted}"

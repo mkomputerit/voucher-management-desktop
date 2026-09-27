@@ -250,3 +250,111 @@ def test_unexpected_background_error_is_redacted(monkeypatch):
     assert shown
     assert "sensitive synthetic detail" not in shown[0][0][1]
     assert "Errore imprevisto" in shown[0][0][1]
+
+
+def test_onboarding_profile_name_does_not_replace_real_site_label(monkeypatch):
+    persisted = []
+    status = _Var()
+    settings_updates = []
+    fake_database = SimpleNamespace(
+        find_controller_by_api_root=lambda _root: None,
+        controller_name=lambda _controller_id: None,
+        get_or_create_controller=lambda **kwargs: (
+            persisted.append(kwargs) or 7
+        ),
+    )
+    fake = SimpleNamespace(
+        database=fake_database,
+        active_controller_id=None,
+        client=None,
+        vouchers=[],
+        api_root_var=_Var(),
+        settings={},
+        settings_store=SimpleNamespace(
+            update=lambda **kwargs: (
+                settings_updates.append(kwargs) or kwargs
+            )
+        ),
+        connection_var=status,
+        checked_ids=set(),
+        populate=lambda: None,
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+    )
+    client = SimpleNamespace(
+        base_url="https://controller.example/proxy/network/integration/v1",
+        trusted_cert_sha256="",
+    )
+    info = {
+        "applicationVersion": "10.6.106",
+        "siteName": "Default Site",
+    }
+    monkeypatch.setattr(
+        connection_ui,
+        "persist_successful_snapshot",
+        lambda *args, **kwargs: None,
+    )
+
+    modern_app.ModernVoucherApp._finish_connection(
+        fake,
+        client,
+        info,
+        [],
+        profile_name="Reception",
+    )
+
+    assert persisted[0]["name"] == "Reception"
+    assert "Default Site" in status.get()
+    assert fake.active_controller_id == 7
+    assert settings_updates[0]["controller_api_root"] == client.base_url
+
+
+def test_reconnect_preserves_named_controller_profile(monkeypatch):
+    persisted = []
+    snapshots = []
+    status = _Var()
+    fake_database = SimpleNamespace(
+        find_controller_by_api_root=lambda _root: 7,
+        controller_name=lambda _controller_id: "Reception",
+        get_or_create_controller=lambda **kwargs: (
+            persisted.append(kwargs) or 7
+        ),
+    )
+    fake = SimpleNamespace(
+        database=fake_database,
+        active_controller_id=None,
+        client=None,
+        vouchers=[],
+        api_root_var=_Var(),
+        settings={},
+        settings_store=SimpleNamespace(update=lambda **kwargs: kwargs),
+        connection_var=status,
+        checked_ids=set(),
+        populate=lambda: None,
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+    )
+    client = SimpleNamespace(
+        base_url="https://controller.example/proxy/network/integration/v1",
+        trusted_cert_sha256="",
+    )
+    info = {
+        "applicationVersion": "10.6.106",
+        "siteName": "Default Site",
+    }
+    monkeypatch.setattr(
+        connection_ui,
+        "persist_successful_snapshot",
+        lambda *args, **kwargs: snapshots.append(kwargs),
+    )
+
+    modern_app.ModernVoucherApp._finish_connection(
+        fake,
+        client,
+        info,
+        [],
+        observed_at="2026-09-27T08:15:00+00:00",
+    )
+
+    assert persisted[0]["name"] == "Reception"
+    assert persisted[0]["observed_at"] == "2026-09-27T08:15:00+00:00"
+    assert snapshots[0]["observed_at"] == "2026-09-27T08:15:00+00:00"
+    assert "Default Site" in status.get()

@@ -204,13 +204,32 @@ class ControllerConnectionMixin:
         client: UniFiClient,
         info: dict,
         vouchers,
+        *,
+        profile_name: str | None = None,
+        observed_at: str | None = None,
     ) -> None:
         snapshot = list(vouchers)
-        observed_at = datetime.now(timezone.utc).isoformat()
+        snapshot_observed_at = (
+            str(observed_at).strip()
+            if observed_at and str(observed_at).strip()
+            else datetime.now(timezone.utc).isoformat()
+        )
+        requested_name = (
+            str(profile_name).strip()
+            if profile_name and str(profile_name).strip()
+            else ""
+        )
+        existing_id = self.database.find_controller_by_api_root(client.base_url)
+        persisted_name = requested_name
+        if not persisted_name and existing_id is not None:
+            persisted_name = self.database.controller_name(existing_id) or ""
+        if not persisted_name:
+            persisted_name = str(info.get("siteName") or "Controller UniFi")
+
         controller_id = self.database.get_or_create_controller(
-            name=str(info.get("siteName") or "Controller UniFi"),
+            name=persisted_name,
             api_root=client.base_url,
-            observed_at=observed_at,
+            observed_at=snapshot_observed_at,
             cert_sha256=client.trusted_cert_sha256 or "",
         )
         # Connection success includes a complete list_vouchers() snapshot, so
@@ -219,7 +238,7 @@ class ControllerConnectionMixin:
             self.database,
             controller_id=controller_id,
             vouchers=snapshot,
-            observed_at=observed_at,
+            observed_at=snapshot_observed_at,
         )
         self.active_controller_id = controller_id
         self.client = client
