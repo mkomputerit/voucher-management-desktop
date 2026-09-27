@@ -229,3 +229,66 @@ def test_stale_preview_worker_error_is_ignored_for_newer_generation():
     assert page_var.value == ""
     assert fake._render_after == "latest-token"
     assert scheduled and scheduled[0][0] == 0
+
+
+
+def test_print_test_preview_never_touches_voucher_audit(monkeypatch):
+    captured = {}
+    printed = []
+    submitted = []
+
+    class Value:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    class Button:
+        def __init__(self):
+            self.states = []
+
+        def state(self, value):
+            self.states.append(tuple(value))
+
+    def run_background(label, worker, completed, failed):
+        captured.update(
+            label=label,
+            worker=worker,
+            completed=completed,
+            failed=failed,
+        )
+        return True
+
+    fake = SimpleNamespace(
+        _printing=False,
+        printer_var=Value("Synthetic Printer"),
+        copies_var=Value(1),
+        print_button=Button(),
+        app=SimpleNamespace(_run_background_task=run_background),
+        _print_windows=lambda printer, copies: printed.append(
+            (printer, copies)
+        ),
+        _test_on_submitted=lambda: submitted.append(True),
+        winfo_exists=lambda: True,
+    )
+    shown = []
+    monkeypatch.setattr(
+        pdf_preview.messagebox,
+        "showinfo",
+        lambda *args, **kwargs: shown.append((args, kwargs)),
+    )
+
+    pdf_preview.PrintTestPreview.print_document(fake)
+
+    assert captured["label"] == "Invio pagina di prova alla stampante…"
+    assert not hasattr(fake, "history")
+
+    result = captured["worker"]()
+    assert result == "Synthetic Printer"
+    assert printed == [("Synthetic Printer", 1)]
+
+    captured["completed"](result)
+    assert submitted == [True]
+    assert shown
+    assert fake._printing is False
