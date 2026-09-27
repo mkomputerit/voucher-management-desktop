@@ -18,6 +18,7 @@ from voucher_management.onboarding import (
     onboarding_state,
 )
 from voucher_management.onboarding_ui import (
+    FirstRunWizard,
     schedule_first_run_onboarding,
     startup_onboarding_state,
 )
@@ -46,6 +47,20 @@ def _draft():
         pdf_contact="Reception",
         pdf_notes="Conservare il voucher",
     )
+
+
+def test_first_run_wizard_has_intended_eight_step_flow():
+    assert (
+        FirstRunWizard.PAGE_WELCOME,
+        FirstRunWizard.PAGE_IDENTITY,
+        FirstRunWizard.PAGE_CONTROLLER,
+        FirstRunWizard.PAGE_VERIFY,
+        FirstRunWizard.PAGE_PDF,
+        FirstRunWizard.PAGE_RETENTION,
+        FirstRunWizard.PAGE_SUMMARY,
+        FirstRunWizard.PAGE_PRINT_TEST,
+    ) == tuple(range(8))
+    assert FirstRunWizard.LAST_PAGE == FirstRunWizard.PAGE_PRINT_TEST
 
 
 def test_fresh_database_requires_onboarding(tmp_path):
