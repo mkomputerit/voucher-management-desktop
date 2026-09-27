@@ -27,9 +27,10 @@
   auditing so a clean close records its controller and backup outcome while a
   hard crash remains distinguishable by an open session record.
 - Added review-driven 5.0 voucher retention. The installation defaults to
-  180 days and permanently protects vouchers that were used or physically
-  printed. Only old vouchers that are no longer present on the controller,
-  were never used and were never printed are proposed as candidates.
+  180 days and permanently protects vouchers that were used, physically
+  printed or already have a generated PDF. Only old vouchers that are no
+  longer present on the controller and have no use/print/PDF evidence are
+  proposed as candidates.
   Retention never runs silently: the operator reviews and explicitly selects
   rows. Approved rows remain as historical records but their reusable voucher
   code, recipient, assignment and notes are removed and the action is audited.
