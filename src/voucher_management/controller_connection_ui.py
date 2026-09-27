@@ -296,6 +296,9 @@ class ControllerConnectionMixin:
         self.active_controller_id = controller_id
         self.client = client
         self.vouchers = snapshot
+        profile_var = getattr(self, "controller_profile_name_var", None)
+        if profile_var is not None:
+            profile_var.set(persisted_name)
         self.api_root_var.set(client.base_url)
         self.settings = self.settings_store.update(
             controller_api_root=client.base_url,
