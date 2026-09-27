@@ -210,12 +210,91 @@ def retention_candidates(
     )
 
 
+def generated_retention_blockers(
+    database: Database,
+    *,
+    history,
+    settings: dict,
+    voucher_ids: list[int] | tuple[int, ...],
+) -> frozenset[int]:
+    """Return candidates that still have generated/printed HMAC audit evidence.
+
+    A generated PDF contains the clear voucher credential even before a
+    physical print. Retention therefore fails closed when the HMAC history says
+    that a candidate has generated-document or print evidence.
+    """
+
+    requested = tuple(dict.fromkeys(int(value) for value in voucher_ids))
+    if not requested:
+        return frozenset()
+
+    placeholders = ",".join("?" for _ in requested)
+    rows = database.connection.execute(
+        f"""SELECT id, code FROM vouchers
+            WHERE id IN ({placeholders})""",
+        requested,
+    ).fetchall()
+    code_by_id = {
+        int(row["id"]): str(row["code"])
+        for row in rows
+        if str(row["code"] or "").strip()
+    }
+    if not code_by_id:
+        return frozenset()
+
+    stats = history.stats_for_codes(
+        list(code_by_id.values()),
+        settings,
+    )
+    blocked = {
+        voucher_id
+        for voucher_id, code in code_by_id.items()
+        if (
+            stats[code].generated_documents > 0
+            or stats[code].generated_copies > 0
+            or stats[code].print_jobs > 0
+            or stats[code].printed_copies > 0
+        )
+    }
+    return frozenset(blocked)
+
+
+def reviewable_retention_candidates(
+    database: Database,
+    *,
+    history,
+    settings: dict,
+    now: str,
+    controller_id: int | None = None,
+) -> tuple[RetentionCandidate, ...]:
+    """Return only candidates whose credential is absent from PDF audit history."""
+
+    candidates = retention_candidates(
+        database,
+        now=now,
+        controller_id=controller_id,
+    )
+    blocked = generated_retention_blockers(
+        database,
+        history=history,
+        settings=settings,
+        voucher_ids=[candidate.voucher_id for candidate in candidates],
+    )
+    return tuple(
+        candidate
+        for candidate in candidates
+        if candidate.voucher_id not in blocked
+    )
+
+
 def archive_retention_candidates(
     database: Database,
     *,
     voucher_ids: list[int] | tuple[int, ...],
     archived_at: str,
     windows_user: str,
+    history,
+    settings: dict,
 ) -> RetentionResult:
     """Minimize only candidates that still satisfy policy inside the write txn."""
 
@@ -228,6 +307,12 @@ def archive_retention_candidates(
     if not requested:
         return RetentionResult(archived_ids=(), skipped_ids=())
 
+    generated_blockers = generated_retention_blockers(
+        database,
+        history=history,
+        settings=settings,
+        voucher_ids=requested,
+    )
     policy = ensure_retention_policy(database, now=stamp)
     cutoff = (
         _normalize_now(stamp) - timedelta(days=policy.unused_unprinted_days)
@@ -237,6 +322,9 @@ def archive_retention_candidates(
 
     with database.transaction() as db:
         for voucher_id in requested:
+            if voucher_id in generated_blockers:
+                skipped.append(voucher_id)
+                continue
             row = db.execute(
                 """SELECT v.id
                    FROM vouchers AS v
