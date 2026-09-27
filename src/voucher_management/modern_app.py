@@ -24,6 +24,7 @@ from .logo_validation import LogoValidationError, validate_logo_image
 from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
 from .report_ui import ReportDialog
+from .retention_ui import RetentionMixin
 from .utils import format_fingerprint
 from .data_maintenance_ui import DataMaintenanceMixin
 from .controller_connection_ui import ControllerConnectionMixin
@@ -279,6 +280,29 @@ class SettingsDialog(tk.Toplevel):
             frame,
             text="Analizza e migra storico 4.x…",
             command=lambda: self.app.migrate_legacy_history(parent=self),
+        ).pack(anchor="w")
+
+        ttk.Separator(frame).pack(fill="x", pady=22)
+        ttk.Label(
+            frame,
+            text="Conservazione voucher",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "I voucher usati o stampati sono sempre protetti. I voucher "
+                "mai usati e mai stampati vengono proposti per la minimizzazione "
+                "solo quando non sono più presenti sul controller e superano "
+                "la soglia configurata. Nessuna pulizia è automatica."
+            ),
+            style="Muted.TLabel",
+            wraplength=560,
+        ).pack(anchor="w", pady=(3, 10))
+        ttk.Button(
+            frame,
+            text="Rivedi conservazione…",
+            command=lambda: self.app.open_retention_review(parent=self),
         ).pack(anchor="w")
 
         ttk.Separator(frame).pack(fill="x", pady=22)
@@ -554,7 +578,13 @@ class HistoryRecoveryDialog(tk.Toplevel):
         self.app.populate()
 
 
-class ModernVoucherApp(DataMaintenanceMixin, ControllerConnectionMixin, VoucherDeletionMixin, VoucherApp):
+class ModernVoucherApp(
+    RetentionMixin,
+    DataMaintenanceMixin,
+    ControllerConnectionMixin,
+    VoucherDeletionMixin,
+    VoucherApp,
+):
     """Windows 11 operator shell around the stable voucher engine."""
 
     def _build_ui(self) -> None:
