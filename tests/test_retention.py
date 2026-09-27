@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from voucher_management.database import Database
 from voucher_management.retention import (
     DEFAULT_UNUSED_UNPRINTED_DAYS,
@@ -10,6 +12,7 @@ from voucher_management.retention import (
     mark_retention_intro_seen,
     retention_candidates,
     retention_intro_seen,
+    reviewable_retention_candidates,
     update_retention_days,
 )
 
@@ -18,6 +21,24 @@ NOW = "2026-09-27T08:00:00+00:00"
 OLD = "2026-01-01T08:00:00+00:00"
 RECENT = "2026-09-20T08:00:00+00:00"
 
+
+
+
+def _history(*, generated_codes=()):
+    blocked = set(generated_codes)
+
+    def stats_for_codes(codes, settings):
+        return {
+            code: SimpleNamespace(
+                generated_documents=int(code in blocked),
+                generated_copies=int(code in blocked),
+                print_jobs=0,
+                printed_copies=0,
+            )
+            for code in codes
+        }
+
+    return SimpleNamespace(stats_for_codes=stats_for_codes)
 
 def _database(tmp_path):
     database = Database(tmp_path / "retention.db")
@@ -141,6 +162,8 @@ def test_candidates_require_old_absent_unused_unprinted_rows(tmp_path):
             document_copies=1,
             printed_at=OLD,
             windows_user="operator",
+            history=_history(),
+            settings={},
         )
 
         candidates = retention_candidates(
@@ -194,6 +217,8 @@ def test_reviewed_archive_scrubs_credential_and_personal_text(tmp_path):
             voucher_ids=[voucher_id],
             archived_at=NOW,
             windows_user=r"PC\operator",
+            history=_history(),
+            settings={},
         )
 
         assert result.archived_ids == (voucher_id,)
@@ -245,6 +270,8 @@ def test_archive_revalidates_and_skips_row_that_became_used(tmp_path):
             voucher_ids=[voucher_id],
             archived_at=NOW,
             windows_user="operator",
+            history=_history(),
+            settings={},
         )
 
         assert result.archived_ids == ()
@@ -273,6 +300,8 @@ def test_archived_row_is_not_offered_again(tmp_path):
             voucher_ids=[voucher_id],
             archived_at=NOW,
             windows_user="operator",
+            history=_history(),
+            settings={},
         )
 
         assert retention_candidates(database, now=NOW) == ()
@@ -288,5 +317,49 @@ def test_retention_intro_marker_is_installation_scoped(tmp_path):
         mark_retention_intro_seen(database, now=NOW)
 
         assert retention_intro_seen(database) is True
+    finally:
+        database.close()
+
+
+
+def test_generated_pdf_evidence_blocks_review_and_archive(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="generated",
+            code="1234567890",
+        )
+        history = _history(generated_codes={"1234567890"})
+
+        assert [item.voucher_id for item in retention_candidates(
+            database,
+            now=NOW,
+        )] == [voucher_id]
+        assert reviewable_retention_candidates(
+            database,
+            history=history,
+            settings={},
+            now=NOW,
+        ) == ()
+
+        result = archive_retention_candidates(
+            database,
+            voucher_ids=[voucher_id],
+            archived_at=NOW,
+            windows_user="operator",
+            history=history,
+            settings={},
+        )
+
+        assert result.archived_ids == ()
+        assert result.skipped_ids == (voucher_id,)
+        row = database.connection.execute(
+            "SELECT code, archived_at FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["code"] == "1234567890"
+        assert row["archived_at"] is None
     finally:
         database.close()
