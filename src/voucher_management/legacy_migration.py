@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Mapping, Sequence
 
@@ -886,33 +887,59 @@ def execute_legacy_migration(
         )
 
     destination = Path(backup_destination)
+    backup_started_at = datetime.now(timezone.utc).isoformat()
     try:
-        backup_path = Path(
-            backup_service.create(
-                destination,
-                password=password,
-            )
+        artifact = backup_service.create_verified(
+            destination,
+            password=password,
         )
     except Exception as exc:
+        try:
+            database.record_backup_history(
+                started_at=backup_started_at,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                destination="PRE_MIGRATION",
+                filename=destination.name,
+                status="FAILED",
+                error_summary=type(exc).__name__,
+            )
+        except Exception:
+            pass
         raise LegacyMigrationError(
             "Backup di sicurezza pre-migrazione non riuscito"
         ) from exc
 
-    if (
-        not backup_path.is_file()
-        or not backup_service.is_encrypted_backup(backup_path)
-    ):
+    backup_path = Path(artifact.path)
+    if not backup_path.is_file() or not artifact.encrypted:
+        try:
+            database.record_backup_history(
+                started_at=backup_started_at,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                destination="PRE_MIGRATION",
+                filename=destination.name,
+                status="FAILED",
+                error_summary="UnverifiedBackup",
+            )
+        except Exception:
+            pass
         raise LegacyMigrationError(
             "Backup di sicurezza pre-migrazione non verificabile"
         )
+
     try:
-        backup_service.validate_encrypted(
-            backup_path,
-            password,
+        database.record_backup_history(
+            started_at=backup_started_at,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            destination="PRE_MIGRATION",
+            filename=backup_path.name,
+            status="SUCCESS",
+            sha256=artifact.sha256,
+            backup_format=artifact.backup_format,
+            schema_version=artifact.schema_version,
         )
     except Exception as exc:
         raise LegacyMigrationError(
-            "Backup di sicurezza pre-migrazione non verificabile"
+            "Backup creato, ma audit pre-migrazione non registrabile"
         ) from exc
 
     evidence = apply_legacy_migration_plan(
