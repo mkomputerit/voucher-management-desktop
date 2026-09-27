@@ -10,8 +10,8 @@ from .retention import (
     ensure_retention_policy,
     load_retention_policy,
     mark_retention_intro_seen,
-    retention_candidates,
     retention_intro_seen,
+    reviewable_retention_candidates,
     update_retention_days,
     archive_retention_candidates,
 )
@@ -56,8 +56,8 @@ class RetentionIntroDialog(tk.Toplevel):
                 "Voucher Management conserva lo storico locale per audit e "
                 "report. I voucher utilizzati o stampati sono sempre protetti. "
                 "Solo voucher mai usati, mai stampati, non più presenti sul "
-                "controller e abbastanza vecchi possono essere proposti per "
-                "la minimizzazione."
+                "controller, senza PDF generati e abbastanza vecchi possono "
+                "essere proposti per la minimizzazione."
             ),
             wraplength=560,
             justify="left",
@@ -132,7 +132,7 @@ class RetentionReviewDialog(tk.Toplevel):
                 "Le protezioni per voucher utilizzati e stampati sono "
                 "obbligatorie e non possono essere disattivate. L'elenco "
                 "sottostante contiene soltanto voucher non più presenti sul "
-                "controller, mai usati e mai stampati."
+                "controller, mai usati, mai stampati e senza PDF generati."
             ),
             wraplength=820,
             justify="left",
@@ -201,8 +201,10 @@ class RetentionReviewDialog(tk.Toplevel):
 
     def _refresh(self) -> None:
         self.tree.delete(*self.tree.get_children())
-        candidates = retention_candidates(
+        candidates = reviewable_retention_candidates(
             self.app.database,
+            history=self.app.history,
+            settings=self.app.settings,
             now=self._now(),
             controller_id=None,
         )
@@ -274,6 +276,8 @@ class RetentionReviewDialog(tk.Toplevel):
             voucher_ids=selected,
             archived_at=self._now(),
             windows_user=self.app._windows_operator_identity(),
+            history=self.app.history,
+            settings=self.app.settings,
         )
         if self.app.active_controller_id is not None:
             self.app.vouchers = load_local_vouchers(
