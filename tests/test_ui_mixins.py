@@ -18,6 +18,7 @@ def test_ui_workflows_are_composed_from_focused_mixins():
 
     assert VoucherApp.create is VoucherCreationMixin.create
     assert ModernVoucherApp.create_backup is DataMaintenanceMixin.create_backup
+    assert ModernVoucherApp.request_close is DataMaintenanceMixin.request_close
     assert (
         ModernVoucherApp.recover_pending_print_audit
         is DataMaintenanceMixin.recover_pending_print_audit
