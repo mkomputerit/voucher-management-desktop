@@ -66,11 +66,16 @@ class ControllerConnectionMixin:
             else ""
         )
         self.connection_var.set("Connessione in corso…")
-        self._start_connect_attempt(
-            client,
-            api_key,
-            profile_name=profile_name or None,
-        )
+        if profile_name:
+            self._start_connect_attempt(
+                client,
+                api_key,
+                profile_name=profile_name,
+            )
+        else:
+            # Keep lightweight adapters/tests compatible with the historical
+            # two-argument connection hook when no profile name is supplied.
+            self._start_connect_attempt(client, api_key)
 
     def _start_connect_attempt(
         self,
