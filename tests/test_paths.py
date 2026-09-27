@@ -239,3 +239,18 @@ def test_invalid_deployment_marker_fails_closed(tmp_path):
         assert "Marker di installazione" in str(exc)
     else:
         raise AssertionError("invalid deployment marker must fail closed")
+
+
+def test_automatic_backup_folder_is_outside_managed_data_root(
+    tmp_path,
+    monkeypatch,
+):
+    profile = tmp_path / "profile"
+    home = tmp_path / "home"
+    monkeypatch.setenv("LOCALAPPDATA", str(profile))
+    monkeypatch.setattr(paths_module.Path, "home", classmethod(lambda cls: home))
+
+    paths = AppPaths(base_override=tmp_path / "portable")
+
+    assert paths.automatic_backups == home / "Voucher Management Backups"
+    assert not paths.automatic_backups.is_relative_to(paths.user_root)
