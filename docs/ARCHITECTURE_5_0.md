@@ -1,6 +1,6 @@
 # Voucher Management 5.0 architecture
 
-Status: review implementation foundation.
+Status: release candidate; final release review pending.
 
 
 
