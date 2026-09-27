@@ -16,6 +16,7 @@ from pathlib import Path
 from queue import Empty
 import sys
 import tkinter as tk
+from uuid import uuid4
 from typing import Callable
 from tkinter import messagebox
 
@@ -134,6 +135,13 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         try:
             self.database.initialize()
             self.database.integrity_check()
+            self.session_uuid = uuid4().hex
+            self.database.start_application_session(
+                session_uuid=self.session_uuid,
+                windows_user=self._windows_operator_identity(),
+                started_at=datetime.now(timezone.utc).isoformat(),
+                app_version=__version__,
+            )
         except Exception:
             self.database.close()
             self.instance_guard.release()
