@@ -690,3 +690,108 @@ class PdfPreview(tk.Toplevel):
                     type(close_exc).__name__,
                 )
         super().destroy()
+
+
+
+class PrintTestPreview(PdfPreview):
+    """Print a credential-free local test page without creating voucher audit."""
+
+    def __init__(
+        self,
+        parent,
+        pdf_path: Path,
+        *,
+        delete_on_close: bool = True,
+        on_submitted=None,
+    ):
+        self._delete_test_pdf_on_close = bool(delete_on_close)
+        self._test_on_submitted = on_submitted
+        super().__init__(
+            parent,
+            pdf_path,
+            [],
+            history=None,
+            settings={},
+        )
+        self.title("Prova di stampa - Voucher Management")
+        self.print_button.configure(text="STAMPA PROVA")
+        self.register_print_button.grid_remove()
+
+    def print_document(self):
+        """Submit the local test PDF without touching voucher history/audit."""
+
+        if self._printing:
+            return
+        printer = self.printer_var.get().strip()
+        try:
+            copies = int(self.copies_var.get())
+        except Exception:
+            copies = 0
+        if not printer or not 1 <= copies <= 99:
+            messagebox.showerror(
+                "Prova di stampa",
+                "Selezionare una stampante e un numero di copie valido.",
+                parent=self,
+            )
+            return
+
+        self._printing = True
+        self.print_button.state(["disabled"])
+
+        def worker():
+            self._print_windows(printer, copies)
+            return printer
+
+        def finish_controls() -> bool:
+            self._printing = False
+            try:
+                alive = bool(self.winfo_exists())
+            except tk.TclError:
+                alive = False
+            if alive:
+                self.print_button.state(["!disabled"])
+            return alive
+
+        def completed(selected_printer: str) -> None:
+            if not finish_controls():
+                return
+            if self._test_on_submitted is not None:
+                self._test_on_submitted()
+            messagebox.showinfo(
+                "Prova di stampa",
+                f"Pagina di prova inviata a {selected_printer}.",
+                parent=self,
+            )
+
+        def failed(exc: Exception) -> None:
+            if not finish_controls():
+                return
+            messagebox.showerror(
+                "Prova di stampa",
+                "Impossibile inviare la pagina di prova alla stampante.\n\n"
+                f"{exc}",
+                parent=self,
+            )
+
+        started = self.app._run_background_task(
+            "Invio pagina di prova alla stampante…",
+            worker,
+            completed,
+            failed,
+        )
+        if not started:
+            finish_controls()
+
+    def register_print_audit(self) -> None:
+        """Test pages intentionally have no voucher audit."""
+
+    def destroy(self):
+        path = Path(self.pdf_path)
+        try:
+            super().destroy()
+        finally:
+            if self._delete_test_pdf_on_close:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    LOGGER.debug("print_test_pdf_cleanup_failed")
