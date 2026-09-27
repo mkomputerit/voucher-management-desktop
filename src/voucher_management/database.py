@@ -537,7 +537,8 @@ COMMIT;
                        expired=excluded.expired, data_limit_mb=excluded.data_limit_mb,
                        download_limit_kbps=excluded.download_limit_kbps,
                        upload_limit_kbps=excluded.upload_limit_kbps,
-                       present_on_controller=1, last_seen_at=excluded.last_seen_at,
+                       present_on_controller=1, archived_at=NULL,
+                       last_seen_at=excluded.last_seen_at,
                        last_synced_at=excluded.last_synced_at""",
                 values,
             )
