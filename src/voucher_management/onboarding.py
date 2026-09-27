@@ -14,6 +14,7 @@ from .settings import SettingsStore
 
 
 DEFAULT_VOUCHER_RETENTION_DAYS = 180
+ONBOARDING_IN_PROGRESS_KEY = "onboarding_in_progress"
 
 
 class OnboardingState(str, Enum):
@@ -52,9 +53,17 @@ def onboarding_state(database: Database) -> OnboardingState:
 
     if database.installation_profile() is not None:
         return OnboardingState.COMPLETE
+    if database.metadata_value(ONBOARDING_IN_PROGRESS_KEY) == "1":
+        return OnboardingState.REQUIRED
     if database.onboarding_has_operational_data():
         return OnboardingState.EXISTING_INSTALLATION
     return OnboardingState.REQUIRED
+
+
+def begin_onboarding(database: Database) -> None:
+    """Persist a retry marker before any controller snapshot can be written."""
+
+    database.set_metadata_value(ONBOARDING_IN_PROGRESS_KEY, "1")
 
 
 def validate_onboarding_draft(draft: OnboardingDraft) -> OnboardingDraft:
@@ -130,6 +139,10 @@ def complete_onboarding(
             pdf_contact=clean.pdf_contact,
             pdf_notes=clean.pdf_notes,
             observed_at=observed_at,
+            connection=db,
+        )
+        database.delete_metadata_value(
+            ONBOARDING_IN_PROGRESS_KEY,
             connection=db,
         )
     return settings
