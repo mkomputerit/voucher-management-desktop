@@ -138,7 +138,10 @@ class DataMaintenanceMixin:
                 f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.vmbk"
             )
         )
-        self._start_close_backup(target, password, on_abort=on_abort)
+        if on_abort is None:
+            self._start_close_backup(target, password)
+        else:
+            self._start_close_backup(target, password, on_abort=on_abort)
 
     def _start_close_backup(
         self,
