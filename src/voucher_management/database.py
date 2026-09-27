@@ -730,15 +730,24 @@ COMMIT;
         """Resolve one non-secret controller profile by normalized API root."""
 
         row = self.connection.execute(
-            "SELECT id FROM controllers WHERE api_root=? AND is_active=1 ORDER BY id LIMIT 1",
+            """SELECT id, is_active FROM controllers
+               WHERE api_root=?
+               ORDER BY is_active DESC, id
+               LIMIT 1""",
             (api_root.strip(),),
         ).fetchone()
         if row is not None:
             with self.transaction() as db:
                 db.execute(
-                    """UPDATE controllers SET name=?, cert_sha256=?, last_used_at=?
+                    """UPDATE controllers
+                       SET name=?, cert_sha256=?, last_used_at=?, is_active=1
                        WHERE id=?""",
-                    (name.strip(), cert_sha256.strip(), observed_at, row["id"]),
+                    (
+                        name.strip(),
+                        cert_sha256.strip(),
+                        observed_at,
+                        row["id"],
+                    ),
                 )
             return int(row["id"])
         return self.create_controller(
@@ -982,6 +991,53 @@ COMMIT;
                         int(sequence > 1),
                     ),
                 )
+
+    def controller_profiles(
+        self,
+        *,
+        include_inactive: bool = False,
+    ) -> list[dict]:
+        """Return non-secret controller profiles for operator selection."""
+
+        where = "" if include_inactive else "WHERE is_active=1"
+        rows = self.connection.execute(
+            f"""SELECT id, name, api_root, description, cert_sha256,
+                       created_at, last_used_at, last_successful_sync_at,
+                       is_active
+                FROM controllers
+                {where}
+                ORDER BY COALESCE(last_used_at, created_at) DESC, id DESC"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def rename_controller(self, controller_id: int, name: str) -> None:
+        """Rename an active controller profile without altering history."""
+
+        normalized = str(name or "").strip()
+        if not normalized:
+            raise ValueError("controller name must not be empty")
+        with self.transaction() as db:
+            cursor = db.execute(
+                """UPDATE controllers
+                   SET name=?
+                   WHERE id=? AND is_active=1""",
+                (normalized, int(controller_id)),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("active controller profile not found")
+
+    def deactivate_controller(self, controller_id: int) -> None:
+        """Hide a controller profile while retaining all historical facts."""
+
+        with self.transaction() as db:
+            cursor = db.execute(
+                """UPDATE controllers
+                   SET is_active=0
+                   WHERE id=? AND is_active=1""",
+                (int(controller_id),),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("active controller profile not found")
 
     def controller_name(self, controller_id: int) -> str | None:
         """Return one persisted non-secret controller display name."""
