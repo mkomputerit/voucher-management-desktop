@@ -225,6 +225,8 @@ class DataMaintenanceMixin:
             )
             if on_abort is not None:
                 on_abort()
+            if on_abort is not None:
+                on_abort()
 
     def _finish_close(
         self,
