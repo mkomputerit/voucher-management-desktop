@@ -277,7 +277,7 @@ def test_shared_first_run_defers_to_explicit_per_user_migration(tmp_path):
     )()
     try:
         state = schedule_first_run_onboarding(app)
-        assert state is OnboardingState.EXISTING_INSTALLATION
+        assert state is OnboardingState.MIGRATION_AVAILABLE
         assert scheduled == []
     finally:
         database.close()
