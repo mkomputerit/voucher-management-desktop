@@ -1123,7 +1123,7 @@ def test_backup_audit_writer_uses_basename_and_verified_metadata():
     )
 
     assert result is True
-    assert calls[0]["filename"] == "backup.vmbk"
+    assert calls[0]["filename"] == "audit-backup.vmbk"
     assert calls[0]["destination"] == "MANUAL"
     assert calls[0]["status"] == "SUCCESS"
     assert calls[0]["sha256"] == "a" * 64
