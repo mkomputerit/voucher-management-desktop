@@ -210,8 +210,10 @@ def _draw_label(
         )
     )
 
-    image_w = min(43 * mm, w * 0.48)
-    image_h = min(16 * mm, h * 0.30)
+    # 5.0 visual refresh: strengthen the installation identity while keeping
+    # the validated voucher geometry, code box and cut layout unchanged.
+    image_w = min(48 * mm, w * 0.54)
+    image_h = min(19 * mm, h * 0.34)
     _draw_header_image(
         c,
         settings,
@@ -226,8 +228,8 @@ def _draw_label(
         title,
         PDF_FONT_BOLD,
         w - 10 * mm,
-        min(12, h / 4.2),
-        8,
+        min(13.5, h / 4.0),
+        8.5,
     )
     title = _truncate_to_width(
         title,
@@ -242,8 +244,8 @@ def _draw_label(
         subtitle,
         PDF_FONT_BOLD,
         w - 10 * mm,
-        7.8,
-        6.0,
+        8.8,
+        6.5,
     )
     subtitle = _truncate_to_width(
         subtitle,
