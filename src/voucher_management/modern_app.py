@@ -64,51 +64,125 @@ def fit_dialog(window: tk.Toplevel, parent: tk.Misc, *, min_width: int = 0, min_
 
 
 class SettingsDialog(tk.Toplevel):
-    """Operator settings grouped like a native management console."""
+    """Operator settings split by task instead of implementation detail."""
 
-    def __init__(self, app: "ModernVoucherApp"):
+    TAB_NAMES = (
+        "Generali",
+        "Controller",
+        "PDF / stampa",
+        "Retention",
+        "Backup",
+    )
+
+    def __init__(
+        self,
+        app: "ModernVoucherApp",
+        *,
+        initial_tab: str = "Generali",
+    ):
         super().__init__(app)
         self.app = app
         self.title("Impostazioni")
         self.transient(app)
         self.grab_set()
+
         s = app.settings
-        self.structure_type = tk.StringVar(value=s.get("structure_type", DEFAULT_STRUCTURE_TYPE))
-        self.structure_name = tk.StringVar(value=s.get("structure_name", DEFAULT_STRUCTURE_NAME))
-        self.wifi_title = tk.StringVar(value=s.get("wifi_title", DEFAULT_WIFI_TITLE))
+        self.structure_type = tk.StringVar(
+            value=s.get("structure_type", DEFAULT_STRUCTURE_TYPE)
+        )
+        self.structure_name = tk.StringVar(
+            value=s.get("structure_name", DEFAULT_STRUCTURE_NAME)
+        )
+        self.wifi_title = tk.StringVar(
+            value=s.get("wifi_title", DEFAULT_WIFI_TITLE)
+        )
         self.preset = tk.StringVar(value=s.get("preset", "Classico"))
         self.logo = tk.StringVar(value=s.get("logo_path", ""))
         self.theme = tk.StringVar(value=s.get("ui_theme", "system"))
         try:
-            retention_days = int(s.get("print_retention_days", DEFAULT_PRINT_RETENTION_DAYS))
+            pdf_retention = int(
+                s.get("print_retention_days", DEFAULT_PRINT_RETENTION_DAYS)
+            )
         except (TypeError, ValueError):
-            retention_days = DEFAULT_PRINT_RETENTION_DAYS
-        self.print_retention_days = tk.StringVar(value=str(retention_days))
+            pdf_retention = DEFAULT_PRINT_RETENTION_DAYS
+        self.print_retention_days = tk.StringVar(value=str(pdf_retention))
         self.backup_on_close = tk.BooleanVar(
             value=bool(s.get("backup_on_close", True))
         )
 
-        shell = ttk.Frame(self, padding=20)
+        if not hasattr(app, "controller_profile_name_var"):
+            current_name = (
+                app.database.controller_name(app.active_controller_id)
+                if app.active_controller_id is not None
+                else None
+            )
+            app.controller_profile_name_var = tk.StringVar(
+                value=current_name or "Controller UniFi"
+            )
+
+        shell = ttk.Frame(self, padding=22)
         shell.pack(fill="both", expand=True)
-        ttk.Label(shell, text="Impostazioni", style="PageTitle.TLabel").pack(anchor="w")
-        ttk.Label(shell, text="Voucher, aspetto dell'applicazione e protezione dei dati.", style="Muted.TLabel").pack(anchor="w", pady=(2, 14))
-        tabs = ttk.Notebook(shell)
-        tabs.pack(fill="both", expand=True)
-        voucher = ttk.Frame(tabs, padding=20)
-        data = ttk.Frame(tabs, padding=20)
-        tabs.add(voucher, text="Voucher")
-        tabs.add(data, text="Aspetto e dati")
-        self._build_voucher_tab(voucher)
-        self._build_data_tab(data)
-        # Footer is structurally outside the expanding notebook: it can never be
-        # squeezed out by tab content when Windows DPI scaling increases.
+        ttk.Label(
+            shell,
+            text="Impostazioni",
+            style="PageTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            shell,
+            text="Configura solo ciò che serve alla postazione.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(3, 16))
+
+        self.tabs = ttk.Notebook(shell)
+        self.tabs.pack(fill="both", expand=True)
+        frames = {}
+        for name in self.TAB_NAMES:
+            frame = ttk.Frame(self.tabs, padding=20)
+            self.tabs.add(frame, text=name)
+            frames[name] = frame
+
+        self._build_general_tab(frames["Generali"])
+        self._build_controller_tab(frames["Controller"])
+        self._build_pdf_tab(frames["PDF / stampa"])
+        self._build_retention_tab(frames["Retention"])
+        self._build_backup_tab(frames["Backup"])
+
+        if initial_tab in self.TAB_NAMES:
+            self.tabs.select(self.TAB_NAMES.index(initial_tab))
+
         footer = ttk.Frame(shell)
         footer.pack(fill="x", pady=(16, 0))
-        ttk.Button(footer, text="Annulla", command=self.destroy, width=12).pack(side="right")
-        ttk.Button(footer, text="Salva", command=self.save, style="Accent.TButton", width=12).pack(side="right", padx=(0, 8))
-        fit_dialog(self, app, min_width=720, min_height=560)
+        ttk.Button(
+            footer,
+            text="Annulla",
+            command=self.destroy,
+            width=12,
+        ).pack(side="right")
+        ttk.Button(
+            footer,
+            text="Salva",
+            command=self.save,
+            style="Accent.TButton",
+            width=12,
+        ).pack(side="right", padx=(0, 8))
+        fit_dialog(self, app, min_width=820, min_height=620)
 
-    def _build_voucher_tab(self, frame: ttk.Frame) -> None:
+    def _build_general_tab(self, frame: ttk.Frame) -> None:
+        ttk.Label(
+            frame,
+            text="Postazione",
+            style="SectionTitle.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(
+            frame,
+            text=(
+                "Questi valori sono mostrati nei voucher e identificano "
+                "la postazione per l'operatore."
+            ),
+            style="Muted.TLabel",
+            wraplength=620,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 14))
+
         rows = (
             ("Profilo struttura", self.structure_type),
             ("Nome struttura", self.structure_name),
@@ -117,174 +191,217 @@ class SettingsDialog(tk.Toplevel):
         profile_values = ("Sede", "Evento", "Personalizzata")
         current_profile = self.structure_type.get().strip()
         if current_profile and current_profile not in profile_values:
-            # Preserve a profile label imported from a private beta without
-            # hard-coding deployment-specific values into the public source.
             profile_values = (current_profile, *profile_values)
 
-        for row, (label, var) in enumerate(rows):
-            ttk.Label(
-                frame,
-                text=label,
-            ).grid(
-                row=row,
+        for offset, (label, variable) in enumerate(rows, start=2):
+            ttk.Label(frame, text=label).grid(
+                row=offset,
                 column=0,
                 sticky="w",
-                pady=8,
-                padx=(0, 20),
+                pady=7,
+                padx=(0, 18),
             )
-            widget = (
-                ttk.Combobox(
+            if offset == 2:
+                widget = ttk.Combobox(
                     frame,
-                    textvariable=var,
+                    textvariable=variable,
                     state="readonly",
                     values=profile_values,
                 )
-                if row == 0
-                else ttk.Entry(frame, textvariable=var)
-            )
-            widget.grid(
-                row=row,
-                column=1,
-                columnspan=2,
-                sticky="ew",
-                pady=8,
-            )
-        ttk.Label(frame, text="Preset grafico").grid(row=3, column=0, sticky="w", pady=8)
-        ttk.Combobox(frame, textvariable=self.preset, state="readonly", values=("Classico", "Minimal", "Contrasto", "Personalizzato")).grid(row=3, column=1, columnspan=2, sticky="ew", pady=8)
-        ttk.Label(frame, text="Logo").grid(row=4, column=0, sticky="w", pady=8)
-        self.logo_combo = ttk.Combobox(frame, state="readonly")
-        self.logo_combo.grid(row=4, column=1, sticky="ew", pady=8)
-        self.logo_combo.bind("<<ComboboxSelected>>", self._select_logo)
-        ttk.Button(frame, text="Aggiungi…", command=self.add_logo).grid(row=4, column=2, padx=(8, 0))
-        ttk.Button(frame, text="Usa predefinito", command=self.use_default).grid(row=5, column=1, sticky="w")
-        ttk.Label(frame, text=f"I loghi vengono conservati nella libreria persistente Loghi. Layout A4: {VOUCHERS_PER_PAGE} voucher per pagina.", style="Muted.TLabel", wraplength=500).grid(row=6, column=0, columnspan=3, sticky="w", pady=(18, 0))
-        frame.columnconfigure(1, weight=1)
-        self._refresh_logos()
+            else:
+                widget = ttk.Entry(frame, textvariable=variable)
+            widget.grid(row=offset, column=1, sticky="ew", pady=7)
 
-    def _build_data_tab(self, frame: ttk.Frame) -> None:
-        ttk.Label(frame, text="Tema dell'applicazione", style="SectionTitle.TLabel").pack(anchor="w")
-        ttk.Label(frame, text="Sistema segue il tema chiaro/scuro di Windows 11 all'avvio.", style="Muted.TLabel").pack(anchor="w", pady=(2, 8))
-        ttk.Combobox(frame, textvariable=self.theme, state="readonly", values=("system", "light", "dark"), width=18).pack(anchor="w")
-        ttk.Separator(frame).pack(fill="x", pady=22)
-        ttk.Label(frame, text="Archivio PDF", style="SectionTitle.TLabel").pack(anchor="w")
+        ttk.Separator(frame).grid(
+            row=5,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=20,
+        )
+        ttk.Label(
+            frame,
+            text="Aspetto",
+            style="SectionTitle.TLabel",
+        ).grid(row=6, column=0, columnspan=2, sticky="w")
+        ttk.Label(
+            frame,
+            text="Tema applicazione",
+        ).grid(row=7, column=0, sticky="w", pady=7)
+        ttk.Combobox(
+            frame,
+            textvariable=self.theme,
+            state="readonly",
+            values=("system", "light", "dark"),
+            width=18,
+        ).grid(row=7, column=1, sticky="w", pady=7)
+        ttk.Label(
+            frame,
+            text="Sistema segue automaticamente il tema chiaro/scuro di Windows.",
+            style="Muted.TLabel",
+            wraplength=620,
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(3, 0))
+        frame.columnconfigure(1, weight=1)
+
+    def _build_controller_tab(self, frame: ttk.Frame) -> None:
+        ttk.Label(
+            frame,
+            text="Controller UniFi",
+            style="SectionTitle.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(
             frame,
             text=(
-                "I PDF generati vengono conservati in Print/. "
-                "La retention elimina solo PDF riconosciuti dalla cronologia; "
-                "lo storico di stampa resta disponibile. 0 = conserva sempre."
+                "Il controller è una configurazione della postazione. "
+                "La API key serve solo per la connessione corrente e non "
+                "viene salvata."
             ),
             style="Muted.TLabel",
-            wraplength=560,
-        ).pack(anchor="w", pady=(3, 8))
-        retention_row = ttk.Frame(frame)
-        retention_row.pack(anchor="w")
-        ttk.Label(retention_row, text="Giorni di conservazione").pack(side="left")
+            wraplength=620,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 14))
+
+        ttk.Label(frame, text="Nome profilo").grid(
+            row=2, column=0, sticky="w", pady=7, padx=(0, 18)
+        )
+        ttk.Entry(
+            frame,
+            textvariable=self.app.controller_profile_name_var,
+        ).grid(row=2, column=1, sticky="ew", pady=7)
+
+        ttk.Label(frame, text="Indirizzo controller").grid(
+            row=3, column=0, sticky="w", pady=7, padx=(0, 18)
+        )
+        ttk.Entry(
+            frame,
+            textvariable=self.app.api_root_var,
+        ).grid(row=3, column=1, sticky="ew", pady=7)
+
+        ttk.Label(frame, text="API key").grid(
+            row=4, column=0, sticky="w", pady=7, padx=(0, 18)
+        )
+        key_row = ttk.Frame(frame)
+        key_row.grid(row=4, column=1, sticky="ew", pady=7)
+        key_row.columnconfigure(0, weight=1)
+        ttk.Entry(
+            key_row,
+            textvariable=self.app.api_key_var,
+            show="•",
+        ).grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            key_row,
+            text="Verifica / Connetti",
+            command=self.app.connect,
+            style="Accent.TButton",
+        ).grid(row=0, column=1, padx=(8, 0))
+
+        ttk.Label(
+            frame,
+            textvariable=self.app.connection_var,
+            style="ConnectionStatus.TLabel",
+            wraplength=620,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Label(
+            frame,
+            text=(
+                "Se il certificato non è riconosciuto da Windows, "
+                "Voucher Management mostra l'impronta da verificare prima "
+                "di inviare la API key."
+            ),
+            style="Muted.TLabel",
+            wraplength=620,
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        frame.columnconfigure(1, weight=1)
+
+    def _build_pdf_tab(self, frame: ttk.Frame) -> None:
+        ttk.Label(
+            frame,
+            text="Documento voucher",
+            style="SectionTitle.TLabel",
+        ).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(
+            frame,
+            text=(
+                "Il formato operativo dei voucher resta invariato. "
+                "Qui puoi scegliere aspetto e logo."
+            ),
+            style="Muted.TLabel",
+            wraplength=620,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(3, 14))
+
+        ttk.Label(frame, text="Preset grafico").grid(
+            row=2, column=0, sticky="w", pady=8, padx=(0, 18)
+        )
+        ttk.Combobox(
+            frame,
+            textvariable=self.preset,
+            state="readonly",
+            values=("Classico", "Minimal", "Contrasto", "Personalizzato"),
+        ).grid(row=2, column=1, columnspan=2, sticky="ew", pady=8)
+
+        ttk.Label(frame, text="Logo").grid(
+            row=3, column=0, sticky="w", pady=8, padx=(0, 18)
+        )
+        self.logo_combo = ttk.Combobox(frame, state="readonly")
+        self.logo_combo.grid(row=3, column=1, sticky="ew", pady=8)
+        self.logo_combo.bind("<<ComboboxSelected>>", self._select_logo)
+        ttk.Button(
+            frame,
+            text="Aggiungi…",
+            command=self.add_logo,
+        ).grid(row=3, column=2, padx=(8, 0))
+        ttk.Button(
+            frame,
+            text="Usa predefinito",
+            command=self.use_default,
+        ).grid(row=4, column=1, sticky="w")
+
+        ttk.Separator(frame).grid(
+            row=5,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=20,
+        )
+        ttk.Label(
+            frame,
+            text="Archivio PDF",
+            style="SectionTitle.TLabel",
+        ).grid(row=6, column=0, columnspan=3, sticky="w")
+        ttk.Label(
+            frame,
+            text=(
+                "0 giorni = conserva sempre. La pulizia riguarda soltanto "
+                "documenti riconosciuti come creati da Voucher Management."
+            ),
+            style="Muted.TLabel",
+            wraplength=620,
+        ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(3, 10))
+        ttk.Label(frame, text="Conservazione PDF").grid(
+            row=8, column=0, sticky="w", pady=7, padx=(0, 18)
+        )
         ttk.Spinbox(
-            retention_row,
+            frame,
             from_=0,
             to=3650,
             increment=30,
             textvariable=self.print_retention_days,
             width=8,
-        ).pack(side="left", padx=(10, 0))
-
-        ttk.Separator(frame).pack(fill="x", pady=22)
+        ).grid(row=8, column=1, sticky="w", pady=7)
         ttk.Label(
             frame,
-            text="Cronologia di stampa",
-            style="SectionTitle.TLabel",
-        ).pack(anchor="w")
-        ttk.Label(
-            frame,
-            text=(
-                "La chiave portabile e il fingerprint proteggono la continuità "
-                "dello storico. Se l'identità non è disponibile, stampa ed "
-                "eliminazione vengono bloccate finché il problema non è risolto."
-            ),
+            text=f"Layout A4: {VOUCHERS_PER_PAGE} voucher per pagina.",
             style="Muted.TLabel",
-            wraplength=560,
-        ).pack(anchor="w", pady=(3, 10))
-        identity_actions = ttk.Frame(frame)
-        identity_actions.pack(anchor="w")
-        ttk.Button(
-            identity_actions,
-            text="Verifica / recupera identità…",
-            command=lambda: HistoryRecoveryDialog(self.app),
-        ).pack(side="left")
-        ttk.Button(
-            identity_actions,
-            text="Recupera stampa pendente…",
-            command=lambda: self.app.recover_pending_print_audit(
-                parent=self,
-            ),
-        ).pack(side="left", padx=(8, 0))
-        ttk.Button(
-            identity_actions,
-            text="Esporta cronologia…",
-            command=lambda: self.app.export_history_exchange(
-                parent=self,
-            ),
-        ).pack(side="left", padx=(8, 0))
-        ttk.Button(
-            identity_actions,
-            text="Importa cronologia…",
-            command=lambda: self.app.import_history_exchange(
-                parent=self,
-            ),
-        ).pack(side="left", padx=(8, 0))
+        ).grid(row=9, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        frame.columnconfigure(1, weight=1)
+        self._refresh_logos()
 
-        if getattr(self.app.paths, "shared_mode", False):
-            ttk.Separator(frame).pack(fill="x", pady=22)
-            ttk.Label(
-                frame,
-                text="Archivio condiviso Windows",
-                style="SectionTitle.TLabel",
-            ).pack(anchor="w")
-            ttk.Label(
-                frame,
-                text=(
-                    "Questa installazione usa un archivio comune del PC in "
-                    "ProgramData. Se questo utente dispone ancora di dati della "
-                    "precedente installazione per profilo, possono essere "
-                    "trasferiti una sola volta prima che l'archivio condiviso "
-                    "venga utilizzato operativamente."
-                ),
-                style="Muted.TLabel",
-                wraplength=560,
-            ).pack(anchor="w", pady=(3, 10))
-            ttk.Button(
-                frame,
-                text="Migra dati di questo utente…",
-                command=lambda: self.app.migrate_per_user_data_to_shared(
-                    parent=self,
-                ),
-            ).pack(anchor="w")
-
-        ttk.Separator(frame).pack(fill="x", pady=22)
-        ttk.Label(
-            frame,
-            text="Migrazione storico 4.x",
-            style="SectionTitle.TLabel",
-        ).pack(anchor="w")
-        ttk.Label(
-            frame,
-            text=(
-                "Importa in SQLite lo storico HMAC delle versioni 4.x. "
-                "Vengono associate solo identità verificabili; gli eventi "
-                "ambigui o non associabili restano conservati come evidenza. "
-                "Prima di ogni migrazione viene creato un backup cifrato."
-            ),
-            style="Muted.TLabel",
-            wraplength=560,
-        ).pack(anchor="w", pady=(3, 10))
-        ttk.Button(
-            frame,
-            text="Analizza e migra storico 4.x…",
-            command=lambda: self.app.migrate_legacy_history(parent=self),
-        ).pack(anchor="w")
-
-        ttk.Separator(frame).pack(fill="x", pady=22)
+    def _build_retention_tab(self, frame: ttk.Frame) -> None:
+        policy = self.app.database.retention_policy()
+        days = (
+            int(policy["unused_unprinted_days"])
+            if policy is not None
+            else 180
+        )
         ttk.Label(
             frame,
             text="Conservazione voucher",
@@ -293,53 +410,58 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(
             frame,
             text=(
-                "I voucher usati o stampati sono sempre protetti. I voucher "
-                "mai usati e mai stampati vengono proposti per la minimizzazione "
-                "solo quando non sono più presenti sul controller e superano "
-                "la soglia configurata. Nessuna pulizia è automatica."
+                f"Impostazione attuale: {days} giorni. "
+                "I voucher usati o fisicamente stampati restano sempre "
+                "protetti. I voucher inutilizzati vengono soltanto proposti "
+                "per la revisione quando non sono più presenti sul controller."
             ),
             style="Muted.TLabel",
-            wraplength=560,
-        ).pack(anchor="w", pady=(3, 10))
+            wraplength=650,
+        ).pack(anchor="w", pady=(4, 16))
         ttk.Button(
             frame,
             text="Rivedi conservazione…",
             command=lambda: self.app.open_retention_review(parent=self),
+            style="Accent.TButton",
         ).pack(anchor="w")
-
-        ttk.Separator(frame).pack(fill="x", pady=22)
-        ttk.Label(frame, text="Backup e ripristino", style="SectionTitle.TLabel").pack(anchor="w")
         ttk.Label(
             frame,
             text=(
-                "Il backup comprende configurazione, storico, PDF generati, "
-                "loghi e la chiave portabile della cronologia. La API key UniFi "
-                "non viene mai salvata. I nuovi backup creati dall'interfaccia "
-                "sono sempre cifrati e autenticati."
+                "Nessuna minimizzazione avviene automaticamente: "
+                "l'operatore deve sempre scegliere le righe da applicare."
             ),
             style="Muted.TLabel",
-            wraplength=560,
-        ).pack(anchor="w", pady=(3, 10))
+            wraplength=650,
+        ).pack(anchor="w", pady=(12, 0))
+
+    def _build_backup_tab(self, frame: ttk.Frame) -> None:
+        ttk.Label(
+            frame,
+            text="Backup",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "Crea una copia protetta dei dati della postazione o ripristina "
+                "un backup precedente. La password viene richiesta solo quando "
+                "serve e non viene memorizzata."
+            ),
+            style="Muted.TLabel",
+            wraplength=650,
+        ).pack(anchor="w", pady=(4, 12))
         ttk.Checkbutton(
             frame,
-            text="Crea un backup cifrato prima della chiusura (consigliato)",
+            text="Crea un backup prima della chiusura (consigliato)",
             variable=self.backup_on_close,
-        ).pack(anchor="w", pady=(0, 10))
-        ttk.Label(
-            frame,
-            text=(
-                "Il backup automatico richiede la password alla chiusura e la "
-                "password non viene memorizzata."
-            ),
-            style="Muted.TLabel",
-            wraplength=560,
-        ).pack(anchor="w", pady=(0, 10))
+        ).pack(anchor="w", pady=(0, 12))
         actions = ttk.Frame(frame)
         actions.pack(anchor="w")
         ttk.Button(
             actions,
             text="Crea backup…",
             command=lambda: self.app.create_backup(parent=self),
+            style="Accent.TButton",
         ).pack(side="left")
         ttk.Button(
             actions,
@@ -347,14 +469,63 @@ class SettingsDialog(tk.Toplevel):
             command=lambda: self.app.restore_backup(parent=self),
         ).pack(side="left", padx=(8, 0))
 
+        ttk.Separator(frame).pack(fill="x", pady=22)
+        ttk.Label(
+            frame,
+            text="Strumenti dati avanzati",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "Usare questi strumenti solo per recupero, trasferimento "
+                "o aggiornamento di installazioni precedenti."
+            ),
+            style="Muted.TLabel",
+            wraplength=650,
+        ).pack(anchor="w", pady=(4, 10))
+        advanced = ttk.Frame(frame)
+        advanced.pack(anchor="w")
+        ttk.Button(
+            advanced,
+            text="Recupera cronologia…",
+            command=lambda: HistoryRecoveryDialog(self.app),
+        ).pack(side="left")
+        ttk.Button(
+            advanced,
+            text="Recupera stampa pendente…",
+            command=lambda: self.app.recover_pending_print_audit(parent=self),
+        ).pack(side="left", padx=(8, 0))
+        if getattr(self.app.paths, "shared_mode", False):
+            ttk.Button(
+                advanced,
+                text="Migra dati precedenti…",
+                command=lambda: self.app.migrate_per_user_data_to_shared(
+                    parent=self,
+                ),
+            ).pack(side="left", padx=(8, 0))
+
     def _logo_files(self) -> list[Path]:
-        return sorted((p for p in self.app.paths.logos.iterdir() if p.suffix.lower() in {".png", ".jpg", ".jpeg"}), key=lambda p: p.name.lower())
+        return sorted(
+            (
+                path
+                for path in self.app.paths.logos.iterdir()
+                if path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+            ),
+            key=lambda path: path.name.lower(),
+        )
 
     def _refresh_logos(self, select: Path | None = None) -> None:
         files = self._logo_files()
-        self.logo_combo["values"] = [p.name for p in files]
-        current = select or (Path(self.logo.get()) if self.logo.get() else None)
-        if current and current.exists() and current.parent == self.app.paths.logos:
+        self.logo_combo["values"] = [path.name for path in files]
+        current = select or (
+            Path(self.logo.get()) if self.logo.get() else None
+        )
+        if (
+            current
+            and current.exists()
+            and current.parent == self.app.paths.logos
+        ):
             self.logo_combo.set(current.name)
         elif not self.logo.get():
             self.logo_combo.set("Predefinito")
@@ -365,20 +536,31 @@ class SettingsDialog(tk.Toplevel):
             self.logo.set(str(self.app.paths.logos / name))
 
     def add_logo(self) -> None:
-        selected = filedialog.askopenfilename(parent=self, title="Aggiungi un logo", filetypes=[("Immagini", "*.png *.jpg *.jpeg")])
+        selected = filedialog.askopenfilename(
+            parent=self,
+            title="Aggiungi un logo",
+            filetypes=[("Immagini", "*.png *.jpg *.jpeg")],
+        )
         if not selected:
             return
         source = Path(selected)
         try:
             validate_logo_image(source)
         except LogoValidationError as exc:
-            messagebox.showerror("Logo non valido", str(exc), parent=self)
+            messagebox.showerror(
+                "Logo non valido",
+                str(exc),
+                parent=self,
+            )
             return
 
         target = self.app.paths.logos / source.name
         counter = 2
         while target.exists() and target.resolve() != source.resolve():
-            target = self.app.paths.logos / f"{source.stem}_{counter}{source.suffix.lower()}"
+            target = (
+                self.app.paths.logos
+                / f"{source.stem}_{counter}{source.suffix.lower()}"
+            )
             counter += 1
         if target.resolve() != source.resolve():
             shutil.copy2(source, target)
@@ -391,8 +573,8 @@ class SettingsDialog(tk.Toplevel):
 
     def save(self) -> None:
         try:
-            retention_days = int(self.print_retention_days.get())
-            if not 0 <= retention_days <= 3650:
+            pdf_retention = int(self.print_retention_days.get())
+            if not 0 <= pdf_retention <= 3650:
                 raise ValueError
         except (TypeError, ValueError, tk.TclError):
             messagebox.showerror(
@@ -404,7 +586,10 @@ class SettingsDialog(tk.Toplevel):
 
         old_theme = self.app.settings.get("ui_theme", "system")
         old_retention = int(
-            self.app.settings.get("print_retention_days", DEFAULT_PRINT_RETENTION_DAYS)
+            self.app.settings.get(
+                "print_retention_days",
+                DEFAULT_PRINT_RETENTION_DAYS,
+            )
         )
         self.app.settings = self.app.settings_store.update(
             structure_type=self.structure_type.get(),
@@ -413,13 +598,14 @@ class SettingsDialog(tk.Toplevel):
             preset=self.preset.get(),
             logo_path=self.logo.get().strip(),
             ui_theme=self.theme.get(),
-            print_retention_days=retention_days,
+            print_retention_days=pdf_retention,
             backup_on_close=bool(self.backup_on_close.get()),
         )
         if old_theme != self.theme.get():
             self.app.apply_theme()
-        if old_retention != retention_days:
+        if old_retention != pdf_retention:
             self.app._cleanup_print_archive()
+        self.app._refresh_workspace_summary()
         self.destroy()
 
 
