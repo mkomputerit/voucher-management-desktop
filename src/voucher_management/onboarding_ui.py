@@ -14,6 +14,7 @@ from .identity import (
     DEFAULT_WIFI_TITLE,
 )
 from .logo_validation import LogoValidationError, validate_logo_image
+from .shared_data_migration import source_has_migratable_data
 from .onboarding import (
     DEFAULT_VOUCHER_RETENTION_DAYS,
     OnboardingDraft,
@@ -46,6 +47,17 @@ def schedule_first_run_onboarding(
     """Schedule the wizard only for a genuinely new/incomplete installation."""
 
     state = onboarding_state(app.database)
+    if (
+        state is OnboardingState.REQUIRED
+        and getattr(app.paths, "shared_mode", False)
+        and source_has_migratable_data(app.paths.per_user_root)
+    ):
+        # Shared ProgramData must remain pristine until the explicit per-user
+        # migration has had a chance to run. Starting onboarding here would
+        # write app_metadata/profile rows and correctly make migration refuse
+        # to overwrite the target.
+        return OnboardingState.EXISTING_INSTALLATION
+
     if state is OnboardingState.REQUIRED:
         factory = wizard_factory or FirstRunWizard
         app.after_idle(lambda: factory(app))
