@@ -954,6 +954,58 @@ def test_request_close_runs_encrypted_backup_before_destroy(monkeypatch, tmp_pat
     )
 
 
+def test_shutdown_backup_audit_failure_is_visible_but_does_not_trap_close(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+    events = []
+    password = exchange_phrase("a")
+    fake = SimpleNamespace(
+        settings={"backup_on_close": True},
+        _background_results=None,
+        paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
+        _backup_service=lambda: SimpleNamespace(
+            create_verified=lambda target, password=None: backup_artifact(target)
+        ),
+        _backup_audit_started_at=lambda: "2026-09-27T07:00:00+00:00",
+        _record_backup_audit=lambda **kwargs: False,
+        _run_background_task=capture_runner(tasks),
+        _finish_close=lambda **kwargs: events.append(("close", kwargs)),
+        logger=SimpleNamespace(warning=lambda *args: None),
+    )
+    fake._start_close_backup = (
+        lambda target, password: modern_app.ModernVoucherApp._start_close_backup(
+            fake,
+            target,
+            password,
+        )
+    )
+    monkeypatch.setattr(
+        maintenance_ui,
+        "ask_password",
+        lambda parent, **kwargs: password,
+    )
+    monkeypatch.setattr(
+        maintenance_ui.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: events.append(("warning", args)),
+    )
+
+    modern_app.ModernVoucherApp.request_close(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert events[0][0] == "warning"
+    assert events[-1] == (
+        "close",
+        {
+            "close_status": "CLOSED",
+            "backup_status": "SUCCESS_AUDIT_FAILED",
+        },
+    )
+
+
 def test_failed_close_backup_can_retry_without_losing_password(
     monkeypatch,
     tmp_path,
