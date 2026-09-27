@@ -507,8 +507,10 @@ COMMIT;
         """Persist the only currently supported conservative retention policy."""
 
         days = int(unused_unprinted_days)
-        if days < 1:
-            raise ValueError("La retention voucher deve essere di almeno 1 giorno")
+        if not 1 <= days <= 3650:
+            raise ValueError(
+                "La retention voucher deve essere compresa tra 1 e 3650 giorni"
+            )
 
         def write(db: sqlite3.Connection) -> None:
             db.execute(
