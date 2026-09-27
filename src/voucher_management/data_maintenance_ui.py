@@ -57,7 +57,10 @@ class DataMaintenanceMixin:
             return
 
         if not bool(self.settings.get("backup_on_close", True)):
-            self.destroy()
+            self._finish_close(
+                close_status="CLOSED",
+                backup_status="DISABLED",
+            )
             return
 
         password = ask_password(
@@ -88,7 +91,10 @@ class DataMaintenanceMixin:
         service = self._backup_service()
 
         def completed(_result) -> None:
-            self.destroy()
+            self._finish_close(
+                close_status="CLOSED",
+                backup_status="SUCCESS",
+            )
 
         def failed(exc: Exception) -> None:
             self.logger.warning(
@@ -106,7 +112,10 @@ class DataMaintenanceMixin:
             if decision is True:
                 self._start_close_backup(target, password)
             elif decision is False:
-                self.destroy()
+                self._finish_close(
+                    close_status="CLOSED_WITHOUT_BACKUP",
+                    backup_status="FAILED",
+                )
 
         started = self._run_background_task(
             "Backup di chiusura…",
@@ -124,6 +133,32 @@ class DataMaintenanceMixin:
                 "un'altra operazione.",
                 parent=self,
             )
+
+    def _finish_close(
+        self,
+        *,
+        close_status: str,
+        backup_status: str,
+    ) -> None:
+        """Record the clean operator-requested close, then tear down Tk."""
+
+        database = getattr(self, "database", None)
+        session_uuid = str(getattr(self, "session_uuid", "") or "").strip()
+        if database is not None and session_uuid:
+            try:
+                database.close_application_session(
+                    session_uuid=session_uuid,
+                    closed_at=datetime.now(timezone.utc).isoformat(),
+                    controller_id=getattr(self, "active_controller_id", None),
+                    close_status=close_status,
+                    backup_status=backup_status,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "application_session_close_audit_failed type=%s",
+                    type(exc).__name__,
+                )
+        self.destroy()
 
     def _close_database_for_restore(self) -> None:
         """Release the live SQLite handle before replacing the data tree."""
