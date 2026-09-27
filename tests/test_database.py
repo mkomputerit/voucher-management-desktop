@@ -496,3 +496,103 @@ def test_application_session_cannot_be_closed_twice(tmp_path):
             db.close_application_session(**args)
     finally:
         db.close()
+
+
+
+def test_backup_history_records_verified_artifact_metadata(tmp_path):
+    db = _db(tmp_path)
+    try:
+        row_id = db.record_backup_history(
+            started_at="2026-09-27T07:00:00+00:00",
+            completed_at="2026-09-27T07:00:05+00:00",
+            destination="MANUAL",
+            filename="VoucherManagement-backup.vmbk",
+            status="SUCCESS",
+            sha256="a" * 64,
+            backup_format=2,
+            schema_version=2,
+        )
+
+        row = db.connection.execute(
+            "SELECT * FROM backup_history WHERE id=?",
+            (row_id,),
+        ).fetchone()
+        assert row["destination"] == "MANUAL"
+        assert row["filename"] == "VoucherManagement-backup.vmbk"
+        assert row["status"] == "SUCCESS"
+        assert row["sha256"] == "a" * 64
+        assert row["backup_format"] == 2
+        assert row["schema_version"] == 2
+        assert row["error_summary"] is None
+    finally:
+        db.close()
+
+
+def test_failed_backup_history_never_keeps_unverified_hash_metadata(tmp_path):
+    db = _db(tmp_path)
+    try:
+        row_id = db.record_backup_history(
+            started_at="2026-09-27T07:00:00+00:00",
+            completed_at="2026-09-27T07:00:02+00:00",
+            destination="SHUTDOWN_AUTO",
+            filename="VoucherManagement-auto.vmbk",
+            status="FAILED",
+            sha256="f" * 64,
+            backup_format=2,
+            schema_version=2,
+            error_summary="BackupError",
+        )
+
+        row = db.connection.execute(
+            "SELECT * FROM backup_history WHERE id=?",
+            (row_id,),
+        ).fetchone()
+        assert row["status"] == "FAILED"
+        assert row["sha256"] is None
+        assert row["backup_format"] is None
+        assert row["schema_version"] is None
+        assert row["error_summary"] == "BackupError"
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../backup.vmbk",
+        r"C:\\Temp\\backup.vmbk",
+        "folder/backup.vmbk",
+    ],
+)
+def test_backup_history_rejects_paths_in_filename(tmp_path, filename):
+    db = _db(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="basename"):
+            db.record_backup_history(
+                started_at="start",
+                completed_at="done",
+                destination="MANUAL",
+                filename=filename,
+                status="FAILED",
+                error_summary="BackupError",
+            )
+    finally:
+        db.close()
+
+
+def test_successful_backup_history_requires_verified_sha256(tmp_path):
+    db = _db(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="SHA-256"):
+            db.record_backup_history(
+                started_at="start",
+                completed_at="done",
+                destination="MANUAL",
+                filename="backup.vmbk",
+                status="SUCCESS",
+                sha256="not-a-hash",
+                backup_format=2,
+                schema_version=2,
+            )
+    finally:
+        db.close()
