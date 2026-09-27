@@ -707,7 +707,6 @@ COMMIT;
                     v.present_on_controller,
                     v.last_seen_at,
                     v.last_synced_at,
-                    v.archived_at,
                     COUNT(vp.id) AS print_jobs,
                     COALESCE(SUM(vp.physical_copies), 0) AS physical_copies,
                     COALESCE(SUM(CASE WHEN vp.is_reprint=1 THEN 1 ELSE 0 END), 0)
@@ -724,6 +723,9 @@ COMMIT;
                     COALESCE(GROUP_CONCAT(DISTINCT vp.windows_user), '')
                         AS print_operators
                FROM vouchers AS v
+               -- INNER JOIN is intentional. vouchers.controller_id is a
+               -- foreign key with enforcement enabled, so a referenced
+               -- controller cannot disappear while voucher history exists.
                JOIN controllers AS c ON c.id=v.controller_id
                LEFT JOIN voucher_prints AS vp ON vp.voucher_id=v.id
                {where}
