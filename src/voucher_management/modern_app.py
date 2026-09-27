@@ -1106,12 +1106,13 @@ class ModernVoucherApp(
 
         ttk.Separator(sidebar).pack(fill="x", pady=(22, 14))
         self.sidebar_status_var = tk.StringVar(value="●  Non collegato")
-        ttk.Label(
+        self.sidebar_status_label = ttk.Label(
             sidebar,
             textvariable=self.sidebar_status_var,
-            style="ConnectionStatus.TLabel",
+            style="ConnectionOffline.TLabel",
             wraplength=180,
-        ).pack(anchor="w")
+        )
+        self.sidebar_status_label.pack(anchor="w")
         ttk.Label(
             sidebar,
             text="Le credenziali del controller non vengono salvate.",
@@ -1199,11 +1200,12 @@ class ModernVoucherApp(
         self.home_status_detail_var = tk.StringVar(
             value="Configura o collega il controller da Impostazioni."
         )
-        ttk.Label(
+        self.home_status_label = ttk.Label(
             status,
             textvariable=self.home_status_var,
-            style="StatusTitle.TLabel",
-        ).grid(row=0, column=0, sticky="w")
+            style="StatusOffline.TLabel",
+        )
+        self.home_status_label.grid(row=0, column=0, sticky="w")
         ttk.Label(
             status,
             textvariable=self.home_status_detail_var,
@@ -1719,20 +1721,30 @@ class ModernVoucherApp(
         if connected:
             status = "●  Pronto"
             detail = "Controller collegato. La postazione è pronta."
+            sidebar_style = "ConnectionReady.TLabel"
+            home_style = "StatusReady.TLabel"
         elif local:
             status = "●  Modalità locale"
             detail = (
                 "Dati locali disponibili. Collega il controller da "
                 "Impostazioni per sincronizzare."
             )
+            sidebar_style = "ConnectionLocal.TLabel"
+            home_style = "StatusLocal.TLabel"
         else:
             status = "●  Non collegato"
             detail = "Configura o collega il controller da Impostazioni."
+            sidebar_style = "ConnectionOffline.TLabel"
+            home_style = "StatusOffline.TLabel"
 
         if hasattr(self, "sidebar_status_var"):
             self.sidebar_status_var.set(status)
+        if hasattr(self, "sidebar_status_label"):
+            self.sidebar_status_label.configure(style=sidebar_style)
         if hasattr(self, "home_status_var"):
             self.home_status_var.set(status.replace("●  ", ""))
+        if hasattr(self, "home_status_label"):
+            self.home_status_label.configure(style=home_style)
         if hasattr(self, "home_status_detail_var"):
             self.home_status_detail_var.set(detail)
 
@@ -1769,9 +1781,48 @@ class ModernVoucherApp(
                 f"{len(active)} voucher attivi • {used} utilizzati • "
                 f"{printed} stampati • {queue} ancora da stampare"
             )
+            try:
+                recent = self.database.recent_operator_activity(limit=5)
+            except Exception as exc:
+                self.logger.debug(
+                    "home_recent_activity_unavailable type=%s",
+                    type(exc).__name__,
+                )
+                recent = []
+
+            activity_labels = {
+                ("PRINT", "AUDITED"): "Stampa registrata",
+                ("PRINT", "SUBMITTED"): "Stampa inviata",
+                ("PRINT", "PREPARED"): "Stampa in preparazione",
+                ("PRINT", "UNCERTAIN"): "Stampa da verificare",
+                ("BACKUP", "SUCCESS"): "Backup completato",
+                ("BACKUP", "FAILED"): "Backup non riuscito",
+                ("VOUCHER", "RETENTION_ARCHIVED"): "Dati voucher minimizzati",
+                ("VOUCHER", "LEGACY_PDF_GENERATED"): "Documento storico importato",
+            }
+            activity_lines = []
+            for item in recent:
+                key = (
+                    str(item.get("kind") or ""),
+                    str(item.get("status") or ""),
+                )
+                label = activity_labels.get(
+                    key,
+                    "Attività voucher"
+                    if key[0] == "VOUCHER"
+                    else (
+                        "Attività di stampa"
+                        if key[0] == "PRINT"
+                        else "Attività backup"
+                    ),
+                )
+                stamp = audit_time_label(str(item.get("occurred_at") or ""))
+                activity_lines.append(f"{stamp}  •  {label}")
+
             self.home_activity_var.set(
-                f"{self.connection_var.get()} • "
-                f"{len(self.vouchers)} voucher disponibili localmente"
+                "\n".join(activity_lines)
+                if activity_lines
+                else "Nessuna attività registrata."
             )
 
     def _set_background_busy(self, busy: bool, label: str = "") -> None:
@@ -1827,6 +1878,12 @@ class ModernVoucherApp(
         style.configure("Metric.TLabel", font=("Segoe UI Variable Display", 24, "bold"))
         style.configure("Muted.TLabel", font=("Segoe UI Variable Text", 9))
         style.configure("ConnectionStatus.TLabel", font=("Segoe UI Variable Text", 10, "bold"))
+        style.configure("ConnectionReady.TLabel", font=("Segoe UI Variable Text", 10, "bold"), foreground="#107c10")
+        style.configure("ConnectionLocal.TLabel", font=("Segoe UI Variable Text", 10, "bold"), foreground="#9a6700")
+        style.configure("ConnectionOffline.TLabel", font=("Segoe UI Variable Text", 10, "bold"), foreground="#c42b1c")
+        style.configure("StatusReady.TLabel", font=("Segoe UI Variable Text", 13, "bold"), foreground="#107c10")
+        style.configure("StatusLocal.TLabel", font=("Segoe UI Variable Text", 13, "bold"), foreground="#9a6700")
+        style.configure("StatusOffline.TLabel", font=("Segoe UI Variable Text", 13, "bold"), foreground="#c42b1c")
         style.configure("Card.TFrame", padding=2)
         style.configure("Nav.TButton", anchor="w", padding=(14, 10))
         style.configure("Hero.TButton", font=("Segoe UI Variable Text", 10, "bold"), padding=(20, 11))
