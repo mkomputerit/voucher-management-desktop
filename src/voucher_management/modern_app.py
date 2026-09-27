@@ -769,19 +769,25 @@ class ModernVoucherApp(
         self.background_operation_var = tk.StringVar()
         progress_box = ttk.Frame(main)
         progress_box.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        progress_box.columnconfigure(0, weight=1)
         self.background_progress = ttk.Progressbar(
             progress_box,
             mode="indeterminate",
         )
-        self.background_progress.pack(fill="x")
-        self.background_progress.pack_forget()
+        self.background_progress.grid(row=0, column=0, sticky="ew")
+        self.background_progress.grid_remove()
         self.background_operation_label = ttk.Label(
             progress_box,
             textvariable=self.background_operation_var,
             style="Muted.TLabel",
         )
-        self.background_operation_label.pack(anchor="w", pady=(3, 0))
-        self.background_operation_label.pack_forget()
+        self.background_operation_label.grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(3, 0),
+        )
+        self.background_operation_label.grid_remove()
 
         self.page_host = ttk.Frame(main)
         self.page_host.grid(row=2, column=0, sticky="nsew")
@@ -1345,7 +1351,22 @@ class ModernVoucherApp(
         """Expose one serialized operation without blocking the operator shell."""
 
         state = ["disabled"] if busy else ["!disabled"]
-        for widget in getattr(self, "_busy_widgets", ()):
+        widgets = getattr(self, "_busy_widgets", None)
+        if widgets is None:
+            widgets = tuple(
+                widget
+                for widget in (
+                    getattr(self, "connect_button", None),
+                    getattr(self, "create_button", None),
+                    getattr(self, "refresh_button", None),
+                    getattr(self, "delete_button", None),
+                    getattr(self, "print_button", None),
+                    getattr(self, "open_pdf_button", None),
+                    getattr(self, "report_button", None),
+                )
+                if widget is not None
+            )
+        for widget in widgets:
             widget.state(state)
 
         network_words = ("connessione", "aggiornamento", "sincron")
@@ -1356,15 +1377,21 @@ class ModernVoucherApp(
 
         if busy:
             self.background_operation_var.set(label)
-            self.background_progress.pack(fill="x")
-            self.background_operation_label.pack(anchor="w", pady=(3, 0))
+            self.background_progress.grid()
+            self.background_operation_label.grid()
             self.background_progress.start(12)
         else:
             self.background_progress.stop()
-            self.background_progress.pack_forget()
-            self.background_operation_label.pack_forget()
+            self.background_progress.grid_remove()
+            self.background_operation_label.grid_remove()
             self.background_operation_var.set("")
-        self._refresh_controller_workspace_status()
+        refresh_status = getattr(
+            self,
+            "_refresh_controller_workspace_status",
+            None,
+        )
+        if refresh_status is not None:
+            refresh_status()
 
     def _set_network_busy(self, busy: bool, label: str = "") -> None:
         """Backward-compatible alias for the generalized busy indicator."""
