@@ -139,9 +139,18 @@ def test_exporting_an_already_public_snapshot_is_idempotent(
     workflow = (
         third / ".github" / "workflows" / "build-windows.yml"
     ).read_text(encoding="utf-8")
-    assert workflow.count(
-        "startsWith(github.ref, 'refs/heads/release/')"
-    ) == 1
+    base_publish_condition = (
+        "if: github.event_name == 'workflow_dispatch' || "
+        "github.ref == 'refs/heads/main'"
+    )
+    public_publish_condition = (
+        base_publish_condition
+        + " || startsWith(github.ref, 'refs/heads/release/')"
+    )
+    assert workflow.count(base_publish_condition) == workflow.count(
+        public_publish_condition
+    )
+    assert workflow.count(public_publish_condition) >= 1
 
     for relative in PRIVATE_ONLY_PATHS:
         assert not (third / relative).exists()
