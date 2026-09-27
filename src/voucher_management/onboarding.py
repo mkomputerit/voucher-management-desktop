@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .database import Database
 from .identity import DEFAULT_STRUCTURE_TYPE, DEFAULT_WIFI_TITLE
+from .retention import RETENTION_INTRO_KEY
 from .settings import SettingsStore
 
 
@@ -132,6 +133,12 @@ def complete_onboarding(
             unused_unprinted_days=clean.unused_unprinted_days,
             observed_at=observed_at,
             connection=db,
+        )
+        db.execute(
+            """INSERT INTO settings(key, value, updated_at)
+               VALUES (?, '1', ?)
+               ON CONFLICT(key) DO UPDATE SET value='1', updated_at=excluded.updated_at""",
+            (RETENTION_INTRO_KEY, observed_at),
         )
         database.upsert_installation_profile(
             installation_name=clean.installation_name,
