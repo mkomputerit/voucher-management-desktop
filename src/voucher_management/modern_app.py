@@ -1313,6 +1313,38 @@ class ModernVoucherApp(
         )
         self.report_button.pack(anchor="w")
 
+        shortcuts = ttk.Frame(page)
+        shortcuts.pack(fill="x", pady=(0, 18))
+        for column in range(4):
+            shortcuts.columnconfigure(column, weight=1)
+        quick_reports = (
+            ("Riepilogo", "Riepilogo"),
+            ("Utilizzati", "Voucher utilizzati"),
+            ("Scaduti", "Voucher scaduti"),
+            ("Stampati non usati", "Stampati mai utilizzati"),
+        )
+        for column, (title, kind) in enumerate(quick_reports):
+            card = ttk.Frame(shortcuts, padding=14, style="Card.TFrame")
+            card.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0 if column == 0 else 6, 0 if column == 3 else 6),
+            )
+            ttk.Label(
+                card,
+                text=title,
+                style="SectionTitle.TLabel",
+            ).pack(anchor="w")
+            ttk.Button(
+                card,
+                text="Apri…",
+                command=lambda selected=kind: ReportDialog(
+                    self,
+                    initial_kind=selected,
+                ),
+            ).pack(anchor="w", pady=(10, 0))
+
         ttk.Label(
             page,
             text="Stato corrente",
