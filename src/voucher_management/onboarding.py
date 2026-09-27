@@ -25,6 +25,7 @@ class OnboardingState(str, Enum):
     REQUIRED = "required"
     COMPLETE = "complete"
     EXISTING_INSTALLATION = "existing_installation"
+    MIGRATION_AVAILABLE = "migration_available"
 
 
 @dataclass(frozen=True)
