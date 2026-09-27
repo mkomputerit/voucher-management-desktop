@@ -22,7 +22,7 @@ from .identity import (
 )
 from .logo_validation import LogoValidationError, validate_logo_image
 from .onboarding import OnboardingState
-from .onboarding_ui import schedule_first_run_onboarding
+from .onboarding_ui import schedule_first_run_onboarding, startup_onboarding_state
 from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
 from .report_ui import ReportDialog
@@ -580,6 +580,63 @@ class HistoryRecoveryDialog(tk.Toplevel):
         self.app.populate()
 
 
+class MigrationRequiredDialog(tk.Toplevel):
+    """Block normal operation until explicit shared-data migration is resolved."""
+
+    def __init__(self, app: "ModernVoucherApp"):
+        super().__init__(app)
+        self.app = app
+        self.title("Migrazione dati richiesta")
+        self.transient(app)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self._close_application)
+
+        shell = ttk.Frame(self, padding=22)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(
+            shell,
+            text="Dati precedenti rilevati",
+            style="PageTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            shell,
+            text=(
+                "Questa installazione condivisa ha rilevato dati della "
+                "precedente installazione nel profilo Windows corrente. "
+                "Per evitare sovrascritture, Voucher Management non abilita "
+                "le normali operazioni finché la migrazione non viene "
+                "completata o l'applicazione viene chiusa."
+            ),
+            style="Muted.TLabel",
+            wraplength=620,
+        ).pack(anchor="w", pady=(6, 18))
+
+        actions = ttk.Frame(shell)
+        actions.pack(fill="x")
+        ttk.Button(
+            actions,
+            text="Chiudi",
+            command=self._close_application,
+        ).pack(side="right")
+        ttk.Button(
+            actions,
+            text="Migra dati…",
+            command=lambda: app.migrate_per_user_data_to_shared(parent=self),
+            style="Accent.TButton",
+        ).pack(side="right", padx=(0, 8))
+        fit_dialog(self, app, min_width=680, min_height=260)
+
+    def _close_application(self) -> None:
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.app._finish_close(
+            close_status="MIGRATION_DEFERRED",
+            backup_status="NOT_REQUIRED",
+        )
+
+
 class ModernVoucherApp(
     RetentionMixin,
     DataMaintenanceMixin,
@@ -588,6 +645,14 @@ class ModernVoucherApp(
     VoucherApp,
 ):
     """Windows 11 operator shell around the stable voucher engine."""
+
+    def _retention_intro_allowed_on_startup(self) -> bool:
+        """Only legacy/existing installs need the separate retention intro."""
+
+        return (
+            startup_onboarding_state(self)
+            is OnboardingState.EXISTING_INSTALLATION
+        )
 
     def __init__(self):
         super().__init__()
@@ -603,14 +668,7 @@ class ModernVoucherApp(
             )
 
     def _show_legacy_migration_available(self) -> None:
-        messagebox.showinfo(
-            "Dati precedenti rilevati",
-            "Sono stati trovati dati di una precedente installazione nel "
-            "profilo Windows corrente. Prima di configurare una nuova "
-            "postazione condivisa, aprire Impostazioni e usare "
-            "“Migra dati di questo utente…”.",
-            parent=self,
-        )
+        MigrationRequiredDialog(self)
 
     def _build_ui(self) -> None:
         self.apply_theme()
