@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from voucher_management.database import Database
 from voucher_management.report_policy import ReportPurpose
 from voucher_management.reporting import (
@@ -330,5 +332,56 @@ def test_expired_report_uses_persisted_expiration_time_offline(tmp_path):
         assert [row.voucher_id for row in dataset.rows] == [voucher_id]
         assert dataset.rows[0].expired is True
         assert dataset.rows[0].status == "Scaduto"
+    finally:
+        database.close()
+
+
+def test_controller_foreign_key_preserves_report_history(tmp_path):
+    database, controller_id = _database(tmp_path)
+    try:
+        _voucher(
+            database,
+            controller_id,
+            unifi_id="kept",
+            code="1111122222",
+        )
+
+        with database.transaction() as db:
+            try:
+                db.execute(
+                    "DELETE FROM controllers WHERE id=?",
+                    (controller_id,),
+                )
+            except sqlite3.IntegrityError:
+                pass
+            else:
+                raise AssertionError(
+                    "referenced controller deletion must be blocked"
+                )
+
+        dataset = build_report_dataset(
+            database,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+
+        assert len(dataset.rows) == 1
+        assert dataset.rows[0].controller_name == "Sala Assemblee"
+    finally:
+        database.close()
+
+
+def test_empty_scoped_report_keeps_controller_label(tmp_path):
+    database, controller_id = _database(tmp_path)
+    try:
+        dataset = build_report_dataset(
+            database,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+            controller_id=controller_id,
+        )
+
+        assert dataset.rows == ()
+        assert dataset.controller_label == "Sala Assemblee"
     finally:
         database.close()
