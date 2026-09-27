@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1106,6 +1107,26 @@ class _FakeEncryptedBackupService:
             raise RuntimeError("synthetic unverified backup")
         return {"format": 2}
 
+    def create_verified(self, destination, *, password):
+        path = self.create(destination, password=password)
+        encrypted = self.is_encrypted_backup(path)
+        if not encrypted:
+            return SimpleNamespace(
+                path=path,
+                sha256="b" * 64,
+                backup_format=2,
+                schema_version=2,
+                encrypted=False,
+            )
+        manifest = self.validate_encrypted(path, password)
+        return SimpleNamespace(
+            path=path,
+            sha256="b" * 64,
+            backup_format=manifest["format"],
+            schema_version=2,
+            encrypted=True,
+        )
+
 
 def test_execute_requires_verified_encrypted_backup_before_migration(tmp_path):
     history = tmp_path / "history.jsonl"
@@ -1166,6 +1187,15 @@ def test_execute_requires_verified_encrypted_backup_before_migration(tmp_path):
         assert db.connection.execute(
             "SELECT COUNT(*) FROM voucher_events"
         ).fetchone()[0] == 1
+        backup_row = db.connection.execute(
+            "SELECT * FROM backup_history ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert backup_row["status"] == "SUCCESS"
+        assert backup_row["destination"] == "PRE_MIGRATION"
+        assert backup_row["filename"] == "pre-migration.vmbk"
+        assert backup_row["sha256"] == "b" * 64
+        assert backup_row["backup_format"] == 2
+        assert backup_row["schema_version"] == 2
         db.integrity_check()
     finally:
         db.close()
@@ -1221,6 +1251,13 @@ def test_execute_backup_failure_leaves_database_unmodified(tmp_path):
         assert db.connection.execute(
             "SELECT COUNT(*) FROM legacy_audit_events"
         ).fetchone()[0] == 0
+        backup_row = db.connection.execute(
+            "SELECT * FROM backup_history ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert backup_row["status"] == "FAILED"
+        assert backup_row["destination"] == "PRE_MIGRATION"
+        assert backup_row["sha256"] is None
+        assert backup_row["error_summary"] == "RuntimeError"
     finally:
         db.close()
 
@@ -1272,6 +1309,11 @@ def test_execute_rejects_unverified_backup_before_database_mutation(tmp_path):
         assert db.connection.execute(
             "SELECT COUNT(*) FROM migration_runs"
         ).fetchone()[0] == 0
+        backup_row = db.connection.execute(
+            "SELECT * FROM backup_history ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert backup_row["status"] == "FAILED"
+        assert backup_row["error_summary"] == "UnverifiedBackup"
     finally:
         db.close()
 
