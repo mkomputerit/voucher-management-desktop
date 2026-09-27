@@ -308,10 +308,24 @@ The pre-restore rollback snapshot uses the same SQLite-safe mechanism.
 
 Automatic backup-on-close is enabled by default. Because the 5.0 SQLite
 database contains clear voucher codes, the normal 5.0 backup path is encrypted
-and password-protected. Unencrypted ZIP import remains supported for legacy
-compatibility, but the 5.0 UI must not present plaintext backup as the default
-or recommended choice. A failed backup offers Retry, Close anyway and Cancel;
-it must not trap the operator permanently.
+and password-protected. The password is requested only for the current close
+attempt and is never persisted. Automatic snapshots are written outside the
+managed application-data tree under the current Windows user's home directory,
+so restore cannot replace the backup that protects it and shared ProgramData
+ACLs do not need to be broadened.
+
+The normal backup button also creates only encrypted/authenticated `.vmbk`
+files. Unencrypted ZIP remains accepted only as a legacy restore/import format.
+If another serialized background operation is active, an ordinary window close
+is refused instead of interrupting a controller mutation, print, restore or
+other data workflow. A failed shutdown backup offers Retry, Close anyway and
+Cancel; Cancel leaves the process and its machine-wide instance guard alive.
+
+Each normal application start creates one `application_sessions` row. A clean
+operator-requested close records `closed_at`, the final controller association,
+the close status and the shutdown-backup outcome before Tk releases the
+database/instance guard. A hard process termination deliberately leaves
+`closed_at` empty rather than manufacturing a successful close after restart.
 
 ## Reporting
 
