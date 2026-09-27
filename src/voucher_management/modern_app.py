@@ -536,10 +536,23 @@ class ModernVoucherApp(DataMaintenanceMixin, ControllerConnectionMixin, VoucherD
         if not self.winfo_exists():
             return
         state = schedule_first_run_onboarding(self)
-        if state is OnboardingState.EXISTING_INSTALLATION:
+        if state is OnboardingState.MIGRATION_AVAILABLE:
+            self.logger.info("onboarding_deferred legacy_migration_available=true")
+            self.after_idle(self._show_legacy_migration_available)
+        elif state is OnboardingState.EXISTING_INSTALLATION:
             self.logger.info(
                 "onboarding_skipped existing_installation_without_profile=true"
             )
+
+    def _show_legacy_migration_available(self) -> None:
+        messagebox.showinfo(
+            "Dati precedenti rilevati",
+            "Sono stati trovati dati di una precedente installazione nel "
+            "profilo Windows corrente. Prima di configurare una nuova "
+            "postazione condivisa, aprire Impostazioni e usare "
+            "“Migra dati di questo utente…”.",
+            parent=self,
+        )
 
     def _build_ui(self) -> None:
         self.apply_theme()
