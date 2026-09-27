@@ -11,6 +11,7 @@ from voucher_management.onboarding import (
     DEFAULT_VOUCHER_RETENTION_DAYS,
     OnboardingDraft,
     OnboardingState,
+    begin_onboarding,
     complete_onboarding,
     onboarding_state,
 )
@@ -43,6 +44,23 @@ def _draft():
 def test_fresh_database_requires_onboarding(tmp_path):
     database = _database(tmp_path)
     try:
+        assert onboarding_state(database) is OnboardingState.REQUIRED
+    finally:
+        database.close()
+
+
+def test_interrupted_onboarding_stays_required_after_partial_controller_data(
+    tmp_path,
+):
+    database = _database(tmp_path)
+    try:
+        begin_onboarding(database)
+        database.create_controller(
+            name="Partially persisted controller",
+            api_root="https://controller.example/proxy/network/integration/v1",
+            created_at=NOW,
+        )
+
         assert onboarding_state(database) is OnboardingState.REQUIRED
     finally:
         database.close()
