@@ -11,7 +11,10 @@ def test_installer_uses_programfiles_programdata_group_and_sid_acls():
         encoding="utf-8"
     )
 
-    assert '$SourcePath = $PSScriptRoot' in script
+    assert '[string]$SourcePath = ""' in script
+    assert "[string]::IsNullOrWhiteSpace($SourcePath)" in script
+    assert "$SourcePath = $PSScriptRoot" in script
+    assert "[switch]$ConfigureOnly" in script
     assert '$env:ProgramFiles' in script
     assert '$env:ProgramData' in script
     assert 'Voucher Management Operators' in script
@@ -72,3 +75,34 @@ def test_windows_ci_executes_real_installer_acl_integration():
     assert "S-1-1-0" in integration
     assert "S-1-5-11" in integration
     assert "RemoveData" in integration
+
+
+
+def test_native_setup_preserves_shared_deployment_contract():
+    setup = (ROOT / "installer" / "VoucherManagement.iss").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PrivilegesRequired=admin" in setup
+    assert "DefaultDirName={autopf}\\Voucher Management" in setup
+    assert "WizardStyle=modern" in setup
+    assert "CloseApplications=no" in setup
+    assert "RestartApplications=no" in setup
+    assert "OPERATORUSER" in setup
+    assert "-ConfigureOnly" in setup
+    assert "Voucher Management Operators" not in setup
+    assert "Install-VoucherManagement.ps1" in setup
+    assert "VoucherManagement-{#AppVersion}-Setup-Windows-x64" in setup
+    assert "UninstallDisplayIcon={app}\\{#AppExeName}" in setup
+    assert "Get-Process -Name ''VoucherManagement''" in setup
+
+
+def test_windows_workflow_tracks_native_setup_sources():
+    workflow = (ROOT / ".github" / "workflows" / "build-windows.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "- 'installer/**'" in workflow
+    assert "Build native Windows Setup" in workflow
+    assert "Test native Windows Setup" in workflow
+    assert "VoucherManagement-*-Setup-Windows-x64.exe" in workflow
