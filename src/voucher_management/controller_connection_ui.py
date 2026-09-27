@@ -59,13 +59,25 @@ class ControllerConnectionMixin:
             self._connection_failed(exc)
             return
 
+        profile_var = getattr(self, "controller_profile_name_var", None)
+        profile_name = (
+            str(profile_var.get()).strip()
+            if profile_var is not None
+            else ""
+        )
         self.connection_var.set("Connessione in corso…")
-        self._start_connect_attempt(client, api_key)
+        self._start_connect_attempt(
+            client,
+            api_key,
+            profile_name=profile_name or None,
+        )
 
     def _start_connect_attempt(
         self,
         client: UniFiClient,
         api_key: str,
+        *,
+        profile_name: str | None = None,
     ) -> None:
         """Run one TLS/API connection attempt on the worker thread."""
 
@@ -80,6 +92,7 @@ class ControllerConnectionMixin:
                 connected_client,
                 info,
                 vouchers,
+                profile_name=profile_name,
             )
 
         def failed(exc: Exception) -> None:
@@ -88,6 +101,7 @@ class ControllerConnectionMixin:
                     client.base_url,
                     api_key,
                     exc,
+                    profile_name=profile_name,
                 )
                 return
             if isinstance(exc, UniFiCertificateTrustRequired):
@@ -95,6 +109,7 @@ class ControllerConnectionMixin:
                     client.base_url,
                     api_key,
                     exc,
+                    profile_name=profile_name,
                 )
                 return
             self._connection_failed(exc)
@@ -111,6 +126,8 @@ class ControllerConnectionMixin:
         api_root: str,
         api_key: str,
         exc: UniFiCertificateChanged,
+        *,
+        profile_name: str | None = None,
     ) -> None:
         """Ask for changed-certificate approval only from the Tk thread."""
 
@@ -149,13 +166,19 @@ class ControllerConnectionMixin:
             self._connection_failed(error)
             return
         self.connection_var.set("Connessione in corso…")
-        self._start_connect_attempt(client, api_key)
+        self._start_connect_attempt(
+            client,
+            api_key,
+            profile_name=profile_name,
+        )
 
     def _confirm_untrusted_certificate(
         self,
         api_root: str,
         api_key: str,
         exc: UniFiCertificateTrustRequired,
+        *,
+        profile_name: str | None = None,
     ) -> None:
         """Ask for first-use certificate approval only from the Tk thread."""
 
@@ -189,7 +212,11 @@ class ControllerConnectionMixin:
             self._connection_failed(error)
             return
         self.connection_var.set("Connessione in corso…")
-        self._start_connect_attempt(client, api_key)
+        self._start_connect_attempt(
+            client,
+            api_key,
+            profile_name=profile_name,
+        )
 
     def _connection_failed(self, exc: Exception) -> None:
         self.client = None
