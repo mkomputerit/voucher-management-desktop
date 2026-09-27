@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from datetime import datetime
 
 from voucher_management.controller_probe import (
     ControllerProbeResult,
@@ -37,6 +38,7 @@ def test_probe_keeps_api_key_only_inside_active_client_memory():
     assert result.client.connected_key == "secret-api-key"
     assert result.info["siteName"] == "Sala Assemblee"
     assert result.vouchers == ("v1", "v2")
+    assert datetime.fromisoformat(result.observed_at).tzinfo is not None
 
     field_names = {field.name.lower() for field in fields(ControllerProbeResult)}
     assert "api_key" not in field_names
