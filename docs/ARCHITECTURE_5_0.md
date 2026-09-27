@@ -351,6 +351,24 @@ the close status and the shutdown-backup outcome before Tk releases the
 database/instance guard. A hard process termination deliberately leaves
 `closed_at` empty rather than manufacturing a successful close after restart.
 
+The existing `backup_history` table is now an operational audit rather than
+unused schema. A backup attempt captures its start time before background work
+and writes one final row only after the outcome is known. This intentionally
+avoids putting a self-referential `STARTED` row inside the SQLite snapshot that
+the same backup is creating. Normal UI failures and shutdown failures record a
+final `FAILED` row; verified successes record `SUCCESS` with the SHA-256 of
+the final delivered backup container, logical backup format and SQLite schema
+version from the already-validated manifest.
+
+The audit privacy boundary stores a destination purpose such as `MANUAL`,
+`SHUTDOWN_AUTO`, `PRE_MIGRATION` or `SHARED_DATA_MIGRATION`, plus only the
+artifact basename. It never stores the full destination path, backup password,
+controller credentials or exception text. Failure detail is reduced to an
+exception-class name. The shared-data migration cannot write this audit into
+the source profile because that source is contractually left unchanged; after
+a successful restore it writes the verified source-backup facts into the
+resulting shared database instead.
+
 ## Reporting
 
 Reports are calculated from durable atomic facts rather than stored aggregate

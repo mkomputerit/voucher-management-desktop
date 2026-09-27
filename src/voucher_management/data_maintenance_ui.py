@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
-from .backup import BackupError, BackupService
+from .backup import BackupArtifactInfo, BackupError, BackupService
 from .database import Database
 from .dialogs import ask_password
 from .history import HistoryError
@@ -38,6 +38,57 @@ class DataMaintenanceMixin:
 
     def _backup_service(self) -> BackupService:
         return BackupService(self.paths)
+
+    @staticmethod
+    def _backup_audit_started_at() -> str:
+        """Return one canonical UTC timestamp for a backup attempt."""
+
+        return datetime.now(timezone.utc).isoformat()
+
+    def _record_backup_audit(
+        self,
+        *,
+        started_at: str,
+        destination: str,
+        target: Path,
+        artifact: BackupArtifactInfo | None = None,
+        error: Exception | None = None,
+    ) -> bool:
+        """Persist a privacy-safe final backup outcome on the Tk thread.
+
+        Full destination paths and exception messages are intentionally excluded.
+        The basename is retained so an operator can correlate an audit row with
+        the artifact they selected or received.
+        """
+
+        database = getattr(self, "database", None)
+        if database is None:
+            return False
+        try:
+            database.record_backup_history(
+                started_at=started_at,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                destination=destination,
+                filename=Path(target).name,
+                status="SUCCESS" if artifact is not None else "FAILED",
+                sha256=None if artifact is None else artifact.sha256,
+                backup_format=(
+                    None if artifact is None else artifact.backup_format
+                ),
+                schema_version=(
+                    None if artifact is None else artifact.schema_version
+                ),
+                error_summary=(
+                    None if error is None else type(error).__name__
+                ),
+            )
+            return True
+        except Exception as exc:
+            self.logger.warning(
+                "backup_history_write_failed type=%s",
+                type(exc).__name__,
+            )
+            return False
 
     def request_close(self) -> None:
         """Close safely, creating the configured encrypted recovery snapshot.
@@ -89,14 +140,37 @@ class DataMaintenanceMixin:
         """Run one encrypted shutdown backup attempt without blocking Tk."""
 
         service = self._backup_service()
+        started_at = self._backup_audit_started_at()
 
-        def completed(_result) -> None:
+        def completed(result: BackupArtifactInfo) -> None:
+            audited = self._record_backup_audit(
+                started_at=started_at,
+                destination="SHUTDOWN_AUTO",
+                target=target,
+                artifact=result,
+            )
+            if not audited:
+                messagebox.showwarning(
+                    "Backup completato",
+                    "Il backup cifrato è stato creato e verificato, ma il suo "
+                    "audit locale non è stato registrato. La chiusura può "
+                    "comunque proseguire.",
+                    parent=self,
+                )
             self._finish_close(
                 close_status="CLOSED",
-                backup_status="SUCCESS",
+                backup_status=(
+                    "SUCCESS" if audited else "SUCCESS_AUDIT_FAILED"
+                ),
             )
 
         def failed(exc: Exception) -> None:
+            self._record_backup_audit(
+                started_at=started_at,
+                destination="SHUTDOWN_AUTO",
+                target=target,
+                error=exc,
+            )
             self.logger.warning(
                 "shutdown_backup_failed type=%s",
                 type(exc).__name__,
@@ -119,7 +193,7 @@ class DataMaintenanceMixin:
 
         started = self._run_background_task(
             "Backup di chiusura…",
-            lambda: service.create(
+            lambda: service.create_verified(
                 Path(target),
                 password=password,
             ),
@@ -831,6 +905,14 @@ class DataMaintenanceMixin:
             return
 
         def completed(result) -> None:
+            audit_note = (
+                ""
+                if result.backup_audit_recorded
+                else (
+                    "\n\nAttenzione: il trasferimento è riuscito, ma "
+                    "l'audit locale del backup sorgente non è stato registrato."
+                )
+            )
             messagebox.showinfo(
                 "Migrazione completata",
                 "I dati del profilo Windows sono stati trasferiti "
@@ -839,7 +921,7 @@ class DataMaintenanceMixin:
                 f"Rollback del precedente ProgramData:\n"
                 f"{result.rollback_path}\n\n"
                 "La copia originale nel profilo utente è rimasta invariata. "
-                "Riavviare Voucher Management.",
+                f"Riavviare Voucher Management.{audit_note}",
                 parent=parent,
             )
             self.destroy()
@@ -926,15 +1008,37 @@ class DataMaintenanceMixin:
             return
 
         service = self._backup_service()
+        started_at = self._backup_audit_started_at()
+        target_path = Path(target)
 
-        def completed(result) -> None:
+        def completed(result: BackupArtifactInfo) -> None:
+            audited = self._record_backup_audit(
+                started_at=started_at,
+                destination="MANUAL",
+                target=target_path,
+                artifact=result,
+            )
+            audit_note = (
+                ""
+                if audited
+                else (
+                    "\n\nAttenzione: il file è valido, ma l'audit locale "
+                    "del backup non è stato registrato."
+                )
+            )
             messagebox.showinfo(
                 "Backup completato",
-                f"Backup creato correttamente.\n\n{result}",
+                f"Backup creato correttamente.\n\n{result.path}{audit_note}",
                 parent=parent,
             )
 
         def failed(exc: Exception) -> None:
+            self._record_backup_audit(
+                started_at=started_at,
+                destination="MANUAL",
+                target=target_path,
+                error=exc,
+            )
             detail = (
                 str(exc)
                 if isinstance(exc, BackupError)
@@ -948,8 +1052,8 @@ class DataMaintenanceMixin:
 
         self._run_background_task(
             "Creazione backup…",
-            lambda: service.create(
-                Path(target),
+            lambda: service.create_verified(
+                target_path,
                 password=password,
             ),
             completed,

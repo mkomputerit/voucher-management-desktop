@@ -20,6 +20,15 @@ from typing import Iterator
 
 SCHEMA_VERSION = 2
 
+BACKUP_AUDIT_DESTINATIONS = frozenset(
+    {
+        "MANUAL",
+        "SHUTDOWN_AUTO",
+        "PRE_MIGRATION",
+        "SHARED_DATA_MIGRATION",
+    }
+)
+
 
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -373,6 +382,77 @@ COMMIT;
         result = self.connection.execute("PRAGMA integrity_check").fetchone()[0]
         if result != "ok":
             raise RuntimeError(f"SQLite integrity check failed: {result}")
+
+    def record_backup_history(
+        self,
+        *,
+        started_at: str,
+        completed_at: str,
+        destination: str,
+        filename: str,
+        status: str,
+        sha256: str | None = None,
+        backup_format: int | None = None,
+        schema_version: int | None = None,
+        error_summary: str | None = None,
+    ) -> int:
+        """Persist one completed backup attempt without storing secrets or paths."""
+
+        start = str(started_at or "").strip()
+        completed = str(completed_at or "").strip()
+        destination_kind = str(destination or "").strip()
+        basename = str(filename or "").strip()
+        normalized_status = str(status or "").strip().upper()
+        if not start or not completed or not destination_kind or not basename:
+            raise ValueError("backup audit fields must not be empty")
+        if Path(basename).name != basename or "/" in basename or "\\" in basename:
+            raise ValueError("backup audit filename must be a basename")
+        if normalized_status not in {"SUCCESS", "FAILED"}:
+            raise ValueError("unsupported backup audit status")
+        if destination_kind not in BACKUP_AUDIT_DESTINATIONS:
+            raise ValueError("unsupported backup audit destination")
+
+        digest = None if sha256 is None else str(sha256).strip().lower()
+        if normalized_status == "SUCCESS":
+            if (
+                digest is None
+                or len(digest) != 64
+                or any(ch not in "0123456789abcdef" for ch in digest)
+            ):
+                raise ValueError("successful backup audit requires SHA-256")
+            if type(backup_format) is not int or backup_format < 1:
+                raise ValueError("successful backup audit requires backup format")
+            if schema_version is not None and (
+                type(schema_version) is not int or schema_version < 0
+            ):
+                raise ValueError("invalid backup schema version")
+            normalized_error = None
+        else:
+            digest = None
+            backup_format = None
+            schema_version = None
+            normalized_error = str(error_summary or "").strip() or "BackupError"
+            normalized_error = normalized_error[:128]
+
+        with self.transaction() as db:
+            cursor = db.execute(
+                """INSERT INTO backup_history(
+                       started_at, completed_at, destination, filename, status,
+                       sha256, backup_format, schema_version, error_summary
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    start,
+                    completed,
+                    destination_kind,
+                    basename,
+                    normalized_status,
+                    digest,
+                    backup_format,
+                    schema_version,
+                    normalized_error,
+                ),
+            )
+            return int(cursor.lastrowid)
 
     def start_application_session(
         self,

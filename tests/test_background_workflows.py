@@ -17,6 +17,16 @@ def exchange_phrase(marker: str = "p") -> str:
     return marker * 24
 
 
+def backup_artifact(path):
+    return SimpleNamespace(
+        path=Path(path),
+        sha256="a" * 64,
+        backup_format=2,
+        schema_version=2,
+        encrypted=True,
+    )
+
+
 def capture_runner(tasks):
     def run(label, worker, success, error, *, busy_scope=None):
         tasks.append(
@@ -481,13 +491,18 @@ def test_create_backup_defers_encrypted_archive_work(monkeypatch):
     calls = []
     password = exchange_phrase("b")
     service = SimpleNamespace(
-        create=lambda target, password=None: calls.append(
+        create_verified=lambda target, password=None: calls.append(
             ("create", Path(target), password)
         )
-        or Path(target)
+        or backup_artifact(target)
     )
     fake = SimpleNamespace(
         _backup_service=lambda: service,
+        _backup_audit_started_at=lambda: "2026-09-27T07:00:00+00:00",
+        _record_backup_audit=lambda **kwargs: calls.append(
+            ("audit", kwargs)
+        )
+        or True,
         _dialog_busy_scope=lambda parent: None,
         _run_background_task=capture_runner(tasks),
     )
@@ -523,6 +538,9 @@ def test_create_backup_defers_encrypted_archive_work(monkeypatch):
         password,
     )
     tasks[0]["success"](result)
+    assert calls[-2][0] == "audit"
+    assert calls[-2][1]["destination"] == "MANUAL"
+    assert calls[-2][1]["artifact"].sha256 == "a" * 64
     assert calls[-1][0] == "info"
 
 def test_create_encrypted_backup_uses_shared_password_prompt(monkeypatch):
@@ -530,13 +548,18 @@ def test_create_encrypted_backup_uses_shared_password_prompt(monkeypatch):
     calls = []
     password = exchange_phrase("s")
     service = SimpleNamespace(
-        create=lambda target, password=None: calls.append(
+        create_verified=lambda target, password=None: calls.append(
             ("create", Path(target), password)
         )
-        or Path(target)
+        or backup_artifact(target)
     )
     fake = SimpleNamespace(
         _backup_service=lambda: service,
+        _backup_audit_started_at=lambda: "2026-09-27T07:00:00+00:00",
+        _record_backup_audit=lambda **kwargs: calls.append(
+            ("audit", kwargs)
+        )
+        or True,
         _dialog_busy_scope=lambda parent: None,
         _run_background_task=capture_runner(tasks),
     )
@@ -883,16 +906,21 @@ def test_request_close_runs_encrypted_backup_before_destroy(monkeypatch, tmp_pat
     calls = []
     password = exchange_phrase("c")
     service = SimpleNamespace(
-        create=lambda target, password=None: calls.append(
+        create_verified=lambda target, password=None: calls.append(
             ("create", Path(target), password)
         )
-        or Path(target)
+        or backup_artifact(target)
     )
     fake = SimpleNamespace(
         settings={"backup_on_close": True},
         _background_results=None,
         paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
         _backup_service=lambda: service,
+        _backup_audit_started_at=lambda: "2026-09-27T07:00:00+00:00",
+        _record_backup_audit=lambda **kwargs: calls.append(
+            ("audit", kwargs)
+        )
+        or True,
         _run_background_task=capture_runner(tasks),
         _finish_close=lambda **kwargs: calls.append(("close", kwargs)),
         logger=SimpleNamespace(warning=lambda *args: calls.append(("warning", args))),
@@ -926,6 +954,58 @@ def test_request_close_runs_encrypted_backup_before_destroy(monkeypatch, tmp_pat
     )
 
 
+def test_shutdown_backup_audit_failure_is_visible_but_does_not_trap_close(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+    events = []
+    password = exchange_phrase("a")
+    fake = SimpleNamespace(
+        settings={"backup_on_close": True},
+        _background_results=None,
+        paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
+        _backup_service=lambda: SimpleNamespace(
+            create_verified=lambda target, password=None: backup_artifact(target)
+        ),
+        _backup_audit_started_at=lambda: "2026-09-27T07:00:00+00:00",
+        _record_backup_audit=lambda **kwargs: False,
+        _run_background_task=capture_runner(tasks),
+        _finish_close=lambda **kwargs: events.append(("close", kwargs)),
+        logger=SimpleNamespace(warning=lambda *args: None),
+    )
+    fake._start_close_backup = (
+        lambda target, password: modern_app.ModernVoucherApp._start_close_backup(
+            fake,
+            target,
+            password,
+        )
+    )
+    monkeypatch.setattr(
+        maintenance_ui,
+        "ask_password",
+        lambda parent, **kwargs: password,
+    )
+    monkeypatch.setattr(
+        maintenance_ui.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: events.append(("warning", args)),
+    )
+
+    modern_app.ModernVoucherApp.request_close(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert events[0][0] == "warning"
+    assert events[-1] == (
+        "close",
+        {
+            "close_status": "CLOSED",
+            "backup_status": "SUCCESS_AUDIT_FAILED",
+        },
+    )
+
+
 def test_failed_close_backup_can_retry_without_losing_password(
     monkeypatch,
     tmp_path,
@@ -936,7 +1016,11 @@ def test_failed_close_backup_can_retry_without_losing_password(
         settings={"backup_on_close": True},
         _background_results=None,
         paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
-        _backup_service=lambda: SimpleNamespace(create=lambda *args, **kwargs: None),
+        _backup_service=lambda: SimpleNamespace(
+            create_verified=lambda *args, **kwargs: backup_artifact(args[0])
+        ),
+        _backup_audit_started_at=lambda: "2026-09-27T07:00:00+00:00",
+        _record_backup_audit=lambda **kwargs: True,
         _run_background_task=capture_runner(tasks),
         _finish_close=lambda **kwargs: None,
         logger=SimpleNamespace(warning=lambda *args: None),
@@ -976,7 +1060,11 @@ def test_failed_close_backup_can_close_anyway(monkeypatch, tmp_path):
         settings={"backup_on_close": True},
         _background_results=None,
         paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
-        _backup_service=lambda: SimpleNamespace(create=lambda *args, **kwargs: None),
+        _backup_service=lambda: SimpleNamespace(
+            create_verified=lambda *args, **kwargs: backup_artifact(args[0])
+        ),
+        _backup_audit_started_at=lambda: "2026-09-27T07:00:00+00:00",
+        _record_backup_audit=lambda **kwargs: True,
         _run_background_task=capture_runner(tasks),
         _finish_close=lambda **kwargs: closed.append(kwargs),
         logger=SimpleNamespace(warning=lambda *args: None),
@@ -1063,3 +1151,32 @@ def test_finish_close_records_session_before_destroy():
     assert events[0][1]["close_status"] == "CLOSED"
     assert events[0][1]["backup_status"] == "SUCCESS"
     assert events[-1] == ("destroy", None)
+
+
+
+def test_backup_audit_writer_uses_basename_and_verified_metadata():
+    calls = []
+
+    class AuditDatabase:
+        def record_backup_history(self, **kwargs):
+            calls.append(kwargs)
+
+    fake = SimpleNamespace(
+        database=AuditDatabase(),
+        logger=SimpleNamespace(warning=lambda *args: None),
+    )
+
+    result = modern_app.ModernVoucherApp._record_backup_audit(
+        fake,
+        started_at="2026-09-27T07:00:00+00:00",
+        destination="MANUAL",
+        target=Path("C:/Temp/audit-backup.vmbk"),
+        artifact=backup_artifact("C:/Temp/audit-backup.vmbk"),
+    )
+
+    assert result is True
+    assert calls[0]["filename"] == "audit-backup.vmbk"
+    assert calls[0]["destination"] == "MANUAL"
+    assert calls[0]["status"] == "SUCCESS"
+    assert calls[0]["sha256"] == "a" * 64
+    assert calls[0]["error_summary"] is None
