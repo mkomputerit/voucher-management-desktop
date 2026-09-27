@@ -119,9 +119,11 @@ Default policy:
 
 The implemented 5.0 candidate boundary is deliberately stricter than the
 minimum policy: a voucher must also be absent from the latest complete
-controller snapshot. When an expiry timestamp exists it is the age basis, so a
-voucher is never proposed merely because it was created long ago while its
-known validity still extends into the future.
+controller snapshot and have no generated-PDF or physical-print evidence in
+the verified HMAC history. A generated PDF is treated as credential-bearing
+material even if it was never sent to a printer. When an expiry timestamp
+exists it is the age basis, so a voucher is never proposed merely because it
+was created long ago while its known validity still extends into the future.
 
 "Cleanup" is data minimization rather than destruction of the durable historical
 row. After explicit operator selection the application revalidates the candidate
