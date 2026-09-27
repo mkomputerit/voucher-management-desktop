@@ -26,11 +26,13 @@ from .onboarding_ui import schedule_first_run_onboarding, startup_onboarding_sta
 from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
 from .report_ui import ReportDialog
+from .reporting import ReportKind, build_report_dataset
 from .retention_ui import RetentionMixin
 from .utils import format_fingerprint
 from .data_maintenance_ui import DataMaintenanceMixin
 from .controller_connection_ui import ControllerConnectionMixin
 from .voucher_deletion_ui import VoucherDeletionMixin
+from .workspace_state import build_controller_workspace_status
 
 
 def audit_time_label(value: str) -> str:
@@ -671,98 +673,261 @@ class ModernVoucherApp(
         MigrationRequiredDialog(self)
 
     def _build_ui(self) -> None:
+        """Build the operator-first 5.1 workspace without changing engine logic."""
+
         self.apply_theme()
         self._configure_style()
         self.after_idle(self._maximize_window)
-        root = ttk.Frame(self, padding=(22, 16))
+
+        self._controller_status_failed = False
+        self._controller_busy_label = ""
+        self.workspace_title_var = tk.StringVar(value="Home")
+        self.workspace_subtitle_var = tk.StringVar(
+            value="Panoramica operativa della postazione"
+        )
+        self.controller_health_var = tk.StringVar()
+        self.controller_health_detail_var = tk.StringVar()
+        self.home_ready_var = tk.StringVar(value="Pronto")
+        self.home_to_print_var = tk.StringVar(value="0")
+        self.home_active_var = tk.StringVar(value="0")
+        self.home_used_var = tk.StringVar(value="0")
+        self.home_expired_var = tk.StringVar(value="0")
+        self.report_total_var = tk.StringVar(value="0")
+        self.report_printed_var = tk.StringVar(value="0")
+        self.report_used_var = tk.StringVar(value="0")
+        self.report_expired_var = tk.StringVar(value="0")
+
+        root = ttk.Frame(self, padding=0)
         root.pack(fill="both", expand=True)
-        header = ttk.Frame(root)
-        header.pack(fill="x", pady=(0, 12))
-        ttk.Label(header, text=PRODUCT_NAME, style="PageTitle.TLabel").pack(side="left")
-        ttk.Label(header, text="Voucher Wi-Fi", style="Muted.TLabel").pack(side="left", padx=(12, 0), pady=(7, 0))
-        ttk.Button(header, text="Impostazioni", command=lambda: SettingsDialog(self)).pack(side="right")
+        root.columnconfigure(1, weight=1)
+        root.rowconfigure(0, weight=1)
 
-        connection = ttk.Frame(root, padding=(14, 10))
-        connection.pack(fill="x", pady=(0, 10))
-
-        ttk.Label(connection, text="API root / Controller", style="Muted.TLabel").grid(
-            row=0, column=0, sticky="w", padx=(0, 6)
-        )
-        self.api_root_entry = ttk.Entry(
-            connection,
-            textvariable=self.api_root_var,
-            width=46,
-        )
-        self.api_root_entry.grid(row=0, column=1, sticky="ew", padx=(0, 16))
-        self.api_root_entry.bind("<Return>", lambda _event: self.connect())
-
-        ttk.Label(connection, text="API key", style="Muted.TLabel").grid(
-            row=0, column=2, sticky="w", padx=(0, 6)
-        )
-        self.api_key_entry = ttk.Entry(
-            connection,
-            textvariable=self.api_key_var,
-            show="•",
-            width=32,
-        )
-        self.api_key_entry.grid(row=0, column=3, sticky="ew", padx=(0, 16))
-        self.api_key_entry.bind("<Return>", lambda _event: self.connect())
-
-        self.connect_button = ttk.Button(
-            connection,
-            text="Connetti",
-            command=self.connect,
-            style="Accent.TButton",
-        )
-        self.connect_button.grid(row=0, column=4)
-
+        sidebar = ttk.Frame(root, padding=(16, 20))
+        sidebar.grid(row=0, column=0, sticky="ns")
         ttk.Label(
-            connection,
-            textvariable=self.connection_var,
-            style="Muted.TLabel",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
-
+            sidebar,
+            text=PRODUCT_NAME,
+            style="Brand.TLabel",
+        ).pack(anchor="w", pady=(0, 4))
         ttk.Label(
-            connection,
-            text="I certificati TLS non attendibili richiedono conferma esplicita dell'impronta SHA-256.",
+            sidebar,
+            text="Gestione voucher Wi-Fi",
             style="Muted.TLabel",
-        ).grid(row=1, column=2, columnspan=3, sticky="w", pady=(8, 0))
+        ).pack(anchor="w", pady=(0, 24))
+
+        self._nav_buttons = {}
+        for key, label in (
+            ("home", "Home"),
+            ("voucher", "Voucher"),
+            ("report", "Report"),
+            ("settings", "Impostazioni"),
+        ):
+            button = ttk.Button(
+                sidebar,
+                text=label,
+                style="Nav.TButton",
+                command=lambda target=key: self._show_workspace(target),
+                width=22,
+            )
+            button.pack(fill="x", pady=3)
+            self._nav_buttons[key] = button
+
+        ttk.Separator(sidebar).pack(fill="x", pady=(20, 14))
+        ttk.Label(
+            sidebar,
+            textvariable=self.controller_health_var,
+            style="Status.TLabel",
+            wraplength=190,
+        ).pack(anchor="w")
+        ttk.Label(
+            sidebar,
+            textvariable=self.controller_health_detail_var,
+            style="Muted.TLabel",
+            wraplength=190,
+        ).pack(anchor="w", pady=(4, 0))
+
+        main = ttk.Frame(root, padding=(26, 18, 26, 22))
+        main.grid(row=0, column=1, sticky="nsew")
+        main.columnconfigure(0, weight=1)
+        main.rowconfigure(2, weight=1)
+
+        header = ttk.Frame(main)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        title_box = ttk.Frame(header)
+        title_box.pack(side="left", fill="x", expand=True)
+        ttk.Label(
+            title_box,
+            textvariable=self.workspace_title_var,
+            style="PageTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            title_box,
+            textvariable=self.workspace_subtitle_var,
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
 
         self.background_operation_var = tk.StringVar()
+        progress_box = ttk.Frame(main)
+        progress_box.grid(row=1, column=0, sticky="ew", pady=(0, 12))
         self.background_progress = ttk.Progressbar(
-            connection,
+            progress_box,
             mode="indeterminate",
         )
-        self.background_progress.grid(
-            row=2,
-            column=0,
-            columnspan=5,
-            sticky="ew",
-            pady=(9, 0),
-        )
-        self.background_progress.grid_remove()
+        self.background_progress.pack(fill="x")
+        self.background_progress.pack_forget()
         self.background_operation_label = ttk.Label(
-            connection,
+            progress_box,
             textvariable=self.background_operation_var,
             style="Muted.TLabel",
         )
-        self.background_operation_label.grid(
-            row=3,
-            column=0,
-            columnspan=5,
-            sticky="w",
-            pady=(3, 0),
+        self.background_operation_label.pack(anchor="w", pady=(3, 0))
+        self.background_operation_label.pack_forget()
+
+        self.page_host = ttk.Frame(main)
+        self.page_host.grid(row=2, column=0, sticky="nsew")
+        self.page_host.columnconfigure(0, weight=1)
+        self.page_host.rowconfigure(0, weight=1)
+        self._workspace_pages = {}
+        for key in ("home", "voucher", "report", "settings"):
+            frame = ttk.Frame(self.page_host)
+            frame.grid(row=0, column=0, sticky="nsew")
+            self._workspace_pages[key] = frame
+
+        self._build_home_workspace(self._workspace_pages["home"])
+        self._build_voucher_workspace(self._workspace_pages["voucher"])
+        self._build_report_workspace(self._workspace_pages["report"])
+        self._build_settings_workspace(self._workspace_pages["settings"])
+
+        self._busy_widgets = [
+            self.connect_button,
+            self.create_button,
+            self.home_create_button,
+            self.home_sync_button,
+            self.refresh_button,
+            self.delete_button,
+            self.print_button,
+            self.open_pdf_button,
+            self.report_button,
+        ]
+        self._search_after = None
+        self._show_workspace("home")
+        self._refresh_controller_workspace_status()
+
+    def _build_home_workspace(self, frame: ttk.Frame) -> None:
+        frame.columnconfigure(0, weight=1)
+
+        hero = ttk.Frame(frame, padding=(0, 4, 0, 18))
+        hero.grid(row=0, column=0, sticky="ew")
+        hero.columnconfigure(0, weight=1)
+        ttk.Label(
+            hero,
+            text="Postazione voucher",
+            style="HeroTitle.TLabel",
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            hero,
+            text=(
+                "Crea e stampa voucher senza dover gestire i dettagli tecnici "
+                "del controller."
+            ),
+            style="Body.TLabel",
+            wraplength=720,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        quick = ttk.Frame(hero)
+        quick.grid(row=0, column=1, rowspan=2, sticky="e")
+        self.home_create_button = ttk.Button(
+            quick,
+            text="＋ Nuovo voucher",
+            command=self.create,
+            style="Hero.TButton",
         )
-        self.background_operation_label.grid_remove()
+        self.home_create_button.pack(side="left")
+        self.home_sync_button = ttk.Button(
+            quick,
+            text="Sincronizza",
+            command=self.refresh,
+        )
+        self.home_sync_button.pack(side="left", padx=(10, 0))
 
-        connection.columnconfigure(1, weight=1)
-        connection.columnconfigure(3, weight=1)
+        metrics = ttk.Frame(frame)
+        metrics.grid(row=1, column=0, sticky="ew", pady=(0, 18))
+        for column in range(4):
+            metrics.columnconfigure(column, weight=1)
+        for column, (label, variable) in enumerate((
+            ("Da stampare", self.home_to_print_var),
+            ("Attivi", self.home_active_var),
+            ("Utilizzati", self.home_used_var),
+            ("Scaduti", self.home_expired_var),
+        )):
+            card = ttk.Labelframe(metrics, text=label, padding=(16, 12))
+            card.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0 if column == 0 else 6, 0 if column == 3 else 6),
+            )
+            ttk.Label(
+                card,
+                textvariable=variable,
+                style="Metric.TLabel",
+            ).pack(anchor="w")
 
-        actions = ttk.Frame(root)
-        actions.pack(fill="x", pady=(2, 12))
+        status = ttk.Labelframe(
+            frame,
+            text="Stato applicazione",
+            padding=(18, 14),
+        )
+        status.grid(row=2, column=0, sticky="ew", pady=(0, 18))
+        status.columnconfigure(0, weight=1)
+        ttk.Label(
+            status,
+            textvariable=self.controller_health_var,
+            style="SectionTitle.TLabel",
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            status,
+            textvariable=self.controller_health_detail_var,
+            style="Muted.TLabel",
+            wraplength=760,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Button(
+            status,
+            text="Apri impostazioni controller",
+            command=lambda: self._show_workspace("settings"),
+        ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(18, 0))
+
+        recent = ttk.Labelframe(
+            frame,
+            text="Attività recente",
+            padding=(12, 10),
+        )
+        recent.grid(row=3, column=0, sticky="nsew")
+        frame.rowconfigure(3, weight=1)
+        recent.columnconfigure(0, weight=1)
+        recent.rowconfigure(0, weight=1)
+        self.home_recent_tree = ttk.Treeview(
+            recent,
+            columns=("recipient", "state", "created"),
+            show="headings",
+            height=6,
+        )
+        self.home_recent_tree.heading("recipient", text="Voucher / destinatario")
+        self.home_recent_tree.heading("state", text="Stato")
+        self.home_recent_tree.heading("created", text="Creazione")
+        self.home_recent_tree.column("recipient", width=360, anchor="w")
+        self.home_recent_tree.column("state", width=150, anchor="center")
+        self.home_recent_tree.column("created", width=170, anchor="center")
+        self.home_recent_tree.grid(row=0, column=0, sticky="nsew")
+
+    def _build_voucher_workspace(self, frame: ttk.Frame) -> None:
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
+
+        actions = ttk.Frame(frame)
+        actions.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         self.create_button = ttk.Button(
             actions,
-            text="＋  NUOVO VOUCHER",
+            text="＋ Nuovo voucher",
             command=self.create,
             style="Hero.TButton",
         )
@@ -773,7 +938,7 @@ class ModernVoucherApp(
             command=self.print_selected,
             style="Hero.TButton",
         )
-        self.print_button.pack(side="left", padx=(10, 22))
+        self.print_button.pack(side="left", padx=(10, 18))
         ttk.Button(
             actions,
             text="Seleziona da stampare",
@@ -781,7 +946,7 @@ class ModernVoucherApp(
         ).pack(side="left")
         self.refresh_button = ttk.Button(
             actions,
-            text="Aggiorna",
+            text="Sincronizza",
             command=self.refresh,
         )
         self.refresh_button.pack(side="left", padx=8)
@@ -791,12 +956,6 @@ class ModernVoucherApp(
             command=self.open_existing_pdf,
         )
         self.open_pdf_button.pack(side="left")
-        self.report_button = ttk.Button(
-            actions,
-            text="Report",
-            command=lambda: ReportDialog(self),
-        )
-        self.report_button.pack(side="left", padx=(8, 0))
         self.delete_button = ttk.Button(
             actions,
             text="Elimina",
@@ -804,71 +963,408 @@ class ModernVoucherApp(
         )
         self.delete_button.pack(side="right")
 
-        content = ttk.Frame(root)
-        content.pack(fill="both", expand=True)
-        nav = ttk.Frame(content)
-        nav.pack(fill="x", pady=(0, 9))
-        ttk.Label(nav, text="Voucher", style="SectionTitle.TLabel").pack(side="left", padx=(0, 14))
-        cb = ttk.Combobox(nav, textvariable=self.filter_var, state="readonly", values=("Da stampare", "Attivi", "Scaduti", "Tutti"), width=14)
+        filters = ttk.Frame(frame)
+        filters.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        ttk.Label(
+            filters,
+            text="Vista",
+            style="Muted.TLabel",
+        ).pack(side="left", padx=(0, 7))
+        cb = ttk.Combobox(
+            filters,
+            textvariable=self.filter_var,
+            state="readonly",
+            values=("Da stampare", "Attivi", "Scaduti", "Tutti"),
+            width=15,
+        )
         cb.pack(side="left")
         cb.bind("<<ComboboxSelected>>", lambda _e: self.populate())
-        ttk.Label(nav, text="Cerca", style="Muted.TLabel").pack(side="left", padx=(20, 7))
-        search = ttk.Entry(nav, textvariable=self.search_var, width=34)
+        ttk.Label(
+            filters,
+            text="Cerca",
+            style="Muted.TLabel",
+        ).pack(side="left", padx=(20, 7))
+        search = ttk.Entry(
+            filters,
+            textvariable=self.search_var,
+            width=34,
+        )
         search.pack(side="left")
-        self._search_after = None
         search.bind("<KeyRelease>", self._schedule_search_populate)
-        ttk.Label(nav, textvariable=self.count_var, style="Muted.TLabel").pack(side="right")
+        ttk.Label(
+            filters,
+            textvariable=self.count_var,
+            style="Muted.TLabel",
+        ).pack(side="right")
 
-        table = ttk.Frame(content)
-        table.pack(fill="both", expand=True)
-        cols = ("check", "code", "name", "created", "firstprint", "duration", "usage", "printstatus", "copies", "expires")
-        self.tree = ttk.Treeview(table, columns=cols, show="headings", selectmode="extended")
-        self.tree.heading("check", text="☐", command=self.toggle_all_visible)
-        self.tree.column("check", width=38, anchor="center", stretch=False)
+        table = ttk.Frame(frame)
+        table.grid(row=2, column=0, sticky="nsew")
+        cols = (
+            "check",
+            "code",
+            "name",
+            "created",
+            "firstprint",
+            "duration",
+            "usage",
+            "printstatus",
+            "copies",
+            "expires",
+        )
+        self.tree = ttk.Treeview(
+            table,
+            columns=cols,
+            show="headings",
+            selectmode="extended",
+        )
+        self.tree.heading("check", text="✓", command=self.toggle_all_visible)
+        self.tree.column("check", width=42, anchor="center", stretch=False)
         definitions = (
-            ("code", "Voucher", 110, False), ("name", "Destinatario", 220, True),
-            ("created", "Creazione", 132, False), ("firstprint", "Prima stampa", 132, False),
-            ("duration", "Durata", 78, False), ("usage", "Utilizzi", 86, False),
-            ("printstatus", "Stato stampa", 118, False), ("copies", "Copie", 65, False),
+            ("code", "Voucher", 110, False),
+            ("name", "Destinatario", 220, True),
+            ("created", "Creazione", 132, False),
+            ("firstprint", "Prima stampa", 132, False),
+            ("duration", "Durata", 78, False),
+            ("usage", "Utilizzi", 86, False),
+            ("printstatus", "Stato stampa", 118, False),
+            ("copies", "Copie", 65, False),
             ("expires", "Scadenza", 132, False),
         )
         for key, label, width, stretch in definitions:
             self.tree.heading(key, text=label)
-            self.tree.column(key, width=width, minwidth=60, anchor="w" if key == "name" else "center", stretch=stretch)
-        self.tree.tag_configure("unprinted", font=("Segoe UI", 10, "bold"))
-        self.tree.tag_configure("pdfready", font=("Segoe UI", 10, "bold"))
+            self.tree.column(
+                key,
+                width=width,
+                minwidth=60,
+                anchor="w" if key == "name" else "center",
+                stretch=stretch,
+            )
+        self.tree.tag_configure(
+            "unprinted",
+            font=("Segoe UI Variable Text", 10, "bold"),
+        )
+        self.tree.tag_configure(
+            "pdfready",
+            font=("Segoe UI Variable Text", 10, "bold"),
+        )
         self.tree.bind("<Button-1>", self.on_tree_click)
         sy = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sy.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sy.pack(side="right", fill="y")
-        ttk.Label(content, text="Elimina è disponibile solo prima della prima stampa. Un voucher stampato resta gestibile dall'amministratore UniFi.", style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
+        ttk.Label(
+            frame,
+            text=(
+                "Clicca una riga per selezionarla. La ristampa resta una "
+                "azione esplicita e richiede conferma quando esiste già una "
+                "stampa fisica registrata."
+            ),
+            style="Muted.TLabel",
+        ).grid(row=3, column=0, sticky="w", pady=(8, 0))
+
+    def _build_report_workspace(self, frame: ttk.Frame) -> None:
+        frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            frame,
+            text="Riepilogo amministrativo",
+            style="SectionTitle.TLabel",
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            frame,
+            text=(
+                "Consulta i principali indicatori e genera PDF o CSV senza "
+                "esporre i codici voucher in chiaro nei report ordinari."
+            ),
+            style="Muted.TLabel",
+            wraplength=760,
+        ).grid(row=1, column=0, sticky="w", pady=(3, 16))
+
+        metrics = ttk.Frame(frame)
+        metrics.grid(row=2, column=0, sticky="ew")
+        for column in range(4):
+            metrics.columnconfigure(column, weight=1)
+        for column, (label, variable) in enumerate((
+            ("Voucher", self.report_total_var),
+            ("Stampati", self.report_printed_var),
+            ("Utilizzati", self.report_used_var),
+            ("Scaduti", self.report_expired_var),
+        )):
+            card = ttk.Labelframe(metrics, text=label, padding=(16, 12))
+            card.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0 if column == 0 else 6, 0 if column == 3 else 6),
+            )
+            ttk.Label(
+                card,
+                textvariable=variable,
+                style="Metric.TLabel",
+            ).pack(anchor="w")
+
+        actions = ttk.Labelframe(
+            frame,
+            text="Esporta report",
+            padding=(18, 14),
+        )
+        actions.grid(row=3, column=0, sticky="ew", pady=(20, 0))
+        ttk.Label(
+            actions,
+            text=(
+                "Scegli riepilogo, utilizzati, scaduti, stampati mai "
+                "utilizzati, nominali o storico completo."
+            ),
+            style="Muted.TLabel",
+            wraplength=680,
+        ).pack(anchor="w", pady=(0, 12))
+        self.report_button = ttk.Button(
+            actions,
+            text="Crea / esporta report…",
+            command=lambda: ReportDialog(self),
+            style="Accent.TButton",
+        )
+        self.report_button.pack(anchor="w")
+
+    def _build_settings_workspace(self, frame: ttk.Frame) -> None:
+        frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            frame,
+            text="Configurazione della postazione",
+            style="SectionTitle.TLabel",
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            frame,
+            text=(
+                "Le impostazioni tecniche sono separate dalle attività "
+                "quotidiane dell'operatore."
+            ),
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(3, 16))
+
+        controller = ttk.Labelframe(
+            frame,
+            text="Controller",
+            padding=(18, 14),
+        )
+        controller.grid(row=2, column=0, sticky="ew")
+        controller.columnconfigure(1, weight=1)
+        ttk.Label(controller, text="Indirizzo controller").grid(
+            row=0, column=0, sticky="w", padx=(0, 14), pady=6
+        )
+        self.api_root_entry = ttk.Entry(
+            controller,
+            textvariable=self.api_root_var,
+        )
+        self.api_root_entry.grid(row=0, column=1, sticky="ew", pady=6)
+        self.api_root_entry.bind("<Return>", lambda _event: self.connect())
+        ttk.Label(controller, text="API key").grid(
+            row=1, column=0, sticky="w", padx=(0, 14), pady=6
+        )
+        self.api_key_entry = ttk.Entry(
+            controller,
+            textvariable=self.api_key_var,
+            show="•",
+        )
+        self.api_key_entry.grid(row=1, column=1, sticky="ew", pady=6)
+        self.api_key_entry.bind("<Return>", lambda _event: self.connect())
+        self.connect_button = ttk.Button(
+            controller,
+            text="Verifica / connetti",
+            command=self.connect,
+            style="Accent.TButton",
+        )
+        self.connect_button.grid(row=0, column=2, rowspan=2, padx=(14, 0))
+        ttk.Label(
+            controller,
+            textvariable=self.connection_var,
+            style="Muted.TLabel",
+            wraplength=760,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Label(
+            controller,
+            text=(
+                "La API key viene usata solo per la connessione corrente e "
+                "non viene salvata."
+            ),
+            style="Muted.TLabel",
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+        general = ttk.Labelframe(
+            frame,
+            text="Generali e PDF / stampa",
+            padding=(18, 14),
+        )
+        general.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        ttk.Label(
+            general,
+            text=(
+                "Identità della struttura, tema, logo, archivio PDF e "
+                "preferenze di stampa."
+            ),
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(0, 10))
+        ttk.Button(
+            general,
+            text="Apri preferenze…",
+            command=lambda: SettingsDialog(self),
+        ).pack(anchor="w")
+
+        retention = ttk.Labelframe(
+            frame,
+            text="Retention",
+            padding=(18, 14),
+        )
+        retention.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+        ttk.Label(
+            retention,
+            text=(
+                "Rivedi in modo guidato quali voucher inutilizzati possono "
+                "essere minimizzati. Nessuna pulizia è automatica."
+            ),
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(0, 10))
+        ttk.Button(
+            retention,
+            text="Rivedi conservazione…",
+            command=lambda: self.open_retention_review(parent=self),
+        ).pack(anchor="w")
+
+        backup = ttk.Labelframe(
+            frame,
+            text="Backup",
+            padding=(18, 14),
+        )
+        backup.grid(row=5, column=0, sticky="ew", pady=(14, 0))
+        ttk.Label(
+            backup,
+            text=(
+                "Proteggi o ripristina la configurazione e lo storico della "
+                "postazione."
+            ),
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(0, 10))
+        backup_actions = ttk.Frame(backup)
+        backup_actions.pack(anchor="w")
+        ttk.Button(
+            backup_actions,
+            text="Crea backup…",
+            command=lambda: self.create_backup(parent=self),
+        ).pack(side="left")
+        ttk.Button(
+            backup_actions,
+            text="Ripristina backup…",
+            command=lambda: self.restore_backup(parent=self),
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            backup_actions,
+            text="Recupera identità cronologia…",
+            command=lambda: HistoryRecoveryDialog(self),
+        ).pack(side="left", padx=(8, 0))
+
+    def _show_workspace(self, key: str) -> None:
+        titles = {
+            "home": (
+                "Home",
+                "Panoramica operativa della postazione",
+            ),
+            "voucher": (
+                "Voucher",
+                "Crea, seleziona, stampa e gestisci i voucher",
+            ),
+            "report": (
+                "Report",
+                "Riepiloghi ed esportazioni amministrative",
+            ),
+            "settings": (
+                "Impostazioni",
+                "Controller, PDF, retention e protezione dei dati",
+            ),
+        }
+        if key not in self._workspace_pages:
+            return
+        self._workspace_pages[key].tkraise()
+        self.workspace_title_var.set(titles[key][0])
+        self.workspace_subtitle_var.set(titles[key][1])
+        for name, button in self._nav_buttons.items():
+            button.configure(
+                style="NavActive.TButton" if name == key else "Nav.TButton"
+            )
+        if key == "report":
+            self._refresh_report_summary()
+        self._refresh_controller_workspace_status()
+
+    def _controller_record(self):
+        controller_id = getattr(self, "active_controller_id", None)
+        if controller_id is None:
+            return None
+        return self.database.connection.execute(
+            """SELECT name, last_successful_sync_at
+               FROM controllers WHERE id=?""",
+            (controller_id,),
+        ).fetchone()
+
+    def _refresh_controller_workspace_status(self) -> None:
+        if not hasattr(self, "controller_health_var"):
+            return
+        row = self._controller_record()
+        configured = bool(
+            row is not None
+            or str(self.api_root_var.get() or "").strip()
+        )
+        name = (
+            str(row["name"] or "").strip()
+            if row is not None
+            else ""
+        )
+        last_sync = (
+            str(row["last_successful_sync_at"] or "").strip()
+            if row is not None
+            else ""
+        )
+        status = build_controller_workspace_status(
+            connected=self.client is not None,
+            configured=configured,
+            controller_name=name,
+            last_successful_sync_at=last_sync,
+            busy_label=self._controller_busy_label,
+            failed=self._controller_status_failed,
+        )
+        self.controller_health_var.set(status.title)
+        self.controller_health_detail_var.set(status.detail)
+        self.home_ready_var.set(status.title)
+
+    def _controller_operation_failed(self) -> None:
+        self._controller_status_failed = True
+        self._refresh_controller_workspace_status()
+
+    def _controller_operation_succeeded(self) -> None:
+        self._controller_status_failed = False
+        self._refresh_controller_workspace_status()
 
     def _set_background_busy(self, busy: bool, label: str = "") -> None:
-        """Expose one serialized background operation in the main UI."""
+        """Expose one serialized operation without blocking the operator shell."""
 
         state = ["disabled"] if busy else ["!disabled"]
-        for widget in (
-            self.connect_button,
-            self.create_button,
-            self.refresh_button,
-            self.delete_button,
-            self.print_button,
-            self.open_pdf_button,
-            self.report_button,
-        ):
+        for widget in getattr(self, "_busy_widgets", ()):
             widget.state(state)
+
+        network_words = ("connessione", "aggiornamento", "sincron")
+        if busy and any(word in label.lower() for word in network_words):
+            self._controller_busy_label = label
+        elif not busy:
+            self._controller_busy_label = ""
 
         if busy:
             self.background_operation_var.set(label)
-            self.background_progress.grid()
-            self.background_operation_label.grid()
+            self.background_progress.pack(fill="x")
+            self.background_operation_label.pack(anchor="w", pady=(3, 0))
             self.background_progress.start(12)
         else:
             self.background_progress.stop()
-            self.background_progress.grid_remove()
-            self.background_operation_label.grid_remove()
+            self.background_progress.pack_forget()
+            self.background_operation_label.pack_forget()
             self.background_operation_var.set("")
+        self._refresh_controller_workspace_status()
 
     def _set_network_busy(self, busy: bool, label: str = "") -> None:
         """Backward-compatible alias for the generalized busy indicator."""
@@ -879,24 +1375,181 @@ class ModernVoucherApp(
         try:
             self.state("zoomed")
         except tk.TclError:
-            self.geometry(f"{self.winfo_screenwidth()}x{self.winfo_screenheight()}+0+0")
+            self.geometry(
+                f"{self.winfo_screenwidth()}x"
+                f"{self.winfo_screenheight()}+0+0"
+            )
 
     def apply_theme(self) -> None:
         """Apply Sun Valley light/dark appearance, following Windows by default."""
+
         preference = self.settings.get("ui_theme", "system")
-        theme = ("dark" if darkdetect.isDark() else "light") if preference == "system" else preference
+        theme = (
+            "dark" if darkdetect.isDark() else "light"
+        ) if preference == "system" else preference
         sv_ttk.set_theme(theme if theme in {"light", "dark"} else "light")
 
     def _configure_style(self) -> None:
-        """Add hierarchy on top of Sun Valley without replacing its palette."""
+        """Build hierarchy on Sun Valley while retaining the Windows palette."""
+
         style = ttk.Style(self)
-        style.configure("PageTitle.TLabel", font=("Segoe UI Variable Display", 20, "bold"))
-        style.configure("SectionTitle.TLabel", font=("Segoe UI Variable Text", 11, "bold"))
-        style.configure("Muted.TLabel", font=("Segoe UI Variable Text", 9))
-        style.configure("Hero.TButton", font=("Segoe UI Variable Text", 10, "bold"), padding=(20, 11))
-        style.configure("Treeview", rowheight=36, font=("Segoe UI Variable Text", 10))
-        style.configure("Treeview.Heading", font=("Segoe UI Variable Text", 9, "bold"), padding=(7, 9))
-        self.minsize(1180, 700)
+        style.configure(
+            "Brand.TLabel",
+            font=("Segoe UI Variable Display", 16, "bold"),
+        )
+        style.configure(
+            "PageTitle.TLabel",
+            font=("Segoe UI Variable Display", 22, "bold"),
+        )
+        style.configure(
+            "HeroTitle.TLabel",
+            font=("Segoe UI Variable Display", 18, "bold"),
+        )
+        style.configure(
+            "SectionTitle.TLabel",
+            font=("Segoe UI Variable Text", 11, "bold"),
+        )
+        style.configure(
+            "Body.TLabel",
+            font=("Segoe UI Variable Text", 10),
+        )
+        style.configure(
+            "Muted.TLabel",
+            font=("Segoe UI Variable Text", 9),
+        )
+        style.configure(
+            "Status.TLabel",
+            font=("Segoe UI Variable Text", 10, "bold"),
+        )
+        style.configure(
+            "Metric.TLabel",
+            font=("Segoe UI Variable Display", 24, "bold"),
+        )
+        style.configure(
+            "Hero.TButton",
+            font=("Segoe UI Variable Text", 10, "bold"),
+            padding=(18, 10),
+        )
+        style.configure(
+            "Nav.TButton",
+            font=("Segoe UI Variable Text", 10),
+            padding=(12, 10),
+            anchor="w",
+        )
+        style.configure(
+            "NavActive.TButton",
+            font=("Segoe UI Variable Text", 10, "bold"),
+            padding=(12, 10),
+            anchor="w",
+        )
+        style.configure(
+            "Treeview",
+            rowheight=38,
+            font=("Segoe UI Variable Text", 10),
+        )
+        style.configure(
+            "Treeview.Heading",
+            font=("Segoe UI Variable Text", 9, "bold"),
+            padding=(7, 9),
+        )
+        self.minsize(1180, 720)
+
+    def _refresh_report_summary(self) -> None:
+        if not hasattr(self, "report_total_var"):
+            return
+        try:
+            dataset = build_report_dataset(
+                self.database,
+                kind=ReportKind.SUMMARY,
+                generated_at=datetime.now().astimezone().isoformat(),
+                controller_id=None,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "report_workspace_summary_failed type=%s",
+                type(exc).__name__,
+            )
+            return
+        totals = dataset.totals
+        self.report_total_var.set(str(totals.vouchers))
+        self.report_printed_var.set(str(totals.printed_vouchers))
+        self.report_used_var.set(str(totals.used_vouchers))
+        self.report_expired_var.set(str(totals.expired_vouchers))
+
+    def _update_operator_summary(self, stats) -> None:
+        if not hasattr(self, "home_to_print_var"):
+            return
+        active = 0
+        expired_count = 0
+        used = 0
+        to_print = 0
+        recent_rows = []
+        for voucher in self.vouchers:
+            expired = self._is_expired(voucher)
+            stat = stats.get(voucher.code_formatted)
+            state = "SCADUTO" if expired else self._print_state(stat)
+            if expired:
+                expired_count += 1
+            else:
+                active += 1
+                if state != "STAMPATO":
+                    to_print += 1
+            if voucher.used > 0:
+                used += 1
+            recent_rows.append(
+                (
+                    -int(voucher.create_time or 0),
+                    voucher.recipient or voucher.code_formatted,
+                    state,
+                    time_label(voucher.create_time),
+                )
+            )
+        self.home_to_print_var.set(str(to_print))
+        self.home_active_var.set(str(active))
+        self.home_used_var.set(str(used))
+        self.home_expired_var.set(str(expired_count))
+
+        if hasattr(self, "home_recent_tree"):
+            for iid in self.home_recent_tree.get_children():
+                self.home_recent_tree.delete(iid)
+            for _order, recipient, state, created in sorted(recent_rows)[:6]:
+                self.home_recent_tree.insert(
+                    "",
+                    "end",
+                    values=(recipient, state, created),
+                )
+        self._refresh_report_summary()
+        self._refresh_controller_workspace_status()
+
+    def _sync_selection_ui(self, iids=None) -> None:
+        """Keep checkbox state and native row highlighting in lockstep."""
+
+        super()._sync_selection_ui(iids)
+        selected_iids = [
+            iid
+            for iid, voucher in self.by_iid.items()
+            if voucher.id in self.checked_ids
+        ]
+        self.tree.selection_set(selected_iids)
+
+    def on_tree_click(self, event):
+        """Treat clicking the row as the print selection, not a second concept."""
+
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return
+        iid = self.tree.identify_row(event.y)
+        if not iid or iid not in self.by_iid:
+            return "break"
+        voucher = self.by_iid[iid]
+        if self._is_expired(voucher):
+            self.bell()
+            return "break"
+        if voucher.id in self.checked_ids:
+            self.checked_ids.remove(voucher.id)
+        else:
+            self.checked_ids.add(voucher.id)
+        self._sync_selection_ui((iid,))
+        return "break"
 
     def _history_stats_for(self, vouchers):
         """Return audit stats or block unsafe actions when history is unavailable."""
@@ -950,6 +1603,7 @@ class ModernVoucherApp(
         stats = self._history_stats_for(self.vouchers)
         if stats is None:
             self.count_var.set("Cronologia non disponibile  •  0 selezionati")
+            self._refresh_controller_workspace_status()
             return
         valid_ids = {v.id for v in self.vouchers if not self._is_expired(v)}
         self.checked_ids.intersection_update(valid_ids)
@@ -974,8 +1628,17 @@ class ModernVoucherApp(
             tags = ("expired",) if expired else (("unprinted",) if state == "DA STAMPARE" else (("pdfready",) if state == "PDF CREATO" else ()))
             iid = self.tree.insert("", "end", values=values, tags=tags)
             self.by_iid[iid] = voucher
-        self.count_var.set(f"{len(candidates)} visualizzati  •  {len(self.checked_ids)} selezionati")
-        self.action_var.set(f"PREPARA STAMPA  ({len(self.checked_ids)})" if self.checked_ids else "PREPARA STAMPA")
+        self.count_var.set(
+            f"{len(candidates)} visualizzati  •  "
+            f"{len(self.checked_ids)} selezionati"
+        )
+        self.action_var.set(
+            f"PREPARA STAMPA  ({len(self.checked_ids)})"
+            if self.checked_ids
+            else "PREPARA STAMPA"
+        )
+        self._update_operator_summary(stats)
+        self._sync_selection_ui()
 
     def select_unprinted(self) -> None:
         """Select every active voucher that has not yet recorded a print job."""

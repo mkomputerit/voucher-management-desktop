@@ -194,6 +194,9 @@ class ControllerConnectionMixin:
     def _connection_failed(self, exc: Exception) -> None:
         self.client = None
         self.connection_var.set("Connessione non riuscita")
+        callback = getattr(self, "_controller_operation_failed", None)
+        if callback is not None:
+            callback()
         self._show_network_error(
             "UniFi",
             exc,
@@ -260,6 +263,9 @@ class ControllerConnectionMixin:
             f"{site_label} • {tls_label}"
         )
         self.checked_ids.clear()
+        callback = getattr(self, "_controller_operation_succeeded", None)
+        if callback is not None:
+            callback()
         self.populate()
         self.logger.info(
             "controller_api_connected network_version=%s tls_pinned=%s",

@@ -580,6 +580,9 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     observed_at=datetime.now(timezone.utc).isoformat(),
                 )
             self.vouchers = snapshot
+            callback = getattr(self, "_controller_operation_succeeded", None)
+            if callback is not None:
+                callback()
             try:
                 self.create_guard.clear()
             except CreateMutationGuardError as exc:
@@ -597,6 +600,9 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             self.populate()
 
         def failed(exc: Exception) -> None:
+            callback = getattr(self, "_controller_operation_failed", None)
+            if callback is not None:
+                callback()
             self._show_network_error(
                 "Sincronizzazione",
                 exc,

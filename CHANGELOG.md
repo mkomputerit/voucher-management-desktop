@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.1.0 - Unreleased
+
+- Begin the operator-first desktop redesign with first-class Home, Voucher,
+  Report and Settings workspaces.
+- Move controller URL/API-key controls out of the main operational surface and
+  into the Controller settings area.
+- Add concise controller synchronization states (ready, local snapshot,
+  synchronizing, unreachable, not configured) backed by the durable
+  last-successful-sync timestamp.
+- Add Home operational metrics/recent activity and an embedded Report overview.
+- Make voucher row highlighting track the actual print selection so the
+  operator sees one unambiguous selection concept.
+
 ## 5.0.0 - 2026-09-27
 
 - Introduced the SQLite 5.0 persistence foundation with WAL mode, integrity
