@@ -248,6 +248,58 @@ def test_controller_profiles_can_be_renamed_deactivated_and_reactivated(tmp_path
         db.close()
 
 
+def test_recent_operator_activity_is_ordered_and_privacy_safe(tmp_path):
+    db = _db(tmp_path)
+    try:
+        db.record_backup_history(
+            started_at="2026-09-27T08:00:00+00:00",
+            completed_at="2026-09-27T08:01:00+00:00",
+            destination="MANUAL",
+            filename="backup.vmbk",
+            status="SUCCESS",
+            sha256="a" * 64,
+            backup_format=2,
+            schema_version=2,
+        )
+        controller = db.create_controller(
+            name="Reception",
+            api_root="https://controller.example",
+            created_at="2026-09-27T08:02:00+00:00",
+        )
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="voucher-activity",
+            code="1234567890",
+            imported_at="2026-09-27T08:02:00+00:00",
+            last_synced_at="2026-09-27T08:02:00+00:00",
+        )
+        with db.transaction() as connection:
+            connection.execute(
+                """INSERT INTO voucher_events(
+                       event_uuid, voucher_id, event_type, occurred_at,
+                       source, windows_user, details_json
+                   ) VALUES (?, ?, ?, ?, ?, ?, NULL)""",
+                (
+                    "activity-event",
+                    voucher,
+                    "RETENTION_ARCHIVED",
+                    "2026-09-27T08:03:00+00:00",
+                    "OPERATOR",
+                    "TEST\\operator",
+                ),
+            )
+
+        activity = db.recent_operator_activity(limit=5)
+
+        assert [row["kind"] for row in activity] == ["VOUCHER", "BACKUP"]
+        assert activity[0]["status"] == "RETENTION_ARCHIVED"
+        assert activity[1]["status"] == "SUCCESS"
+        assert all("code" not in row for row in activity)
+        assert all("filename" not in row for row in activity)
+    finally:
+        db.close()
+
+
 def test_record_print_audit_is_idempotent_and_sequences_reprints(tmp_path):
     db = _db(tmp_path)
     try:
