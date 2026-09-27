@@ -1,11 +1,12 @@
 [CmdletBinding()]
 param(
-    [string]$SourcePath = $PSScriptRoot,
+    [string]$SourcePath = "",
     [string]$InstallRoot = (Join-Path $env:ProgramFiles "Voucher Management"),
     [string]$DataRoot = (Join-Path $env:ProgramData "VoucherManagement"),
     [string]$OperatorGroup = "Voucher Management Operators",
     [string]$OperatorUser,
-    [switch]$SkipShortcut
+    [switch]$SkipShortcut,
+    [switch]$ConfigureOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -103,29 +104,41 @@ function Set-SharedDataAcl {
 
 Assert-Administrator
 
-$source = [IO.Path]::GetFullPath($SourcePath)
 $destination = [IO.Path]::GetFullPath($InstallRoot)
-if (-not (Test-Path -LiteralPath (Join-Path $source "VoucherManagement.exe") -PathType Leaf)) {
-    throw "VoucherManagement.exe non trovato nella cartella sorgente: $source"
-}
-if ($destination.StartsWith($source, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "La cartella di installazione non può essere contenuta nella sorgente."
-}
 
 $running = Get-Process -Name "VoucherManagement" -ErrorAction SilentlyContinue
 if ($running) {
     throw "Chiudere Voucher Management prima di installare o aggiornare."
 }
 
+if ($ConfigureOnly) {
+    if (-not (Test-Path -LiteralPath (Join-Path $destination "VoucherManagement.exe") -PathType Leaf)) {
+        throw "VoucherManagement.exe non trovato nella cartella installata: $destination"
+    }
+} else {
+    if ([string]::IsNullOrWhiteSpace($SourcePath)) {
+        $SourcePath = $PSScriptRoot
+    }
+    $source = [IO.Path]::GetFullPath($SourcePath)
+    if (-not (Test-Path -LiteralPath (Join-Path $source "VoucherManagement.exe") -PathType Leaf)) {
+        throw "VoucherManagement.exe non trovato nella cartella sorgente: $source"
+    }
+    if ($destination.StartsWith($source, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "La cartella di installazione non può essere contenuta nella sorgente."
+    }
+}
+
 $operator = Resolve-InteractiveUser -ExplicitUser $OperatorUser
 $group = Ensure-OperatorGroup -Name $OperatorGroup -Member $operator
 
-if (Test-Path -LiteralPath $destination) {
-    Remove-Item -LiteralPath $destination -Recurse -Force
-}
-New-Item -ItemType Directory -Force -Path $destination | Out-Null
-Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
-    Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force
+if (-not $ConfigureOnly) {
+    if (Test-Path -LiteralPath $destination) {
+        Remove-Item -LiteralPath $destination -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $destination | Out-Null
+    Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force
+    }
 }
 
 $marker = @{ format = 1; mode = "shared_programdata" } | ConvertTo-Json -Compress
