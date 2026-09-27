@@ -21,8 +21,8 @@ from .identity import (
     PRODUCT_NAME,
 )
 from .logo_validation import LogoValidationError, validate_logo_image
-from .onboarding import OnboardingState
-from .onboarding_ui import schedule_first_run_onboarding, startup_onboarding_state
+from .onboarding import LEGACY_MIGRATION_DECLINED_KEY, OnboardingState
+from .onboarding_ui import FirstRunWizard, schedule_first_run_onboarding, startup_onboarding_state
 from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
 from .report_ui import ReportDialog
@@ -620,11 +620,54 @@ class MigrationRequiredDialog(tk.Toplevel):
         ).pack(side="right")
         ttk.Button(
             actions,
+            text="Inizia nuova installazione",
+            command=self._start_fresh_installation,
+        ).pack(side="right", padx=(0, 8))
+        ttk.Button(
+            actions,
+            text="Ripristina backup…",
+            command=lambda: app.restore_backup(parent=self),
+        ).pack(side="right", padx=(0, 8))
+        ttk.Button(
+            actions,
             text="Migra dati…",
             command=lambda: app.migrate_per_user_data_to_shared(parent=self),
             style="Accent.TButton",
         ).pack(side="right", padx=(0, 8))
-        fit_dialog(self, app, min_width=680, min_height=260)
+        fit_dialog(self, app, min_width=760, min_height=290)
+
+    def _start_fresh_installation(self) -> None:
+        if not messagebox.askyesno(
+            "Nuova installazione",
+            "I dati precedenti nel profilo Windows verranno lasciati intatti "
+            "ma non saranno importati in questa installazione condivisa.\n\n"
+            "Continuare con una nuova configurazione?",
+            parent=self,
+        ):
+            return
+        try:
+            self.app.database.set_metadata_value(
+                LEGACY_MIGRATION_DECLINED_KEY,
+                "1",
+            )
+        except Exception as exc:
+            self.app.logger.error(
+                "legacy_migration_decline_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Nuova installazione",
+                "Impossibile registrare in sicurezza la scelta. "
+                "Nessun dato precedente è stato modificato.",
+                parent=self,
+            )
+            return
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
+        self.app.after_idle(lambda: FirstRunWizard(self.app))
 
     def _close_application(self) -> None:
         try:
