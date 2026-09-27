@@ -81,6 +81,9 @@ class SettingsDialog(tk.Toplevel):
         except (TypeError, ValueError):
             retention_days = DEFAULT_PRINT_RETENTION_DAYS
         self.print_retention_days = tk.StringVar(value=str(retention_days))
+        self.backup_on_close = tk.BooleanVar(
+            value=bool(s.get("backup_on_close", True))
+        )
 
         shell = ttk.Frame(self, padding=20)
         shell.pack(fill="both", expand=True)
@@ -280,7 +283,31 @@ class SettingsDialog(tk.Toplevel):
 
         ttk.Separator(frame).pack(fill="x", pady=22)
         ttk.Label(frame, text="Backup e ripristino", style="SectionTitle.TLabel").pack(anchor="w")
-        ttk.Label(frame, text="Il backup comprende configurazione, storico, PDF generati, loghi e la chiave portabile della cronologia. La API key UniFi non viene mai salvata.", style="Muted.TLabel", wraplength=560).pack(anchor="w", pady=(3, 12))
+        ttk.Label(
+            frame,
+            text=(
+                "Il backup comprende configurazione, storico, PDF generati, "
+                "loghi e la chiave portabile della cronologia. La API key UniFi "
+                "non viene mai salvata. I nuovi backup creati dall'interfaccia "
+                "sono sempre cifrati e autenticati."
+            ),
+            style="Muted.TLabel",
+            wraplength=560,
+        ).pack(anchor="w", pady=(3, 10))
+        ttk.Checkbutton(
+            frame,
+            text="Crea un backup cifrato prima della chiusura (consigliato)",
+            variable=self.backup_on_close,
+        ).pack(anchor="w", pady=(0, 10))
+        ttk.Label(
+            frame,
+            text=(
+                "Il backup automatico richiede la password alla chiusura e la "
+                "password non viene memorizzata."
+            ),
+            style="Muted.TLabel",
+            wraplength=560,
+        ).pack(anchor="w", pady=(0, 10))
         actions = ttk.Frame(frame)
         actions.pack(anchor="w")
         ttk.Button(
@@ -361,6 +388,7 @@ class SettingsDialog(tk.Toplevel):
             logo_path=self.logo.get().strip(),
             ui_theme=self.theme.get(),
             print_retention_days=retention_days,
+            backup_on_close=bool(self.backup_on_close.get()),
         )
         if old_theme != self.theme.get():
             self.app.apply_theme()
