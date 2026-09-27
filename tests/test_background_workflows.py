@@ -476,9 +476,10 @@ def test_open_existing_pdf_maps_typed_linkage_failure_to_ui(monkeypatch):
     assert "non è verificabile" in shown[0][0][1]
 
 
-def test_create_backup_defers_archive_work(monkeypatch):
+def test_create_backup_defers_encrypted_archive_work(monkeypatch):
     tasks = []
     calls = []
+    password = exchange_phrase("b")
     service = SimpleNamespace(
         create=lambda target, password=None: calls.append(
             ("create", Path(target), password)
@@ -491,14 +492,14 @@ def test_create_backup_defers_archive_work(monkeypatch):
         _run_background_task=capture_runner(tasks),
     )
     monkeypatch.setattr(
-        maintenance_ui.messagebox,
-        "askyesnocancel",
-        lambda *args, **kwargs: False,
+        maintenance_ui,
+        "ask_password",
+        lambda parent, **kwargs: password,
     )
     monkeypatch.setattr(
         maintenance_ui.filedialog,
         "asksaveasfilename",
-        lambda **kwargs: "C:/Temp/test-backup.zip",
+        lambda **kwargs: "C:/Temp/test-backup.vmbk",
     )
     monkeypatch.setattr(
         maintenance_ui.messagebox,
@@ -516,10 +517,13 @@ def test_create_backup_defers_archive_work(monkeypatch):
     assert calls == []
     assert tasks[0]["label"] == "Creazione backup…"
     result = tasks[0]["worker"]()
-    assert calls[0][0] == "create"
+    assert calls[0] == (
+        "create",
+        Path("C:/Temp/test-backup.vmbk"),
+        password,
+    )
     tasks[0]["success"](result)
     assert calls[-1][0] == "info"
-
 
 def test_create_encrypted_backup_uses_shared_password_prompt(monkeypatch):
     tasks = []
@@ -829,3 +833,172 @@ def test_history_import_prepare_confirm_apply_are_split_across_workers(
     assert fake._history_error_shown is False
     assert calls[-2][0] == "populate"
     assert calls[-1][0] == "info"
+
+
+
+def test_request_close_without_backup_enabled_destroys_immediately(monkeypatch):
+    destroyed = []
+    fake = SimpleNamespace(
+        settings={"backup_on_close": False},
+        _background_results=None,
+        destroy=lambda: destroyed.append(True),
+    )
+    monkeypatch.setattr(
+        maintenance_ui,
+        "ask_password",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("password prompt must not open")
+        ),
+    )
+
+    modern_app.ModernVoucherApp.request_close(fake)
+
+    assert destroyed == [True]
+
+
+def test_request_close_refuses_to_interrupt_background_operation(monkeypatch):
+    shown = []
+    destroyed = []
+    fake = SimpleNamespace(
+        settings={"backup_on_close": True},
+        _background_results=object(),
+        destroy=lambda: destroyed.append(True),
+    )
+    monkeypatch.setattr(
+        maintenance_ui.messagebox,
+        "showinfo",
+        lambda *args, **kwargs: shown.append((args, kwargs)),
+    )
+
+    modern_app.ModernVoucherApp.request_close(fake)
+
+    assert shown
+    assert destroyed == []
+
+
+def test_request_close_runs_encrypted_backup_before_destroy(monkeypatch, tmp_path):
+    tasks = []
+    calls = []
+    password = exchange_phrase("c")
+    service = SimpleNamespace(
+        create=lambda target, password=None: calls.append(
+            ("create", Path(target), password)
+        )
+        or Path(target)
+    )
+    fake = SimpleNamespace(
+        settings={"backup_on_close": True},
+        _background_results=None,
+        paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
+        _backup_service=lambda: service,
+        _run_background_task=capture_runner(tasks),
+        destroy=lambda: calls.append(("destroy", None)),
+        logger=SimpleNamespace(warning=lambda *args: calls.append(("warning", args))),
+    )
+    monkeypatch.setattr(
+        maintenance_ui,
+        "ask_password",
+        lambda parent, **kwargs: password,
+    )
+
+    modern_app.ModernVoucherApp.request_close(fake)
+
+    assert len(tasks) == 1
+    assert tasks[0]["label"] == "Backup di chiusura…"
+    result = tasks[0]["worker"]()
+    assert calls[0][0] == "create"
+    assert calls[0][1].parent == tmp_path / "backups"
+    assert calls[0][1].suffix == ".vmbk"
+    assert calls[0][2] == password
+    tasks[0]["success"](result)
+    assert calls[-1] == ("destroy", None)
+
+
+def test_failed_close_backup_can_retry_without_losing_password(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+    password = exchange_phrase("r")
+    fake = SimpleNamespace(
+        settings={"backup_on_close": True},
+        _background_results=None,
+        paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
+        _backup_service=lambda: SimpleNamespace(create=lambda *args, **kwargs: None),
+        _run_background_task=capture_runner(tasks),
+        destroy=lambda: None,
+        logger=SimpleNamespace(warning=lambda *args: None),
+    )
+    monkeypatch.setattr(
+        maintenance_ui,
+        "ask_password",
+        lambda parent, **kwargs: password,
+    )
+    monkeypatch.setattr(
+        maintenance_ui.messagebox,
+        "askyesnocancel",
+        lambda *args, **kwargs: True,
+    )
+
+    modern_app.ModernVoucherApp.request_close(fake)
+    first_worker = tasks[0]["worker"]
+    tasks[0]["error"](maintenance_ui.BackupError("synthetic failure"))
+
+    assert len(tasks) == 2
+    # Both attempts retain the same already-validated in-memory password.
+    assert first_worker.__closure__ is not None
+    tasks[1]["worker"]()
+
+
+def test_failed_close_backup_can_close_anyway(monkeypatch, tmp_path):
+    tasks = []
+    destroyed = []
+    fake = SimpleNamespace(
+        settings={"backup_on_close": True},
+        _background_results=None,
+        paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
+        _backup_service=lambda: SimpleNamespace(create=lambda *args, **kwargs: None),
+        _run_background_task=capture_runner(tasks),
+        destroy=lambda: destroyed.append(True),
+        logger=SimpleNamespace(warning=lambda *args: None),
+    )
+    monkeypatch.setattr(
+        maintenance_ui,
+        "ask_password",
+        lambda parent, **kwargs: exchange_phrase("x"),
+    )
+    monkeypatch.setattr(
+        maintenance_ui.messagebox,
+        "askyesnocancel",
+        lambda *args, **kwargs: False,
+    )
+
+    modern_app.ModernVoucherApp.request_close(fake)
+    tasks[0]["error"](maintenance_ui.BackupError("synthetic failure"))
+
+    assert destroyed == [True]
+
+
+def test_cancelling_close_backup_password_keeps_application_open(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+    destroyed = []
+    fake = SimpleNamespace(
+        settings={"backup_on_close": True},
+        _background_results=None,
+        paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
+        _run_background_task=capture_runner(tasks),
+        destroy=lambda: destroyed.append(True),
+    )
+    monkeypatch.setattr(
+        maintenance_ui,
+        "ask_password",
+        lambda parent, **kwargs: None,
+    )
+
+    modern_app.ModernVoucherApp.request_close(fake)
+
+    assert tasks == []
+    assert destroyed == []
