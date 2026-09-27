@@ -254,6 +254,11 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self.count_var = tk.StringVar(value="0 voucher")
         self.action_var = tk.StringVar(value="PREPARA STAMPA")
         self._build_ui()
+        # Route only an ordinary window-manager close through the 5.0
+        # disaster-recovery workflow. Internal destroy() calls used after a
+        # successful restore/migration intentionally bypass this hook.
+        close_handler = getattr(self, "request_close", self.destroy)
+        self.protocol("WM_DELETE_WINDOW", close_handler)
         self._populate_initial_snapshot()
         if logo_warning:
             messagebox.showwarning(
