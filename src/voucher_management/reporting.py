@@ -266,6 +266,10 @@ def build_report_dataset(
     if controller_id is None:
         controller_label = "Tutti i controller"
     else:
+        # Resolve from the controller table first so an empty scoped report
+        # still shows the selected controller. The row-derived fallback keeps
+        # old/partially named data readable; the final generic label is used
+        # only when neither source provides a display name.
         controller_label = (
             database.controller_name(controller_id)
             or (
