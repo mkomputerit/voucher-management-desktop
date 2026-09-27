@@ -1050,6 +1050,35 @@ COMMIT;
             return None
         return str(row["name"] or "").strip() or None
 
+    def recent_operator_activity(self, *, limit: int = 6) -> list[dict]:
+        """Return privacy-safe recent workstation activity for the Home page."""
+
+        bounded_limit = max(1, min(int(limit), 50))
+        rows = self.connection.execute(
+            """SELECT occurred_at, kind, status
+               FROM (
+                   SELECT occurred_at AS occurred_at,
+                          'VOUCHER' AS kind,
+                          event_type AS status
+                   FROM voucher_events
+                   UNION ALL
+                   SELECT COALESCE(submitted_at, created_at) AS occurred_at,
+                          'PRINT' AS kind,
+                          status AS status
+                   FROM print_jobs
+                   UNION ALL
+                   SELECT COALESCE(completed_at, started_at) AS occurred_at,
+                          'BACKUP' AS kind,
+                          status AS status
+                   FROM backup_history
+               )
+               WHERE occurred_at IS NOT NULL
+               ORDER BY occurred_at DESC
+               LIMIT ?""",
+            (bounded_limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def report_voucher_rows(
         self,
         *,
