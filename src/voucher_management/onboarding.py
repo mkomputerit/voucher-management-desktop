@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 from .database import Database
+from .identity import DEFAULT_STRUCTURE_TYPE, DEFAULT_WIFI_TITLE
 from .settings import SettingsStore
 
 
@@ -31,9 +33,9 @@ class OnboardingDraft:
 
     installation_name: str
     description: str = ""
-    structure_type: str = "Sede"
+    structure_type: str = DEFAULT_STRUCTURE_TYPE
     structure_name: str = ""
-    wifi_title: str = ""
+    wifi_title: str = DEFAULT_WIFI_TITLE
     logo_path: str = ""
     pdf_title: str = ""
     pdf_subtitle: str = ""
@@ -72,7 +74,7 @@ def validate_onboarding_draft(draft: OnboardingDraft) -> OnboardingDraft:
     installation_name = draft.installation_name.strip()
     structure_name = draft.structure_name.strip()
     wifi_title = draft.wifi_title.strip()
-    structure_type = draft.structure_type.strip() or "Sede"
+    structure_type = draft.structure_type.strip() or DEFAULT_STRUCTURE_TYPE
     if not installation_name:
         raise ValueError("Inserire un nome per questa installazione")
     if not structure_name:
@@ -133,7 +135,9 @@ def complete_onboarding(
         database.upsert_installation_profile(
             installation_name=clean.installation_name,
             description=clean.description,
-            logo_filename=clean.logo_path,
+            logo_filename=(
+                Path(clean.logo_path).name if clean.logo_path else ""
+            ),
             pdf_title=clean.pdf_title,
             pdf_subtitle=clean.pdf_subtitle,
             pdf_contact=clean.pdf_contact,
