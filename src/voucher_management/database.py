@@ -374,6 +374,131 @@ COMMIT;
         if result != "ok":
             raise RuntimeError(f"SQLite integrity check failed: {result}")
 
+    def installation_profile(self) -> sqlite3.Row | None:
+        """Return the singleton installation profile, if onboarding completed."""
+
+        return self.connection.execute(
+            "SELECT * FROM installation_profile WHERE id=1"
+        ).fetchone()
+
+    def upsert_installation_profile(
+        self,
+        *,
+        installation_name: str,
+        description: str,
+        logo_filename: str,
+        pdf_title: str,
+        pdf_subtitle: str,
+        pdf_contact: str,
+        pdf_notes: str,
+        observed_at: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        """Persist non-secret installation/PDF identity idempotently."""
+
+        values = (
+            installation_name.strip(),
+            description.strip(),
+            logo_filename.strip(),
+            pdf_title.strip(),
+            pdf_subtitle.strip(),
+            pdf_contact.strip(),
+            pdf_notes.strip(),
+            observed_at,
+            observed_at,
+        )
+
+        def write(db: sqlite3.Connection) -> None:
+            db.execute(
+                """INSERT INTO installation_profile (
+                       id, installation_name, description, logo_filename,
+                       pdf_title, pdf_subtitle, pdf_contact, pdf_notes,
+                       created_at, updated_at
+                   ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       installation_name=excluded.installation_name,
+                       description=excluded.description,
+                       logo_filename=excluded.logo_filename,
+                       pdf_title=excluded.pdf_title,
+                       pdf_subtitle=excluded.pdf_subtitle,
+                       pdf_contact=excluded.pdf_contact,
+                       pdf_notes=excluded.pdf_notes,
+                       updated_at=excluded.updated_at""",
+                values,
+            )
+
+        if connection is not None:
+            write(connection)
+            return
+        with self.transaction() as db:
+            write(db)
+
+    def retention_policy(self) -> sqlite3.Row | None:
+        """Return the singleton conservative voucher-retention policy."""
+
+        return self.connection.execute(
+            "SELECT * FROM retention_policy WHERE id=1"
+        ).fetchone()
+
+    def upsert_retention_policy(
+        self,
+        *,
+        unused_unprinted_days: int,
+        observed_at: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        """Persist the only currently supported conservative retention policy."""
+
+        days = int(unused_unprinted_days)
+        if days < 1:
+            raise ValueError("La retention voucher deve essere di almeno 1 giorno")
+
+        def write(db: sqlite3.Connection) -> None:
+            db.execute(
+                """INSERT INTO retention_policy (
+                       id, unused_unprinted_days, protect_used,
+                       protect_printed, updated_at
+                   ) VALUES (1, ?, 1, 1, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       unused_unprinted_days=excluded.unused_unprinted_days,
+                       protect_used=1,
+                       protect_printed=1,
+                       updated_at=excluded.updated_at""",
+                (days, observed_at),
+            )
+
+        if connection is not None:
+            write(connection)
+            return
+        with self.transaction() as db:
+            write(db)
+
+    def onboarding_has_operational_data(self) -> bool:
+        """Return whether the database contains facts from an existing install.
+
+        A fresh 5.0 first run has only schema/bootstrap metadata. Existing
+        controllers, vouchers, print/audit facts or migration evidence mean the
+        operator is upgrading/restoring and must not be forced through a
+        destructive 'new installation' flow.
+        """
+
+        tables = (
+            "controllers",
+            "vouchers",
+            "voucher_events",
+            "print_jobs",
+            "migration_runs",
+            "legacy_audit_events",
+        )
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            count = self.connection.execute(
+                f"SELECT COUNT(*) FROM {quoted}"
+            ).fetchone()[0]
+            if int(count) > 0:
+                return True
+        return False
+
     def create_controller(
         self, *, name: str, api_root: str, created_at: str,
         description: str = "", cert_sha256: str = "",
