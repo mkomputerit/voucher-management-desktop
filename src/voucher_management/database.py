@@ -780,6 +780,7 @@ COMMIT;
                     v.expires_at,
                     v.expired,
                     v.present_on_controller,
+                    v.archived_at,
                     v.last_seen_at,
                     v.last_synced_at,
                     COUNT(vp.id) AS print_jobs,
