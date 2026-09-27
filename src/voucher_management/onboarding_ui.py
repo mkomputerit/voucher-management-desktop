@@ -758,6 +758,7 @@ class FirstRunWizard(tk.Toplevel):
                 result.info,
                 result.vouchers,
                 profile_name=self.controller_name_var.get().strip(),
+                observed_at=result.observed_at,
             )
             draft = OnboardingDraft(
                 installation_name=self.installation_name_var.get(),
