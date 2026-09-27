@@ -21,6 +21,8 @@ from .identity import (
     PRODUCT_NAME,
 )
 from .logo_validation import LogoValidationError, validate_logo_image
+from .onboarding import OnboardingState
+from .onboarding_ui import schedule_first_run_onboarding
 from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
 from .report_ui import ReportDialog
@@ -586,6 +588,29 @@ class ModernVoucherApp(
     VoucherApp,
 ):
     """Windows 11 operator shell around the stable voucher engine."""
+
+    def __init__(self):
+        super().__init__()
+        if not self.winfo_exists():
+            return
+        state = schedule_first_run_onboarding(self)
+        if state is OnboardingState.MIGRATION_AVAILABLE:
+            self.logger.info("onboarding_deferred legacy_migration_available=true")
+            self.after_idle(self._show_legacy_migration_available)
+        elif state is OnboardingState.EXISTING_INSTALLATION:
+            self.logger.info(
+                "onboarding_skipped existing_installation_without_profile=true"
+            )
+
+    def _show_legacy_migration_available(self) -> None:
+        messagebox.showinfo(
+            "Dati precedenti rilevati",
+            "Sono stati trovati dati di una precedente installazione nel "
+            "profilo Windows corrente. Prima di configurare una nuova "
+            "postazione condivisa, aprire Impostazioni e usare "
+            "“Migra dati di questo utente…”.",
+            parent=self,
+        )
 
     def _build_ui(self) -> None:
         self.apply_theme()
