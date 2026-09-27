@@ -41,7 +41,8 @@ The application currently provides:
 - review-driven voucher retention with a conservative 180-day default:
   used, printed or PDF-generated vouchers are protected, while approved
   old/absent unused rows with no generated PDF are minimized without deleting
-  their historical audit record;
+  their historical audit record; unverifiable HMAC history blocks retention
+  rather than guessing whether a credential-bearing document exists;
 - persistent custom logo library;
 - Windows 11 light/dark themes.
 
