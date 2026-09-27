@@ -11,3 +11,6 @@ def test_package_version_matches_release_version_file():
 
     assert release_version
     assert __version__ == release_version
+
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert f"## {release_version} -" in changelog
