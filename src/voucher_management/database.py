@@ -766,3 +766,303 @@ COMMIT;
             duration_minutes, authorized_guest_limit, authorized_guest_count,
             activated_at, expires_at, int(expired), data_limit_mb,
             download_limit_kbps, upload_limit_kbps, last_synced_at, last_synced_at,
+        )
+        def write(db: sqlite3.Connection) -> int:
+            db.execute(
+                """INSERT INTO vouchers (
+                       controller_id, unifi_id, code, name, created_at, imported_at,
+                       duration_minutes, authorized_guest_limit, authorized_guest_count,
+                       activated_at, expires_at, expired, data_limit_mb,
+                       download_limit_kbps, upload_limit_kbps, last_seen_at, last_synced_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(controller_id, unifi_id) DO UPDATE SET
+                       code=excluded.code, name=excluded.name, created_at=excluded.created_at,
+                       duration_minutes=excluded.duration_minutes,
+                       authorized_guest_limit=excluded.authorized_guest_limit,
+                       authorized_guest_count=excluded.authorized_guest_count,
+                       activated_at=excluded.activated_at, expires_at=excluded.expires_at,
+                       expired=excluded.expired, data_limit_mb=excluded.data_limit_mb,
+                       download_limit_kbps=excluded.download_limit_kbps,
+                       upload_limit_kbps=excluded.upload_limit_kbps,
+                       present_on_controller=1, archived_at=NULL,
+                       last_seen_at=excluded.last_seen_at,
+                       last_synced_at=excluded.last_synced_at""",
+                values,
+            )
+            row = db.execute(
+                "SELECT id FROM vouchers WHERE controller_id=? AND unifi_id=?",
+                (controller_id, unifi_id),
+            ).fetchone()
+            return int(row["id"])
+
+        if connection is not None:
+            return write(connection)
+        with self.transaction() as db:
+            return write(db)
+
+    def print_summary(self, voucher_id: int) -> PrintAuditSummary:
+        """Return immutable print totals used before allowing a duplicate."""
+
+        row = self.connection.execute(
+            """SELECT COUNT(*) AS jobs,
+                      COALESCE(SUM(physical_copies), 0) AS copies,
+                      COALESCE(MIN(printed_at), '') AS first_at,
+                      COALESCE(MAX(printed_at), '') AS last_at
+               FROM voucher_prints WHERE voucher_id=?""",
+            (voucher_id,),
+        ).fetchone()
+        return PrintAuditSummary(
+            print_jobs=int(row["jobs"]),
+            physical_copies=int(row["copies"]),
+            first_printed_at=str(row["first_at"]),
+            last_printed_at=str(row["last_at"]),
+        )
+
+    def print_summaries_for_codes(
+        self,
+        *,
+        controller_id: int,
+        codes: list[str],
+    ) -> dict[str, PrintAuditSummary]:
+        """Return print facts keyed by canonical voucher code.
+
+        Code lookup is fail-closed: a missing or duplicated code cannot be used
+        to decide whether a physical reprint warning is required.
+        """
+
+        canonical_codes = {
+            str(code).strip().replace("-", "")
+            for code in codes
+            if str(code).strip()
+        }
+        result: dict[str, PrintAuditSummary] = {}
+        for code in canonical_codes:
+            rows = self.connection.execute(
+                """SELECT id FROM vouchers
+                   WHERE controller_id=? AND REPLACE(code, '-', '')=?
+                   ORDER BY id""",
+                (controller_id, code),
+            ).fetchall()
+            if len(rows) != 1:
+                raise RuntimeError(
+                    "Voucher code is missing or ambiguous in the local database"
+                )
+            result[code] = self.print_summary(int(rows[0]["id"]))
+        return result
+
+    def record_print_audit(
+        self,
+        *,
+        controller_id: int,
+        audit_id: str,
+        codes: list[str],
+        output_file: str,
+        document_copies: int,
+        printed_at: str,
+        windows_user: str,
+    ) -> None:
+        """Persist one physical-print job exactly once.
+
+        The legacy HMAC history remains the crash boundary during Milestone A.
+        SQLite receives the same stable audit_id so an audit-only retry is
+        idempotent and can never create an extra reprint sequence.
+        """
+
+        normalized_audit_id = str(audit_id).strip()
+        normalized_user = str(windows_user).strip()
+        normalized_time = str(printed_at).strip()
+        if not normalized_audit_id:
+            raise ValueError("print audit id is required")
+        if not normalized_time:
+            raise ValueError("printed_at is required")
+        if not normalized_user:
+            raise ValueError("windows_user is required")
+        if document_copies < 1:
+            raise ValueError("document_copies must be positive")
+
+        # PDF/history use the human-readable 12345-67890 form while UniFi
+        # may persist the same code without the separator. Resolve by canonical
+        # digits so print audit does not depend on presentation formatting.
+        counts = Counter(
+            str(code).strip().replace("-", "")
+            for code in codes
+            if str(code).strip()
+        )
+        if not counts:
+            raise ValueError("at least one voucher code is required")
+
+        with self.transaction() as db:
+            resolved: dict[str, int] = {}
+            for code in counts:
+                rows = db.execute(
+                    """SELECT id FROM vouchers
+                       WHERE controller_id=? AND REPLACE(code, '-', '')=?
+                       ORDER BY id""",
+                    (controller_id, code),
+                ).fetchall()
+                if len(rows) != 1:
+                    raise RuntimeError(
+                        "Voucher code is missing or ambiguous in the local database"
+                    )
+                resolved[code] = int(rows[0]["id"])
+
+            expected_prints = {
+                voucher_id: labels * document_copies
+                for code, labels in counts.items()
+                for voucher_id in (resolved[code],)
+            }
+            existing = db.execute(
+                "SELECT * FROM print_jobs WHERE print_job_uuid=?",
+                (normalized_audit_id,),
+            ).fetchone()
+            if existing is not None:
+                comparable = {
+                    "submitted_at": normalized_time,
+                    "windows_user": normalized_user,
+                    "output_file": str(output_file),
+                    "document_copies": document_copies,
+                    "status": "AUDITED",
+                }
+                if any(existing[key] != value for key, value in comparable.items()):
+                    raise RuntimeError(
+                        "Print audit id already exists with different job data"
+                    )
+                actual = {
+                    int(row["voucher_id"]): int(row["physical_copies"])
+                    for row in db.execute(
+                        """SELECT voucher_id, physical_copies
+                           FROM voucher_prints WHERE print_job_id=?""",
+                        (existing["id"],),
+                    )
+                }
+                if actual != expected_prints:
+                    raise RuntimeError(
+                        "Print audit id already exists with different voucher data"
+                    )
+                return
+
+            cursor = db.execute(
+                """INSERT INTO print_jobs
+                   (print_job_uuid, created_at, submitted_at, windows_user,
+                    output_file, document_copies, status)
+                   VALUES (?, ?, ?, ?, ?, ?, 'AUDITED')""",
+                (
+                    normalized_audit_id,
+                    normalized_time,
+                    normalized_time,
+                    normalized_user,
+                    str(output_file),
+                    document_copies,
+                ),
+            )
+            print_job_id = int(cursor.lastrowid)
+
+            for voucher_id, physical_copies in expected_prints.items():
+                row = db.execute(
+                    """SELECT COALESCE(MAX(print_sequence), 0) AS sequence
+                       FROM voucher_prints WHERE voucher_id=?""",
+                    (voucher_id,),
+                ).fetchone()
+                sequence = int(row["sequence"]) + 1
+                db.execute(
+                    """INSERT INTO voucher_prints
+                       (print_job_id, voucher_id, printed_at, windows_user,
+                        physical_copies, print_sequence, is_reprint)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        print_job_id,
+                        voucher_id,
+                        normalized_time,
+                        normalized_user,
+                        physical_copies,
+                        sequence,
+                        int(sequence > 1),
+                    ),
+                )
+
+    def controller_name(self, controller_id: int) -> str | None:
+        """Return one persisted non-secret controller display name."""
+
+        row = self.connection.execute(
+            "SELECT name FROM controllers WHERE id=?",
+            (int(controller_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["name"] or "").strip() or None
+
+    def report_voucher_rows(
+        self,
+        *,
+        controller_id: int | None = None,
+    ) -> list[sqlite3.Row]:
+        """Return durable voucher facts aggregated for reporting.
+
+        The query deliberately returns atomic/current facts plus print
+        aggregates. It does not precompute business labels such as "used" or
+        "printed but never used"; those remain pure reporting policy so the
+        same database facts can support multiple report views.
+        """
+
+        where = ""
+        params: tuple[object, ...] = ()
+        if controller_id is not None:
+            where = "WHERE v.controller_id=?"
+            params = (int(controller_id),)
+
+        return self.connection.execute(
+            f"""SELECT
+                    v.id AS voucher_id,
+                    v.controller_id,
+                    c.name AS controller_name,
+                    v.code,
+                    v.name,
+                    v.assigned_to,
+                    v.created_at,
+                    v.imported_at,
+                    v.duration_minutes,
+                    v.authorized_guest_limit,
+                    v.authorized_guest_count,
+                    v.activated_at,
+                    v.expires_at,
+                    v.expired,
+                    v.present_on_controller,
+                    v.archived_at,
+                    v.last_seen_at,
+                    v.last_synced_at,
+                    COUNT(vp.id) AS print_jobs,
+                    COALESCE(SUM(vp.physical_copies), 0) AS physical_copies,
+                    COALESCE(SUM(CASE WHEN vp.is_reprint=1 THEN 1 ELSE 0 END), 0)
+                        AS reprint_jobs,
+                    COALESCE(
+                        SUM(
+                            CASE WHEN vp.is_reprint=1
+                                 THEN vp.physical_copies ELSE 0 END
+                        ),
+                        0
+                    ) AS reprint_copies,
+                    COALESCE(MIN(vp.printed_at), '') AS first_printed_at,
+                    COALESCE(MAX(vp.printed_at), '') AS last_printed_at,
+                    COALESCE(GROUP_CONCAT(DISTINCT vp.windows_user), '')
+                        AS print_operators
+               FROM vouchers AS v
+               -- INNER JOIN is intentional. vouchers.controller_id is a
+               -- foreign key with enforcement enabled, so a referenced
+               -- controller cannot disappear while voucher history exists.
+               JOIN controllers AS c ON c.id=v.controller_id
+               LEFT JOIN voucher_prints AS vp ON vp.voucher_id=v.id
+               {where}
+               GROUP BY v.id
+               ORDER BY
+                   COALESCE(v.created_at, v.imported_at) DESC,
+                   v.id DESC""",
+            params,
+        ).fetchall()
+
+    @staticmethod
+    def encode_event_details(details: dict | None) -> str | None:
+        """Serialize optional structured audit details deterministically."""
+
+        if details is None:
+            return None
+        return json.dumps(details, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
