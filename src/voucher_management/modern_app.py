@@ -33,6 +33,7 @@ from .data_maintenance_ui import DataMaintenanceMixin
 from .controller_connection_ui import ControllerConnectionMixin
 from .voucher_deletion_ui import VoucherDeletionMixin
 from .workspace_state import build_controller_workspace_status
+from .workspace_overview import load_recent_workspace_activity
 
 
 def audit_time_label(value: str) -> str:
@@ -714,7 +715,7 @@ class ModernVoucherApp(
         MigrationRequiredDialog(self)
 
     def _build_ui(self) -> None:
-        """Build the operator-first 5.1 workspace without changing engine logic."""
+        """Build the operator-first workspace around the stable 5.x engine."""
 
         self.apply_theme()
         self._configure_style()
@@ -724,12 +725,29 @@ class ModernVoucherApp(
         self._controller_busy_label = ""
         self.workspace_title_var = tk.StringVar(value="Home")
         self.workspace_subtitle_var = tk.StringVar(
-            value="Panoramica operativa della postazione"
+            value="Panoramica generale e accesso rapido alle funzioni principali"
+        )
+        profile = self.database.installation_profile()
+        installation_label = (
+            str(profile["installation_name"] or "").strip()
+            if profile is not None
+            else ""
+        )
+        self.installation_display_var = tk.StringVar(
+            value=(
+                installation_label
+                or str(self.settings.get("structure_name", "") or "").strip()
+                or PRODUCT_NAME
+            )
         )
         self.controller_health_var = tk.StringVar()
         self.controller_health_detail_var = tk.StringVar()
-        self.home_ready_var = tk.StringVar(value="Pronto")
-        self.home_sync_action_var = tk.StringVar(value="Riconnetti")
+        self.sidebar_sync_var = tk.StringVar(value="Ultimo aggiornamento\n—")
+        self.home_controller_name_var = tk.StringVar(value="Nessun controller")
+        self.home_last_sync_var = tk.StringVar(value="Mai")
+        self.home_sync_detail_var = tk.StringVar()
+        self.home_ready_var = tk.StringVar(value="Controller da configurare")
+        self.home_sync_action_var = tk.StringVar(value="Configura controller")
         self.home_to_print_var = tk.StringVar(value="0")
         self.home_active_var = tk.StringVar(value="0")
         self.home_used_var = tk.StringVar(value="0")
@@ -744,28 +762,41 @@ class ModernVoucherApp(
         root.columnconfigure(1, weight=1)
         root.rowconfigure(0, weight=1)
 
-        sidebar = ttk.Frame(root, padding=(16, 20))
+        sidebar = ttk.Frame(
+            root,
+            style="Sidebar.TFrame",
+            padding=(18, 22),
+            width=232,
+        )
         sidebar.grid(row=0, column=0, sticky="ns")
-        ttk.Label(
-            sidebar,
-            text=PRODUCT_NAME,
-            style="Brand.TLabel",
-        ).pack(anchor="w", pady=(0, 4))
-        ttk.Label(
-            sidebar,
-            text="Gestione voucher Wi-Fi",
-            style="Muted.TLabel",
-        ).pack(anchor="w", pady=(0, 24))
+        sidebar.grid_propagate(False)
+        sidebar.columnconfigure(0, weight=1)
+        sidebar.rowconfigure(2, weight=1)
 
+        brand = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        brand.grid(row=0, column=0, sticky="ew", pady=(0, 22))
+        ttk.Label(
+            brand,
+            text=PRODUCT_NAME,
+            style="SidebarBrand.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            brand,
+            text="Gestione voucher Wi-Fi",
+            style="SidebarMuted.TLabel",
+        ).pack(anchor="w", pady=(3, 0))
+
+        nav = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        nav.grid(row=1, column=0, sticky="new")
         self._nav_buttons = {}
         for key, label in (
-            ("home", "Home"),
-            ("voucher", "Voucher"),
-            ("report", "Report"),
-            ("settings", "Impostazioni"),
+            ("home", "⌂   Home"),
+            ("voucher", "▣   Voucher"),
+            ("report", "▤   Report"),
+            ("settings", "⚙   Impostazioni"),
         ):
             button = ttk.Button(
-                sidebar,
+                nav,
                 text=label,
                 style="Nav.TButton",
                 command=lambda target=key: self._show_workspace(target),
@@ -774,27 +805,41 @@ class ModernVoucherApp(
             button.pack(fill="x", pady=3)
             self._nav_buttons[key] = button
 
-        ttk.Separator(sidebar).pack(fill="x", pady=(20, 14))
+        status_box = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        status_box.grid(row=3, column=0, sticky="sew")
+        ttk.Separator(status_box).pack(fill="x", pady=(0, 14))
         ttk.Label(
-            sidebar,
-            textvariable=self.controller_health_var,
-            style="Status.TLabel",
-            wraplength=190,
+            status_box,
+            text="Stato applicazione",
+            style="SidebarMuted.TLabel",
         ).pack(anchor="w")
-        ttk.Label(
-            sidebar,
-            textvariable=self.controller_health_detail_var,
-            style="Muted.TLabel",
+        self.sidebar_status_label = ttk.Label(
+            status_box,
+            textvariable=self.controller_health_var,
+            style="SidebarStatus.TLabel",
             wraplength=190,
-        ).pack(anchor="w", pady=(4, 0))
+        )
+        self.sidebar_status_label.pack(anchor="w", pady=(6, 2))
+        ttk.Label(
+            status_box,
+            textvariable=self.sidebar_sync_var,
+            style="SidebarMuted.TLabel",
+            wraplength=190,
+        ).pack(anchor="w", pady=(8, 10))
+        self.sidebar_action_button = ttk.Button(
+            status_box,
+            textvariable=self.home_sync_action_var,
+            command=self._home_sync_or_connect,
+        )
+        self.sidebar_action_button.pack(fill="x")
 
-        main = ttk.Frame(root, padding=(26, 18, 26, 22))
+        main = ttk.Frame(root, padding=(28, 20, 28, 24))
         main.grid(row=0, column=1, sticky="nsew")
         main.columnconfigure(0, weight=1)
         main.rowconfigure(2, weight=1)
 
         header = ttk.Frame(main)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         title_box = ttk.Frame(header)
         title_box.pack(side="left", fill="x", expand=True)
         ttk.Label(
@@ -807,6 +852,11 @@ class ModernVoucherApp(
             textvariable=self.workspace_subtitle_var,
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(2, 0))
+        ttk.Label(
+            header,
+            textvariable=self.installation_display_var,
+            style="HeaderMeta.TLabel",
+        ).pack(side="right", anchor="ne", padx=(20, 0), pady=(5, 0))
 
         self.background_operation_var = tk.StringVar()
         progress_box = ttk.Frame(main)
@@ -851,6 +901,7 @@ class ModernVoucherApp(
             self.create_button,
             self.home_create_button,
             self.home_sync_button,
+            self.sidebar_action_button,
             self.refresh_button,
             self.delete_button,
             self.print_button,
@@ -862,52 +913,29 @@ class ModernVoucherApp(
         self._refresh_controller_workspace_status()
 
     def _build_home_workspace(self, frame: ttk.Frame) -> None:
-        frame.columnconfigure(0, weight=1)
+        """Build the operator dashboard shown after startup."""
 
-        hero = ttk.Frame(frame, padding=(0, 4, 0, 18))
-        hero.grid(row=0, column=0, sticky="ew")
-        hero.columnconfigure(0, weight=1)
-        ttk.Label(
-            hero,
-            text="Postazione voucher",
-            style="HeroTitle.TLabel",
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            hero,
-            text=(
-                "Crea e stampa voucher senza dover gestire i dettagli tecnici "
-                "del controller."
-            ),
-            style="Body.TLabel",
-            wraplength=720,
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        quick = ttk.Frame(hero)
-        quick.grid(row=0, column=1, rowspan=2, sticky="e")
-        self.home_create_button = ttk.Button(
-            quick,
-            text="＋ Nuovo voucher",
-            command=self.create,
-            style="Hero.TButton",
-        )
-        self.home_create_button.pack(side="left")
-        self.home_sync_button = ttk.Button(
-            quick,
-            textvariable=self.home_sync_action_var,
-            command=self._home_sync_or_connect,
-        )
-        self.home_sync_button.pack(side="left", padx=(10, 0))
+        frame.columnconfigure(0, weight=3)
+        frame.columnconfigure(1, weight=1)
+        frame.rowconfigure(1, weight=1)
+        frame.rowconfigure(2, weight=1)
 
         metrics = ttk.Frame(frame)
-        metrics.grid(row=1, column=0, sticky="ew", pady=(0, 18))
+        metrics.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 16))
         for column in range(4):
             metrics.columnconfigure(column, weight=1)
-        for column, (label, variable) in enumerate((
-            ("Da stampare", self.home_to_print_var),
-            ("Attivi", self.home_active_var),
-            ("Utilizzati", self.home_used_var),
-            ("Scaduti", self.home_expired_var),
+        for column, (label, variable, hint) in enumerate((
+            ("Da stampare", self.home_to_print_var, "pronti per l'operatore"),
+            ("Attivi", self.home_active_var, "voucher disponibili"),
+            ("Utilizzati", self.home_used_var, "almeno un utilizzo"),
+            ("Scaduti", self.home_expired_var, "nello storico locale"),
         )):
-            card = ttk.Labelframe(metrics, text=label, padding=(16, 12))
+            card = ttk.Labelframe(
+                metrics,
+                text=label,
+                style="Card.TLabelframe",
+                padding=(16, 12),
+            )
             card.grid(
                 row=0,
                 column=column,
@@ -919,53 +947,148 @@ class ModernVoucherApp(
                 textvariable=variable,
                 style="Metric.TLabel",
             ).pack(anchor="w")
-
-        status = ttk.Labelframe(
-            frame,
-            text="Stato applicazione",
-            padding=(18, 14),
-        )
-        status.grid(row=2, column=0, sticky="ew", pady=(0, 18))
-        status.columnconfigure(0, weight=1)
-        ttk.Label(
-            status,
-            textvariable=self.controller_health_var,
-            style="SectionTitle.TLabel",
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            status,
-            textvariable=self.controller_health_detail_var,
-            style="Muted.TLabel",
-            wraplength=760,
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        ttk.Button(
-            status,
-            text="Apri impostazioni controller",
-            command=lambda: self._show_workspace("settings"),
-        ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(18, 0))
+            ttk.Label(
+                card,
+                text=hint,
+                style="Muted.TLabel",
+            ).pack(anchor="w", pady=(2, 0))
 
         recent = ttk.Labelframe(
             frame,
-            text="Attività recente",
+            text="Voucher recenti",
+            style="Card.TLabelframe",
             padding=(12, 10),
         )
-        recent.grid(row=3, column=0, sticky="nsew")
-        frame.rowconfigure(3, weight=1)
+        recent.grid(row=1, column=0, sticky="nsew", padx=(0, 12), pady=(0, 12))
         recent.columnconfigure(0, weight=1)
-        recent.rowconfigure(0, weight=1)
+        recent.rowconfigure(1, weight=1)
+        recent_header = ttk.Frame(recent)
+        recent_header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(
+            recent_header,
+            text="Ultimi voucher disponibili nella postazione",
+            style="Muted.TLabel",
+        ).pack(side="left")
+        self.home_create_button = ttk.Button(
+            recent_header,
+            text="＋ Nuovo voucher",
+            command=self.create,
+            style="Accent.TButton",
+        )
+        self.home_create_button.pack(side="right")
         self.home_recent_tree = ttk.Treeview(
             recent,
-            columns=("recipient", "state", "created"),
+            columns=("code", "recipient", "state", "expires", "created"),
+            show="headings",
+            height=7,
+        )
+        for key, label, width, anchor in (
+            ("code", "Voucher", 125, "center"),
+            ("recipient", "Destinatario", 260, "w"),
+            ("state", "Stato", 125, "center"),
+            ("expires", "Scadenza", 145, "center"),
+            ("created", "Creato", 145, "center"),
+        ):
+            self.home_recent_tree.heading(key, text=label)
+            self.home_recent_tree.column(
+                key,
+                width=width,
+                anchor=anchor,
+                stretch=(key == "recipient"),
+            )
+        self.home_recent_tree.grid(row=1, column=0, sticky="nsew")
+
+        controller = ttk.Labelframe(
+            frame,
+            text="Stato controller UniFi",
+            style="Card.TLabelframe",
+            padding=(18, 14),
+        )
+        controller.grid(row=1, column=1, sticky="nsew", pady=(0, 12))
+        self.home_status_title_label = ttk.Label(
+            controller,
+            textvariable=self.home_ready_var,
+            style="Status.TLabel",
+        )
+        self.home_status_title_label.pack(anchor="w")
+        ttk.Label(
+            controller,
+            textvariable=self.home_sync_detail_var,
+            style="Muted.TLabel",
+            wraplength=300,
+        ).pack(anchor="w", pady=(5, 14))
+        ttk.Separator(controller).pack(fill="x", pady=(0, 12))
+        ttk.Label(
+            controller,
+            text="Controller",
+            style="Muted.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            controller,
+            textvariable=self.home_controller_name_var,
+            style="SectionTitle.TLabel",
+            wraplength=300,
+        ).pack(anchor="w", pady=(2, 10))
+        ttk.Label(
+            controller,
+            text="Ultima sincronizzazione",
+            style="Muted.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            controller,
+            textvariable=self.home_last_sync_var,
+            style="Body.TLabel",
+        ).pack(anchor="w", pady=(2, 14))
+        self.home_sync_button = ttk.Button(
+            controller,
+            textvariable=self.home_sync_action_var,
+            command=self._home_sync_or_connect,
+            style="Accent.TButton",
+        )
+        self.home_sync_button.pack(fill="x")
+
+        activity = ttk.Labelframe(
+            frame,
+            text="Attività recenti",
+            style="Card.TLabelframe",
+            padding=(12, 10),
+        )
+        activity.grid(row=2, column=0, sticky="nsew", padx=(0, 12))
+        activity.columnconfigure(0, weight=1)
+        activity.rowconfigure(0, weight=1)
+        self.home_activity_tree = ttk.Treeview(
+            activity,
+            columns=("time", "activity", "detail"),
             show="headings",
             height=6,
         )
-        self.home_recent_tree.heading("recipient", text="Voucher / destinatario")
-        self.home_recent_tree.heading("state", text="Stato")
-        self.home_recent_tree.heading("created", text="Creazione")
-        self.home_recent_tree.column("recipient", width=360, anchor="w")
-        self.home_recent_tree.column("state", width=150, anchor="center")
-        self.home_recent_tree.column("created", width=170, anchor="center")
-        self.home_recent_tree.grid(row=0, column=0, sticky="nsew")
+        self.home_activity_tree.heading("time", text="Quando")
+        self.home_activity_tree.heading("activity", text="Attività")
+        self.home_activity_tree.heading("detail", text="Dettaglio")
+        self.home_activity_tree.column("time", width=140, anchor="center", stretch=False)
+        self.home_activity_tree.column("activity", width=190, anchor="w", stretch=False)
+        self.home_activity_tree.column("detail", width=420, anchor="w", stretch=True)
+        self.home_activity_tree.grid(row=0, column=0, sticky="nsew")
+
+        quick = ttk.Labelframe(
+            frame,
+            text="Azioni rapide",
+            style="Card.TLabelframe",
+            padding=(14, 12),
+        )
+        quick.grid(row=2, column=1, sticky="nsew")
+        for text, command, primary in (
+            ("＋  Crea nuovo voucher", self.create, True),
+            ("Vai ai voucher", lambda: self._show_workspace("voucher"), False),
+            ("Apri report", lambda: self._show_workspace("report"), False),
+            ("Vai alle impostazioni", lambda: self._show_workspace("settings"), False),
+        ):
+            ttk.Button(
+                quick,
+                text=text,
+                command=command,
+                style="Accent.TButton" if primary else "TButton",
+            ).pack(fill="x", pady=(0, 8))
 
     def _build_voucher_workspace(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(0, weight=1)
@@ -1174,46 +1297,121 @@ class ModernVoucherApp(
         self.report_button.pack(anchor="w")
 
     def _build_settings_workspace(self, frame: ttk.Frame) -> None:
+        """Build separated, operator-facing settings categories."""
+
         frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+
+        self.settings_structure_type_var = tk.StringVar()
+        self.settings_structure_name_var = tk.StringVar()
+        self.settings_wifi_title_var = tk.StringVar()
+        self.settings_theme_var = tk.StringVar()
+        self.settings_preset_var = tk.StringVar()
+        self.settings_logo_var = tk.StringVar()
+        self.settings_pdf_retention_var = tk.StringVar()
+        self.settings_backup_on_close_var = tk.BooleanVar()
+        self.settings_save_status_var = tk.StringVar()
+        self.settings_backup_summary_var = tk.StringVar()
+        self.settings_retention_summary_var = tk.StringVar()
+
+        notebook = ttk.Notebook(frame)
+        notebook.grid(row=0, column=0, sticky="nsew")
+        self.settings_notebook = notebook
+
+        general = ttk.Frame(notebook, padding=22)
+        controller = ttk.Frame(notebook, padding=22)
+        pdf_print = ttk.Frame(notebook, padding=22)
+        retention = ttk.Frame(notebook, padding=22)
+        backup = ttk.Frame(notebook, padding=22)
+        notebook.add(general, text="Generali")
+        notebook.add(controller, text="Controller")
+        notebook.add(pdf_print, text="PDF / stampa")
+        notebook.add(retention, text="Retention")
+        notebook.add(backup, text="Backup")
+
+        general.columnconfigure(1, weight=1)
         ttk.Label(
-            frame,
-            text="Configurazione della postazione",
+            general,
+            text="Preferenze generali",
             style="SectionTitle.TLabel",
-        ).grid(row=0, column=0, sticky="w")
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(
-            frame,
+            general,
+            text="Imposta l'identità visibile della struttura e il tema dell'app.",
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 16))
+        ttk.Label(general, text="Profilo struttura").grid(
+            row=2, column=0, sticky="w", padx=(0, 18), pady=7
+        )
+        ttk.Combobox(
+            general,
+            textvariable=self.settings_structure_type_var,
+            state="readonly",
+            values=("Sede", "Evento", "Personalizzata"),
+        ).grid(row=2, column=1, sticky="ew", pady=7)
+        ttk.Label(general, text="Nome struttura").grid(
+            row=3, column=0, sticky="w", padx=(0, 18), pady=7
+        )
+        ttk.Entry(
+            general,
+            textvariable=self.settings_structure_name_var,
+        ).grid(row=3, column=1, sticky="ew", pady=7)
+        ttk.Label(general, text="Titolo Wi-Fi").grid(
+            row=4, column=0, sticky="w", padx=(0, 18), pady=7
+        )
+        ttk.Entry(
+            general,
+            textvariable=self.settings_wifi_title_var,
+        ).grid(row=4, column=1, sticky="ew", pady=7)
+        ttk.Label(general, text="Tema").grid(
+            row=5, column=0, sticky="w", padx=(0, 18), pady=7
+        )
+        ttk.Combobox(
+            general,
+            textvariable=self.settings_theme_var,
+            state="readonly",
+            values=("system", "light", "dark"),
+            width=18,
+        ).grid(row=5, column=1, sticky="w", pady=7)
+        ttk.Label(
+            general,
+            text="“system” segue automaticamente il tema chiaro/scuro di Windows.",
+            style="Muted.TLabel",
+        ).grid(row=6, column=1, sticky="w", pady=(2, 0))
+
+        controller.columnconfigure(1, weight=1)
+        ttk.Label(
+            controller,
+            text="Controller UniFi",
+            style="SectionTitle.TLabel",
+        ).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(
+            controller,
             text=(
-                "Le impostazioni tecniche sono separate dalle attività "
-                "quotidiane dell'operatore."
+                "Questa sezione contiene i dettagli tecnici della connessione. "
+                "Non sono necessari durante l'uso quotidiano."
             ),
             style="Muted.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(3, 16))
-
-        controller = ttk.Labelframe(
-            frame,
-            text="Controller",
-            padding=(18, 14),
-        )
-        controller.grid(row=2, column=0, sticky="ew")
-        controller.columnconfigure(1, weight=1)
+            wraplength=760,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(3, 16))
         ttk.Label(controller, text="Indirizzo controller").grid(
-            row=0, column=0, sticky="w", padx=(0, 14), pady=6
+            row=2, column=0, sticky="w", padx=(0, 14), pady=7
         )
         self.api_root_entry = ttk.Entry(
             controller,
             textvariable=self.api_root_var,
         )
-        self.api_root_entry.grid(row=0, column=1, sticky="ew", pady=6)
+        self.api_root_entry.grid(row=2, column=1, sticky="ew", pady=7)
         self.api_root_entry.bind("<Return>", lambda _event: self.connect())
         ttk.Label(controller, text="API key").grid(
-            row=1, column=0, sticky="w", padx=(0, 14), pady=6
+            row=3, column=0, sticky="w", padx=(0, 14), pady=7
         )
         self.api_key_entry = ttk.Entry(
             controller,
             textvariable=self.api_key_var,
             show="•",
         )
-        self.api_key_entry.grid(row=1, column=1, sticky="ew", pady=6)
+        self.api_key_entry.grid(row=3, column=1, sticky="ew", pady=7)
         self.api_key_entry.bind("<Return>", lambda _event: self.connect())
         self.connect_button = ttk.Button(
             controller,
@@ -1221,99 +1419,372 @@ class ModernVoucherApp(
             command=self.connect,
             style="Accent.TButton",
         )
-        self.connect_button.grid(row=0, column=2, rowspan=2, padx=(14, 0))
-        ttk.Label(
-            controller,
-            textvariable=self.connection_var,
-            style="Muted.TLabel",
-            wraplength=760,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        ttk.Label(
-            controller,
-            text=(
-                "La API key viene usata solo per la connessione corrente e "
-                "non viene salvata."
-            ),
-            style="Muted.TLabel",
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
-
-        general = ttk.Labelframe(
-            frame,
-            text="Generali e PDF / stampa",
-            padding=(18, 14),
+        self.connect_button.grid(row=2, column=2, rowspan=2, padx=(14, 0))
+        ttk.Separator(controller).grid(
+            row=4, column=0, columnspan=3, sticky="ew", pady=16
         )
-        general.grid(row=3, column=0, sticky="ew", pady=(14, 0))
         ttk.Label(
-            general,
+            controller,
+            text="Stato",
+            style="Muted.TLabel",
+        ).grid(row=5, column=0, sticky="nw")
+        ttk.Label(
+            controller,
+            textvariable=self.controller_health_var,
+            style="Status.TLabel",
+        ).grid(row=5, column=1, columnspan=2, sticky="w")
+        ttk.Label(
+            controller,
+            textvariable=self.controller_health_detail_var,
+            style="Muted.TLabel",
+            wraplength=650,
+        ).grid(row=6, column=1, columnspan=2, sticky="w", pady=(3, 12))
+        ttk.Label(
+            controller,
             text=(
-                "Identità della struttura, tema, logo, archivio PDF e "
-                "preferenze di stampa."
+                "La API key resta solo in memoria durante la sessione e non "
+                "viene salvata."
             ),
             style="Muted.TLabel",
-        ).pack(anchor="w", pady=(0, 10))
+        ).grid(row=7, column=0, columnspan=3, sticky="w")
+
+        pdf_print.columnconfigure(1, weight=1)
+        ttk.Label(
+            pdf_print,
+            text="PDF e stampa",
+            style="SectionTitle.TLabel",
+        ).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(
+            pdf_print,
+            text="Personalizza il documento senza modificare il layout operativo dei voucher.",
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(3, 16))
+        ttk.Label(pdf_print, text="Preset grafico").grid(
+            row=2, column=0, sticky="w", padx=(0, 18), pady=7
+        )
+        ttk.Combobox(
+            pdf_print,
+            textvariable=self.settings_preset_var,
+            state="readonly",
+            values=("Classico", "Minimal", "Contrasto", "Personalizzato"),
+        ).grid(row=2, column=1, columnspan=2, sticky="ew", pady=7)
+        ttk.Label(pdf_print, text="Logo").grid(
+            row=3, column=0, sticky="w", padx=(0, 18), pady=7
+        )
+        ttk.Entry(
+            pdf_print,
+            textvariable=self.settings_logo_var,
+            state="readonly",
+        ).grid(row=3, column=1, sticky="ew", pady=7)
         ttk.Button(
-            general,
-            text="Apri preferenze…",
-            command=lambda: SettingsDialog(self),
-        ).pack(anchor="w")
-
-        retention = ttk.Labelframe(
-            frame,
-            text="Retention",
-            padding=(18, 14),
+            pdf_print,
+            text="Scegli…",
+            command=self._choose_settings_logo,
+        ).grid(row=3, column=2, padx=(8, 0))
+        ttk.Button(
+            pdf_print,
+            text="Usa predefinito",
+            command=lambda: self.settings_logo_var.set(""),
+        ).grid(row=4, column=1, sticky="w")
+        ttk.Label(pdf_print, text="Conservazione PDF").grid(
+            row=5, column=0, sticky="w", padx=(0, 18), pady=(18, 7)
         )
-        retention.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+        pdf_days = ttk.Frame(pdf_print)
+        pdf_days.grid(row=5, column=1, columnspan=2, sticky="w", pady=(18, 7))
+        ttk.Spinbox(
+            pdf_days,
+            from_=0,
+            to=3650,
+            increment=30,
+            textvariable=self.settings_pdf_retention_var,
+            width=8,
+        ).pack(side="left")
+        ttk.Label(pdf_days, text="giorni   (0 = conserva sempre)").pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Label(
+            pdf_print,
+            text=f"Layout A4: {VOUCHERS_PER_PAGE} voucher per pagina.",
+            style="Muted.TLabel",
+        ).grid(row=6, column=1, sticky="w", pady=(2, 0))
+
+        ttk.Label(
+            retention,
+            text="Conservazione dello storico",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            retention,
+            textvariable=self.settings_retention_summary_var,
+            style="Body.TLabel",
+            wraplength=760,
+        ).pack(anchor="w", pady=(8, 12))
         ttk.Label(
             retention,
             text=(
-                "Rivedi in modo guidato quali voucher inutilizzati possono "
-                "essere minimizzati. Nessuna pulizia è automatica."
+                "Voucher utilizzati o stampati restano protetti. Gli altri "
+                "possono diventare candidati solo dopo il periodo configurato "
+                "e vengono sempre mostrati prima di qualsiasi minimizzazione."
             ),
             style="Muted.TLabel",
-        ).pack(anchor="w", pady=(0, 10))
+            wraplength=760,
+        ).pack(anchor="w", pady=(0, 14))
         ttk.Button(
             retention,
             text="Rivedi conservazione…",
             command=lambda: self.open_retention_review(parent=self),
+            style="Accent.TButton",
         ).pack(anchor="w")
 
-        backup = ttk.Labelframe(
-            frame,
-            text="Backup",
-            padding=(18, 14),
-        )
-        backup.grid(row=5, column=0, sticky="ew", pady=(14, 0))
         ttk.Label(
             backup,
-            text=(
-                "Proteggi o ripristina la configurazione e lo storico della "
-                "postazione."
-            ),
-            style="Muted.TLabel",
-        ).pack(anchor="w", pady=(0, 10))
+            text="Backup e ripristino",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            backup,
+            textvariable=self.settings_backup_summary_var,
+            style="Body.TLabel",
+            wraplength=760,
+        ).pack(anchor="w", pady=(8, 12))
+        ttk.Checkbutton(
+            backup,
+            text="Crea un backup protetto prima della chiusura (consigliato)",
+            variable=self.settings_backup_on_close_var,
+        ).pack(anchor="w", pady=(0, 12))
         backup_actions = ttk.Frame(backup)
         backup_actions.pack(anchor="w")
         ttk.Button(
             backup_actions,
             text="Crea backup…",
             command=lambda: self.create_backup(parent=self),
+            style="Accent.TButton",
         ).pack(side="left")
         ttk.Button(
             backup_actions,
             text="Ripristina backup…",
             command=lambda: self.restore_backup(parent=self),
         ).pack(side="left", padx=(8, 0))
+
+        ttk.Separator(backup).pack(fill="x", pady=18)
+        ttk.Label(
+            backup,
+            text="Recupero e manutenzione",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            backup,
+            text=(
+                "Strumenti da usare solo quando serve recuperare cronologia, "
+                "una stampa pendente o dati di una versione precedente."
+            ),
+            style="Muted.TLabel",
+            wraplength=760,
+        ).pack(anchor="w", pady=(3, 10))
+        maintenance = ttk.Frame(backup)
+        maintenance.pack(anchor="w")
         ttk.Button(
-            backup_actions,
-            text="Recupera identità cronologia…",
+            maintenance,
+            text="Verifica cronologia…",
             command=lambda: HistoryRecoveryDialog(self),
+        ).pack(side="left")
+        ttk.Button(
+            maintenance,
+            text="Recupera stampa pendente…",
+            command=lambda: self.recover_pending_print_audit(parent=self),
         ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            maintenance,
+            text="Importa cronologia…",
+            command=lambda: self.import_history_exchange(parent=self),
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            maintenance,
+            text="Esporta cronologia…",
+            command=lambda: self.export_history_exchange(parent=self),
+        ).pack(side="left", padx=(8, 0))
+        if getattr(self.paths, "shared_mode", False):
+            ttk.Button(
+                backup,
+                text="Migra dati del profilo Windows…",
+                command=lambda: self.migrate_per_user_data_to_shared(parent=self),
+            ).pack(anchor="w", pady=(12, 0))
+        ttk.Button(
+            backup,
+            text="Analizza storico 4.x…",
+            command=lambda: self.migrate_legacy_history(parent=self),
+        ).pack(anchor="w", pady=(8, 0))
+
+        footer = ttk.Frame(frame)
+        footer.grid(row=1, column=0, sticky="ew", pady=(14, 0))
+        ttk.Label(
+            footer,
+            textvariable=self.settings_save_status_var,
+            style="Muted.TLabel",
+        ).pack(side="left")
+        self.settings_save_button = ttk.Button(
+            footer,
+            text="Salva modifiche",
+            command=self._save_workspace_settings,
+            style="Accent.TButton",
+        )
+        self.settings_save_button.pack(side="right")
+
+        self._load_settings_workspace_values()
+        self._refresh_backup_summary()
+        self._refresh_retention_summary()
+
+    def _load_settings_workspace_values(self) -> None:
+        if not hasattr(self, "settings_structure_name_var"):
+            return
+        settings = self.settings_store.load()
+        self.settings = settings
+        self.settings_structure_type_var.set(
+            str(settings.get("structure_type", DEFAULT_STRUCTURE_TYPE))
+        )
+        self.settings_structure_name_var.set(
+            str(settings.get("structure_name", "") or "")
+        )
+        self.settings_wifi_title_var.set(
+            str(settings.get("wifi_title", DEFAULT_WIFI_TITLE) or DEFAULT_WIFI_TITLE)
+        )
+        self.settings_theme_var.set(
+            str(settings.get("ui_theme", "system") or "system")
+        )
+        self.settings_preset_var.set(
+            str(settings.get("preset", "Classico") or "Classico")
+        )
+        self.settings_logo_var.set(
+            str(settings.get("logo_path", "") or "")
+        )
+        self.settings_pdf_retention_var.set(
+            str(settings.get("print_retention_days", DEFAULT_PRINT_RETENTION_DAYS))
+        )
+        self.settings_backup_on_close_var.set(
+            bool(settings.get("backup_on_close", True))
+        )
+        self.settings_save_status_var.set("")
+
+    def _choose_settings_logo(self) -> None:
+        selected = filedialog.askopenfilename(
+            parent=self,
+            title="Scegli logo",
+            filetypes=[("Immagini", "*.png *.jpg *.jpeg")],
+        )
+        if not selected:
+            return
+        try:
+            validate_logo_image(Path(selected))
+        except LogoValidationError as exc:
+            messagebox.showerror("Logo non valido", str(exc), parent=self)
+            return
+        self.settings_logo_var.set(selected)
+
+    def _save_workspace_settings(self) -> None:
+        try:
+            pdf_retention_days = int(self.settings_pdf_retention_var.get())
+            if not 0 <= pdf_retention_days <= 3650:
+                raise ValueError
+        except (TypeError, ValueError, tk.TclError):
+            messagebox.showerror(
+                "Impostazioni",
+                "La conservazione PDF deve essere compresa tra 0 e 3650 giorni.",
+                parent=self,
+            )
+            return
+
+        structure_name = self.settings_structure_name_var.get().strip()
+        wifi_title = self.settings_wifi_title_var.get().strip()
+        if not structure_name or not wifi_title:
+            messagebox.showerror(
+                "Impostazioni",
+                "Inserire nome struttura e titolo Wi-Fi.",
+                parent=self,
+            )
+            return
+
+        logo_value = self.settings_logo_var.get().strip()
+        try:
+            if logo_value:
+                validate_logo_image(Path(logo_value))
+                logo_value = self.paths.persist_configured_logo(logo_value)
+                if not logo_value:
+                    raise LogoValidationError(
+                        "Il logo non può essere salvato nella libreria locale"
+                    )
+        except (LogoValidationError, OSError) as exc:
+            messagebox.showerror("Logo non valido", str(exc), parent=self)
+            return
+
+        previous_theme = str(self.settings.get("ui_theme", "system"))
+        previous_pdf_retention = int(
+            self.settings.get(
+                "print_retention_days",
+                DEFAULT_PRINT_RETENTION_DAYS,
+            )
+        )
+        self.settings = self.settings_store.update(
+            structure_type=self.settings_structure_type_var.get().strip()
+            or DEFAULT_STRUCTURE_TYPE,
+            structure_name=structure_name,
+            wifi_title=wifi_title,
+            preset=self.settings_preset_var.get().strip() or "Classico",
+            logo_path=logo_value,
+            ui_theme=self.settings_theme_var.get().strip() or "system",
+            print_retention_days=pdf_retention_days,
+            backup_on_close=bool(self.settings_backup_on_close_var.get()),
+        )
+        self.settings_logo_var.set(logo_value)
+        self.installation_display_var.set(
+            structure_name or self.installation_display_var.get()
+        )
+        if previous_theme != self.settings.get("ui_theme"):
+            self.apply_theme()
+            self._configure_style()
+        if previous_pdf_retention != pdf_retention_days:
+            self._cleanup_print_archive()
+        self.settings_save_status_var.set("Modifiche salvate.")
+        self.after(3500, lambda: self.settings_save_status_var.set(""))
+
+    def _refresh_backup_summary(self) -> None:
+        if not hasattr(self, "settings_backup_summary_var"):
+            return
+        row = self.database.connection.execute(
+            """SELECT completed_at, filename
+               FROM backup_history
+               WHERE status='SUCCESS'
+               ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        if row is None:
+            self.settings_backup_summary_var.set(
+                "Nessun backup completato è ancora registrato su questa postazione."
+            )
+            return
+        when = audit_time_label(str(row["completed_at"] or ""))
+        filename = str(row["filename"] or "").strip() or "backup protetto"
+        self.settings_backup_summary_var.set(
+            f"Ultimo backup: {when}  •  {filename}"
+        )
+
+    def _refresh_retention_summary(self) -> None:
+        if not hasattr(self, "settings_retention_summary_var"):
+            return
+        policy = self.database.retention_policy()
+        if policy is None:
+            self.settings_retention_summary_var.set(
+                "Conservazione voucher non ancora configurata."
+            )
+            return
+        self.settings_retention_summary_var.set(
+            "I voucher mai usati e mai stampati diventano candidati dopo "
+            f"{int(policy['unused_unprinted_days'])} giorni."
+        )
 
     def _show_workspace(self, key: str) -> None:
         titles = {
             "home": (
                 "Home",
-                "Panoramica operativa della postazione",
+                "Panoramica generale e accesso rapido alle principali funzioni",
             ),
             "voucher": (
                 "Voucher",
@@ -1325,7 +1796,7 @@ class ModernVoucherApp(
             ),
             "settings": (
                 "Impostazioni",
-                "Controller, PDF, retention e protezione dei dati",
+                "Generali, controller, PDF, retention e backup",
             ),
         }
         if key not in self._workspace_pages:
@@ -1339,6 +1810,10 @@ class ModernVoucherApp(
             )
         if key == "report":
             self._refresh_report_summary()
+        elif key == "settings":
+            self._load_settings_workspace_values()
+            self._refresh_backup_summary()
+            self._refresh_retention_summary()
         self._refresh_controller_workspace_status()
 
     def _controller_record(self):
@@ -1377,10 +1852,41 @@ class ModernVoucherApp(
             busy_label=self._controller_busy_label,
             failed=self._controller_status_failed,
         )
+        friendly_sync = audit_time_label(last_sync) if last_sync else "Mai"
         self.controller_health_var.set(status.title)
         self.controller_health_detail_var.set(status.detail)
         self.home_ready_var.set(status.title)
+        self.home_controller_name_var.set(name or "Nessun controller configurato")
+        self.home_last_sync_var.set(friendly_sync)
+        self.home_sync_detail_var.set(status.detail)
+        self.sidebar_sync_var.set(
+            "Ultimo aggiornamento\n"
+            + (friendly_sync if friendly_sync != "—" else "Mai")
+        )
         self._controller_workspace_status = status
+
+        status_style = {
+            "connected": "Success.Status.TLabel",
+            "syncing": "Busy.Status.TLabel",
+            "error": "Error.Status.TLabel",
+            "local": "Warning.Status.TLabel",
+            "unconfigured": "Warning.Status.TLabel",
+        }.get(status.key, "Status.TLabel")
+        sidebar_style = {
+            "connected": "SidebarSuccess.TLabel",
+            "syncing": "SidebarBusy.TLabel",
+            "error": "SidebarError.TLabel",
+            "local": "SidebarWarning.TLabel",
+            "unconfigured": "SidebarWarning.TLabel",
+        }.get(status.key, "SidebarStatus.TLabel")
+        for widget_name in ("home_status_title_label",):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.configure(style=status_style)
+        sidebar_label = getattr(self, "sidebar_status_label", None)
+        if sidebar_label is not None:
+            sidebar_label.configure(style=sidebar_style)
+
         if status.key == "connected":
             self.home_sync_action_var.set("Sincronizza")
         elif status.key == "unconfigured":
@@ -1476,20 +1982,58 @@ class ModernVoucherApp(
         sv_ttk.set_theme(theme if theme in {"light", "dark"} else "light")
 
     def _configure_style(self) -> None:
-        """Build hierarchy on Sun Valley while retaining the Windows palette."""
+        """Build a theme-aware Windows hierarchy without turning it into a web UI."""
 
         style = ttk.Style(self)
+        preference = str(self.settings.get("ui_theme", "system") or "system")
+        dark = darkdetect.isDark() if preference == "system" else preference == "dark"
+        sidebar_bg = "#20242a" if dark else "#eef2f7"
+        sidebar_fg = "#f5f7fa" if dark else "#172033"
+        sidebar_muted = "#c3cad4" if dark else "#5f6b7a"
+
+        style.configure("Sidebar.TFrame", background=sidebar_bg)
         style.configure(
-            "Brand.TLabel",
+            "SidebarBrand.TLabel",
+            background=sidebar_bg,
+            foreground=sidebar_fg,
             font=("Segoe UI Variable Display", 16, "bold"),
         )
         style.configure(
+            "SidebarMuted.TLabel",
+            background=sidebar_bg,
+            foreground=sidebar_muted,
+            font=("Segoe UI Variable Text", 9),
+        )
+        style.configure(
+            "SidebarStatus.TLabel",
+            background=sidebar_bg,
+            foreground=sidebar_fg,
+            font=("Segoe UI Variable Text", 10, "bold"),
+        )
+        for name, foreground in (
+            ("SidebarSuccess.TLabel", "#22a447"),
+            ("SidebarBusy.TLabel", "#2585d8"),
+            ("SidebarWarning.TLabel", "#c47a00"),
+            ("SidebarError.TLabel", "#d13438"),
+        ):
+            style.configure(
+                name,
+                background=sidebar_bg,
+                foreground=foreground,
+                font=("Segoe UI Variable Text", 10, "bold"),
+            )
+
+        style.configure(
             "PageTitle.TLabel",
-            font=("Segoe UI Variable Display", 22, "bold"),
+            font=("Segoe UI Variable Display", 24, "bold"),
         )
         style.configure(
             "HeroTitle.TLabel",
             font=("Segoe UI Variable Display", 18, "bold"),
+        )
+        style.configure(
+            "HeaderMeta.TLabel",
+            font=("Segoe UI Variable Text", 10, "bold"),
         )
         style.configure(
             "SectionTitle.TLabel",
@@ -1505,11 +2049,22 @@ class ModernVoucherApp(
         )
         style.configure(
             "Status.TLabel",
-            font=("Segoe UI Variable Text", 10, "bold"),
+            font=("Segoe UI Variable Text", 11, "bold"),
         )
+        for name, foreground in (
+            ("Success.Status.TLabel", "#107c10"),
+            ("Busy.Status.TLabel", "#0067c0"),
+            ("Warning.Status.TLabel", "#9a6500"),
+            ("Error.Status.TLabel", "#c42b1c"),
+        ):
+            style.configure(
+                name,
+                foreground=foreground,
+                font=("Segoe UI Variable Text", 11, "bold"),
+            )
         style.configure(
             "Metric.TLabel",
-            font=("Segoe UI Variable Display", 24, "bold"),
+            font=("Segoe UI Variable Display", 26, "bold"),
         )
         style.configure(
             "Hero.TButton",
@@ -1529,6 +2084,14 @@ class ModernVoucherApp(
             anchor="w",
         )
         style.configure(
+            "Card.TLabelframe",
+            padding=(2, 2),
+        )
+        style.configure(
+            "Card.TLabelframe.Label",
+            font=("Segoe UI Variable Text", 11, "bold"),
+        )
+        style.configure(
             "Treeview",
             rowheight=38,
             font=("Segoe UI Variable Text", 10),
@@ -1538,7 +2101,7 @@ class ModernVoucherApp(
             font=("Segoe UI Variable Text", 9, "bold"),
             padding=(7, 9),
         )
-        self.minsize(1180, 720)
+        self.minsize(1220, 740)
 
     def _refresh_report_summary(self) -> None:
         if not hasattr(self, "report_total_var"):
@@ -1585,8 +2148,10 @@ class ModernVoucherApp(
             recent_rows.append(
                 (
                     -int(voucher.create_time or 0),
-                    voucher.recipient or voucher.code_formatted,
+                    voucher.code_formatted,
+                    voucher.recipient or "—",
                     state,
+                    time_label(voucher.end_time),
                     time_label(voucher.create_time),
                 )
             )
@@ -1598,14 +2163,50 @@ class ModernVoucherApp(
         if hasattr(self, "home_recent_tree"):
             for iid in self.home_recent_tree.get_children():
                 self.home_recent_tree.delete(iid)
-            for _order, recipient, state, created in sorted(recent_rows)[:6]:
+            for (
+                _order,
+                code,
+                recipient,
+                state,
+                expires,
+                created,
+            ) in sorted(recent_rows)[:7]:
                 self.home_recent_tree.insert(
                     "",
                     "end",
-                    values=(recipient, state, created),
+                    values=(code, recipient, state, expires, created),
                 )
+        self._refresh_home_activity()
         self._refresh_report_summary()
         self._refresh_controller_workspace_status()
+
+    def _refresh_home_activity(self) -> None:
+        if not hasattr(self, "home_activity_tree"):
+            return
+        try:
+            items = load_recent_workspace_activity(
+                self.database,
+                controller_id=self.active_controller_id,
+                limit=7,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "workspace_activity_load_failed type=%s",
+                type(exc).__name__,
+            )
+            return
+        for iid in self.home_activity_tree.get_children():
+            self.home_activity_tree.delete(iid)
+        for item in items:
+            self.home_activity_tree.insert(
+                "",
+                "end",
+                values=(
+                    audit_time_label(item.occurred_at),
+                    item.title,
+                    item.detail,
+                ),
+            )
 
     def _sync_selection_ui(self, iids=None) -> None:
         """Keep checkbox state and native row highlighting in lockstep."""

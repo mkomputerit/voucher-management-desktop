@@ -17,6 +17,15 @@
   installation without deleting the old profile data.
 - Make the Home synchronization action context-sensitive: synchronize an active
   session, otherwise guide the operator directly to Controller settings.
+- Refine the Home into a professional operator dashboard with recent vouchers,
+  controller health, last synchronization time, durable recent activity and
+  quick actions.
+- Split the main Settings workspace into Generali, Controller, PDF / stampa,
+  Retention and Backup sections; routine operator screens no longer mix
+  controller, retention and recovery concepts together.
+- Surface backup recency and current retention policy in plain operator
+  language while keeping recovery/migration tools in a separate maintenance
+  area.
 
 ## 5.0.0 - 2026-09-27
 
