@@ -334,6 +334,33 @@ class BackupServiceTests(unittest.TestCase):
         ):
             self.service.validate(unsafe)
 
+    def test_create_verified_returns_final_container_audit_metadata(self):
+        database = self.paths.user_root / "data" / "voucher_management.db"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("CREATE TABLE audit_probe(value TEXT)")
+            connection.execute("PRAGMA user_version = 7")
+            connection.commit()
+        finally:
+            connection.close()
+
+        backup = Path(self.temp.name) / "verified.vmbk"
+        passphrase = self._backup_passphrase()
+
+        artifact = self.service.create_verified(
+            backup,
+            password=passphrase,
+        )
+
+        self.assertEqual(artifact.path, backup)
+        self.assertTrue(artifact.encrypted)
+        self.assertEqual(artifact.backup_format, BACKUP_FORMAT)
+        self.assertEqual(artifact.schema_version, 7)
+        self.assertEqual(
+            artifact.sha256,
+            hashlib.sha256(backup.read_bytes()).hexdigest(),
+        )
+
     def test_encrypted_backup_roundtrip_restores_complete_data(self):
         backup = Path(self.temp.name) / "backup.vmbk"
         passphrase = self._backup_passphrase()
