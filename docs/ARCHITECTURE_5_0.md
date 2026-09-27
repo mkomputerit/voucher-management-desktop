@@ -117,9 +117,33 @@ Default policy:
 - the default candidate age is 180 days;
 - cleanup is review-driven, not silent deletion.
 
+The implemented 5.0 candidate boundary is deliberately stricter than the
+minimum policy: a voucher must also be absent from the latest complete
+controller snapshot and have no generated-PDF or physical-print evidence in
+the verified HMAC history. A generated PDF is treated as credential-bearing
+material even if it was never sent to a printer. If the HMAC history cannot be
+verified, retention fails closed and no candidate can be minimized. When an
+expiry timestamp
+exists it is the age basis, so a voucher is never proposed merely because it
+was created long ago while its known validity still extends into the future.
+
+"Cleanup" is data minimization rather than destruction of the durable historical
+row. After explicit operator selection the application revalidates the candidate
+inside the write transaction, sets `archived_at`, replaces the reusable voucher
+code with a non-credential tombstone and removes recipient, nominal assignment
+and free-text notes. Controller identifiers, non-secret lifecycle metadata,
+observations and the retention audit event remain available for historical
+reports. Archived rows are excluded from the ordinary operator voucher list.
+
+If the same UniFi voucher identifier later reappears in a successful controller
+snapshot, the normal upsert clears `archived_at` and restores current
+controller-owned voucher fields rather than creating a second historical row.
+
 The first-run wizard explains that recommended retention defaults are already
 configured and should be changed only when specifically required. Continue is
-the primary action; advanced editing is secondary.
+the primary action; advanced editing is secondary. Completion is recorded in
+the shared SQLite installation settings, so the explanation is installation-
+scoped rather than repeated for every Windows profile.
 
 ## Delivery milestones
 

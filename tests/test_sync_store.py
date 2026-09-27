@@ -134,3 +134,95 @@ def test_local_snapshot_keeps_voucher_after_controller_absence(tmp_path):
         assert [item.id for item in local] == ["1"]
     finally:
         db.close()
+
+
+
+def test_archived_voucher_is_hidden_from_local_operator_snapshot(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("1")],
+            observed_at="2026-01-01T06:00:00+00:00",
+            sync_uuid="sync-present-archive",
+        )
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[],
+            observed_at="2026-01-02T06:00:00+00:00",
+            sync_uuid="sync-absent-archive",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET code='ARCHIVED-1', archived_at='2026-09-27T08:00:00+00:00'
+                   WHERE controller_id=? AND unifi_id='1'""",
+                (controller,),
+            )
+
+        assert load_local_vouchers(db, controller_id=controller) == []
+    finally:
+        db.close()
+
+
+def test_controller_reappearance_reactivates_archived_voucher(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("1")],
+            observed_at="2026-01-01T06:00:00+00:00",
+            sync_uuid="sync-original",
+        )
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[],
+            observed_at="2026-01-02T06:00:00+00:00",
+            sync_uuid="sync-gone",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET code='ARCHIVED-1', name='', archived_at='2026-09-27T08:00:00+00:00'
+                   WHERE controller_id=? AND unifi_id='1'""",
+                (controller,),
+            )
+
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("1")],
+            observed_at="2026-09-27T09:00:00+00:00",
+            sync_uuid="sync-returned",
+        )
+
+        row = db.connection.execute(
+            """SELECT code, archived_at, present_on_controller
+               FROM vouchers WHERE controller_id=? AND unifi_id='1'""",
+            (controller,),
+        ).fetchone()
+        assert row["code"] == "CODE-1"
+        assert row["archived_at"] is None
+        assert row["present_on_controller"] == 1
+        assert [item.id for item in load_local_vouchers(
+            db,
+            controller_id=controller,
+        )] == ["1"]
+    finally:
+        db.close()

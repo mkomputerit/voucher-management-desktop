@@ -79,6 +79,7 @@ class ReportRow:
     print_operators: tuple[str, ...]
     expired: bool
     present_on_controller: bool
+    archived_at: str
     status: str
 
 
@@ -145,7 +146,15 @@ def _expired_at_report_time(
         return False
 
 
-def _status(*, expired: bool, uses: int, print_jobs: int) -> str:
+def _status(
+    *,
+    archived: bool,
+    expired: bool,
+    uses: int,
+    print_jobs: int,
+) -> str:
+    if archived:
+        return "Archiviato"
     if expired:
         return "Scaduto"
     if uses > 0:
@@ -254,7 +263,9 @@ def build_report_dataset(
             print_operators=_operators(raw["print_operators"]),
             expired=expired,
             present_on_controller=bool(raw["present_on_controller"]),
+            archived_at=str(raw["archived_at"] or ""),
             status=_status(
+                archived=bool(raw["archived_at"]),
                 expired=expired,
                 uses=uses,
                 print_jobs=print_jobs,

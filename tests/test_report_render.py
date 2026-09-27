@@ -40,6 +40,7 @@ def _dataset(*, code="") -> ReportDataset:
         print_operators=("PC\\alice", "PC\\bob"),
         expired=False,
         present_on_controller=True,
+        archived_at="",
         status="Utilizzato",
     )
     totals = ReportTotals(

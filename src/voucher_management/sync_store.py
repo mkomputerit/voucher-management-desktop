@@ -173,7 +173,7 @@ def load_local_vouchers(database: Database, *, controller_id: int) -> list[ApiVo
 
     rows = database.connection.execute(
         """SELECT * FROM vouchers
-           WHERE controller_id=?
+           WHERE controller_id=? AND archived_at IS NULL
            ORDER BY COALESCE(created_at, imported_at) DESC, id DESC""",
         (controller_id,),
     ).fetchall()

@@ -268,6 +268,13 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         close_handler = getattr(self, "request_close", self.destroy)
         self.protocol("WM_DELETE_WINDOW", close_handler)
         self._populate_initial_snapshot()
+        retention_intro = getattr(
+            self,
+            "show_retention_intro_if_needed",
+            None,
+        )
+        if retention_intro is not None:
+            self.after_idle(retention_intro)
         if logo_warning:
             messagebox.showwarning(
                 "Logo rimosso",
