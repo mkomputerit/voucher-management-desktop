@@ -164,6 +164,7 @@ def test_per_user_tree_migrates_through_verified_encrypted_backup(tmp_path):
     assert result.backup_path == backup
     assert backup.is_file()
     assert result.rollback_path.is_dir()
+    assert result.backup_audit_recorded is True
 
     migrated = Database(target_paths.database)
     try:
@@ -175,6 +176,14 @@ def test_per_user_tree_migrates_through_verified_encrypted_backup(tmp_path):
             ).fetchone()[0]
             == "Legacy controller"
         )
+        backup_row = migrated.connection.execute(
+            "SELECT * FROM backup_history ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert backup_row["destination"] == "SHARED_DATA_MIGRATION"
+        assert backup_row["filename"] == "migration.vmbk"
+        assert backup_row["status"] == "SUCCESS"
+        assert len(backup_row["sha256"]) == 64
+        assert backup_row["backup_format"] == 2
     finally:
         migrated.close()
 
