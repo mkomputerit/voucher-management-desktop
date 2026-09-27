@@ -93,29 +93,50 @@ class ControllerConnectionMixin:
 
         def completed(result) -> None:
             connected_client, info, vouchers = result
-            self._finish_connection(
-                connected_client,
-                info,
-                vouchers,
-                profile_name=profile_name,
-            )
+            if profile_name:
+                self._finish_connection(
+                    connected_client,
+                    info,
+                    vouchers,
+                    profile_name=profile_name,
+                )
+            else:
+                self._finish_connection(
+                    connected_client,
+                    info,
+                    vouchers,
+                )
 
         def failed(exc: Exception) -> None:
             if isinstance(exc, UniFiCertificateChanged):
-                self._confirm_changed_certificate(
-                    client.base_url,
-                    api_key,
-                    exc,
-                    profile_name=profile_name,
-                )
+                if profile_name:
+                    self._confirm_changed_certificate(
+                        client.base_url,
+                        api_key,
+                        exc,
+                        profile_name=profile_name,
+                    )
+                else:
+                    self._confirm_changed_certificate(
+                        client.base_url,
+                        api_key,
+                        exc,
+                    )
                 return
             if isinstance(exc, UniFiCertificateTrustRequired):
-                self._confirm_untrusted_certificate(
-                    client.base_url,
-                    api_key,
-                    exc,
-                    profile_name=profile_name,
-                )
+                if profile_name:
+                    self._confirm_untrusted_certificate(
+                        client.base_url,
+                        api_key,
+                        exc,
+                        profile_name=profile_name,
+                    )
+                else:
+                    self._confirm_untrusted_certificate(
+                        client.base_url,
+                        api_key,
+                        exc,
+                    )
                 return
             self._connection_failed(exc)
 
