@@ -6,6 +6,7 @@ from voucher_management.app import VoucherApp
 from voucher_management.controller_connection_ui import ControllerConnectionMixin
 from voucher_management.data_maintenance_ui import DataMaintenanceMixin
 from voucher_management.modern_app import ModernVoucherApp
+from voucher_management.retention_ui import RetentionMixin
 from voucher_management.voucher_creation_ui import VoucherCreationMixin
 from voucher_management.voucher_deletion_ui import VoucherDeletionMixin
 
@@ -13,11 +14,16 @@ from voucher_management.voucher_deletion_ui import VoucherDeletionMixin
 def test_ui_workflows_are_composed_from_focused_mixins():
     assert issubclass(VoucherApp, VoucherCreationMixin)
     assert issubclass(ModernVoucherApp, DataMaintenanceMixin)
+    assert issubclass(ModernVoucherApp, RetentionMixin)
     assert issubclass(ModernVoucherApp, ControllerConnectionMixin)
     assert issubclass(ModernVoucherApp, VoucherDeletionMixin)
 
     assert VoucherApp.create is VoucherCreationMixin.create
     assert ModernVoucherApp.create_backup is DataMaintenanceMixin.create_backup
+    assert (
+        ModernVoucherApp.open_retention_review
+        is RetentionMixin.open_retention_review
+    )
     assert ModernVoucherApp.request_close is DataMaintenanceMixin.request_close
     assert (
         ModernVoucherApp.recover_pending_print_audit
