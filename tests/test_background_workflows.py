@@ -897,6 +897,13 @@ def test_request_close_runs_encrypted_backup_before_destroy(monkeypatch, tmp_pat
         _finish_close=lambda **kwargs: calls.append(("close", kwargs)),
         logger=SimpleNamespace(warning=lambda *args: calls.append(("warning", args))),
     )
+    fake._start_close_backup = (
+        lambda target, password: modern_app.ModernVoucherApp._start_close_backup(
+            fake,
+            target,
+            password,
+        )
+    )
     monkeypatch.setattr(
         maintenance_ui,
         "ask_password",
@@ -934,6 +941,13 @@ def test_failed_close_backup_can_retry_without_losing_password(
         _finish_close=lambda **kwargs: None,
         logger=SimpleNamespace(warning=lambda *args: None),
     )
+    fake._start_close_backup = (
+        lambda target, password: modern_app.ModernVoucherApp._start_close_backup(
+            fake,
+            target,
+            password,
+        )
+    )
     monkeypatch.setattr(
         maintenance_ui,
         "ask_password",
@@ -966,6 +980,13 @@ def test_failed_close_backup_can_close_anyway(monkeypatch, tmp_path):
         _run_background_task=capture_runner(tasks),
         _finish_close=lambda **kwargs: closed.append(kwargs),
         logger=SimpleNamespace(warning=lambda *args: None),
+    )
+    fake._start_close_backup = (
+        lambda target, password: modern_app.ModernVoucherApp._start_close_backup(
+            fake,
+            target,
+            password,
+        )
     )
     monkeypatch.setattr(
         maintenance_ui,
