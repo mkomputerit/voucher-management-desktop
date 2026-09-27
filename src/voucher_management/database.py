@@ -540,6 +540,7 @@ COMMIT;
             "vouchers",
             "voucher_events",
             "print_jobs",
+            "backup_history",
             "migration_runs",
             "legacy_audit_events",
         )
