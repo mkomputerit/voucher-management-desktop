@@ -90,7 +90,8 @@ def test_native_setup_preserves_shared_deployment_contract():
     assert "RestartApplications=no" in setup
     assert "OPERATORUSER" in setup
     assert "-ConfigureOnly" in setup
-    assert "Voucher Management Operators" not in setup
+    assert "Voucher Management Operators" in setup
+    assert "-OperatorGroup" in setup
     assert "Install-VoucherManagement.ps1" in setup
     assert "VoucherManagement-{#AppVersion}-Setup-Windows-x64" in setup
     assert "UninstallDisplayIcon={app}\\{#AppExeName}" in setup
