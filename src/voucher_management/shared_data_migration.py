@@ -195,6 +195,7 @@ def execute_shared_data_migration(
         )
     _assert_destination_outside_root(destination, source_paths.user_root)
     _assert_destination_outside_root(destination, target_root)
+    backup_started_at = datetime.now(timezone.utc).isoformat()
 
     # Acquire both the Milestone A lock location and the Milestone C location.
     # A currently running older portable build therefore blocks migration.
@@ -254,7 +255,7 @@ def execute_shared_data_migration(
         audit_database.initialize()
         audit_database.integrity_check()
         audit_database.record_backup_history(
-            started_at=datetime.now(timezone.utc).isoformat(),
+            started_at=backup_started_at,
             completed_at=datetime.now(timezone.utc).isoformat(),
             destination="SHARED_DATA_MIGRATION",
             filename=backup_path.name,
