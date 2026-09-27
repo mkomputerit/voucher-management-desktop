@@ -56,7 +56,7 @@ def schedule_first_run_onboarding(
         # migration has had a chance to run. Starting onboarding here would
         # write app_metadata/profile rows and correctly make migration refuse
         # to overwrite the target.
-        return OnboardingState.EXISTING_INSTALLATION
+        return OnboardingState.MIGRATION_AVAILABLE
 
     if state is OnboardingState.REQUIRED:
         factory = wizard_factory or FirstRunWizard
@@ -580,11 +580,15 @@ class FirstRunWizard(tk.Toplevel):
         saved_pin = str(
             settings.get("controller_cert_sha256", "")
         ).strip()
+        try:
+            saved_normalized = (
+                normalize_api_root(saved_root) if saved_root else ""
+            )
+        except (ValueError, UniFiApiError):
+            saved_normalized = ""
         trusted_pin = (
             saved_pin
-            if saved_pin
-            and saved_root
-            and normalize_api_root(saved_root) == normalized
+            if saved_pin and saved_normalized == normalized
             else None
         )
         self._start_probe(normalized, key, trusted_pin)
