@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -14,6 +15,9 @@ from .identity import (
     DEFAULT_WIFI_TITLE,
 )
 from .logo_validation import LogoValidationError, validate_logo_image
+from .models import VoucherBatch, VoucherRecord
+from .pdf_preview import PrintTestPreview
+from .pdf_render import render_batch_pdf
 from .shared_data_migration import source_has_migratable_data
 from .onboarding import (
     DEFAULT_VOUCHER_RETENTION_DAYS,
@@ -101,9 +105,12 @@ class FirstRunWizard(tk.Toplevel):
     PAGE_WELCOME = 0
     PAGE_IDENTITY = 1
     PAGE_CONTROLLER = 2
-    PAGE_RETENTION = 3
-    PAGE_SUMMARY = 4
-    LAST_PAGE = PAGE_SUMMARY
+    PAGE_VERIFY = 3
+    PAGE_PDF = 4
+    PAGE_RETENTION = 5
+    PAGE_SUMMARY = 6
+    PAGE_PRINT_TEST = 7
+    LAST_PAGE = PAGE_PRINT_TEST
 
     def __init__(self, app):
         super().__init__(app)
@@ -158,6 +165,19 @@ class FirstRunWizard(tk.Toplevel):
         self.logo_var = tk.StringVar(
             value=str(settings.get("logo_path", "") or "")
         )
+        self.pdf_title_var = tk.StringVar(
+            value=str(
+                settings.get("wifi_title", DEFAULT_WIFI_TITLE)
+                or DEFAULT_WIFI_TITLE
+            )
+        )
+        self.pdf_subtitle_var = tk.StringVar(value=default_structure)
+        self.pdf_contact_var = tk.StringVar()
+        self.pdf_notes_var = tk.StringVar()
+        self.print_test_status_var = tk.StringVar(
+            value="Prova di stampa non ancora eseguita"
+        )
+        self._print_test_submitted = False
 
         self.controller_name_var = tk.StringVar(value="Controller UniFi")
         self.controller_root_var = tk.StringVar(
@@ -186,7 +206,13 @@ class FirstRunWizard(tk.Toplevel):
             textvariable=self.subtitle_var,
             style="Muted.TLabel",
             wraplength=650,
-        ).pack(anchor="w", pady=(3, 16))
+        ).pack(anchor="w", pady=(3, 4))
+        self.step_var = tk.StringVar()
+        ttk.Label(
+            shell,
+            textvariable=self.step_var,
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(0, 16))
 
         self.body = ttk.Frame(shell)
         self.body.pack(fill="both", expand=True)
@@ -237,14 +263,19 @@ class FirstRunWizard(tk.Toplevel):
         self.back_button.state(
             ["disabled"] if self.page == self.PAGE_WELCOME else ["!disabled"]
         )
+        self.step_var.set(
+            f"Passaggio {self.page + 1} di {self.LAST_PAGE + 1}"
+        )
         self.next_button.configure(
-            text="Completa configurazione"
-            if self.page == self.PAGE_SUMMARY
-            else (
-                "Verifica e continua"
-                if self.page == self.PAGE_CONTROLLER
-                and not self._controller_is_current()
-                else "Continua"
+            text=(
+                "Completa configurazione"
+                if self.page == self.PAGE_PRINT_TEST
+                else (
+                    "Verifica e continua"
+                    if self.page == self.PAGE_VERIFY
+                    and not self._controller_is_current()
+                    else "Continua"
+                )
             )
         )
 
@@ -252,8 +283,11 @@ class FirstRunWizard(tk.Toplevel):
             self.PAGE_WELCOME: self._render_welcome,
             self.PAGE_IDENTITY: self._render_identity,
             self.PAGE_CONTROLLER: self._render_controller,
+            self.PAGE_VERIFY: self._render_verification,
+            self.PAGE_PDF: self._render_pdf,
             self.PAGE_RETENTION: self._render_retention,
             self.PAGE_SUMMARY: self._render_summary,
+            self.PAGE_PRINT_TEST: self._render_print_test,
         }
         renderers[self.page]()
         self._fit()
@@ -261,7 +295,7 @@ class FirstRunWizard(tk.Toplevel):
     def _render_welcome(self) -> None:
         self.header_var.set("Benvenuto in Voucher Management")
         self.subtitle_var.set(
-            "Questa procedura configura una nuova installazione 5.0. "
+            "Questa procedura configura una nuova installazione. "
             "Le credenziali UniFi vengono usate solo nella sessione corrente "
             "e non vengono salvate."
         )
@@ -328,37 +362,13 @@ class FirstRunWizard(tk.Toplevel):
             width=24,
         ).grid(row=4, column=1, sticky="w", pady=7)
 
-        ttk.Label(grid, text="Logo").grid(
-            row=5,
-            column=0,
-            sticky="w",
-            pady=7,
-            padx=(0, 18),
-        )
-        logo_row = ttk.Frame(grid)
-        logo_row.grid(row=5, column=1, sticky="ew", pady=7)
-        ttk.Entry(
-            logo_row,
-            textvariable=self.logo_var,
-            state="readonly",
-        ).pack(side="left", fill="x", expand=True)
-        ttk.Button(
-            logo_row,
-            text="Scegli…",
-            command=self._choose_logo,
-        ).pack(side="left", padx=(8, 0))
-        ttk.Button(
-            logo_row,
-            text="Predefinito",
-            command=lambda: self.logo_var.set(""),
-        ).pack(side="left", padx=(8, 0))
         grid.columnconfigure(1, weight=1)
 
     def _render_controller(self) -> None:
         self.header_var.set("Controller UniFi")
         self.subtitle_var.set(
-            "Verifica il controller con la API ufficiale. La API key viene "
-            "cancellata dal campo appena parte il test e rimane solo in memoria."
+            "Inserisci il profilo del controller. La verifica della connessione "
+            "avviene nel passaggio successivo."
         )
         grid = ttk.Frame(self.body)
         grid.pack(fill="x")
@@ -401,6 +411,192 @@ class FirstRunWizard(tk.Toplevel):
             pady=(14, 0),
         )
         grid.columnconfigure(1, weight=1)
+
+    def _render_verification(self) -> None:
+        self.header_var.set("Verifica connessione")
+        self.subtitle_var.set(
+            "Controlla che il controller sia raggiungibile prima di proseguire."
+        )
+        ttk.Label(
+            self.body,
+            text=f"Profilo: {self.controller_name_var.get().strip() or '—'}",
+        ).pack(anchor="w", pady=(12, 4))
+        ttk.Label(
+            self.body,
+            text=f"Controller: {self.controller_root_var.get().strip() or '—'}",
+            style="Muted.TLabel",
+            wraplength=650,
+        ).pack(anchor="w")
+        ttk.Separator(self.body).pack(fill="x", pady=18)
+        ttk.Label(
+            self.body,
+            textvariable=self.controller_status_var,
+            style="SectionTitle.TLabel",
+            wraplength=650,
+        ).pack(anchor="w")
+        ttk.Label(
+            self.body,
+            text=(
+                "Se Windows non riconosce il certificato, verrà mostrata "
+                "l'impronta SHA-256 da confrontare prima di autorizzarlo. "
+                "La API key non viene inviata prima dell'approvazione."
+            ),
+            style="Muted.TLabel",
+            wraplength=650,
+        ).pack(anchor="w", pady=(10, 0))
+
+    def _render_pdf(self) -> None:
+        self.header_var.set("PDF e stampa")
+        self.subtitle_var.set(
+            "Configura l'aspetto del voucher senza modificare il formato "
+            "operativo già collaudato."
+        )
+        grid = ttk.Frame(self.body)
+        grid.pack(fill="x")
+
+        rows = (
+            ("Titolo documento", self.pdf_title_var),
+            ("Sottotitolo", self.pdf_subtitle_var),
+            ("Contatto", self.pdf_contact_var),
+            ("Note", self.pdf_notes_var),
+        )
+        for row, (label, variable) in enumerate(rows):
+            ttk.Label(grid, text=label).grid(
+                row=row,
+                column=0,
+                sticky="w",
+                pady=7,
+                padx=(0, 18),
+            )
+            ttk.Entry(
+                grid,
+                textvariable=variable,
+            ).grid(row=row, column=1, sticky="ew", pady=7)
+
+        ttk.Label(grid, text="Logo").grid(
+            row=4,
+            column=0,
+            sticky="w",
+            pady=7,
+            padx=(0, 18),
+        )
+        logo_row = ttk.Frame(grid)
+        logo_row.grid(row=4, column=1, sticky="ew", pady=7)
+        ttk.Entry(
+            logo_row,
+            textvariable=self.logo_var,
+            state="readonly",
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            logo_row,
+            text="Scegli…",
+            command=self._choose_logo,
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            logo_row,
+            text="Predefinito",
+            command=lambda: self.logo_var.set(""),
+        ).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            self.body,
+            text=(
+                "Il layout dei voucher resta quello già validato; questa "
+                "sezione modifica identità visiva e testi della postazione."
+            ),
+            style="Muted.TLabel",
+            wraplength=650,
+        ).pack(anchor="w", pady=(18, 0))
+        grid.columnconfigure(1, weight=1)
+
+    def _render_print_test(self) -> None:
+        self.header_var.set("Prova di stampa")
+        self.subtitle_var.set(
+            "Ultimo controllo prima di usare Voucher Management in produzione."
+        )
+        ttk.Label(
+            self.body,
+            text=(
+                "Puoi aprire una pagina di prova locale e inviarla alla "
+                "stampante. Non viene creato alcun voucher UniFi e la prova "
+                "non entra nello storico dei voucher."
+            ),
+            wraplength=650,
+        ).pack(anchor="w", pady=(16, 12))
+        ttk.Button(
+            self.body,
+            text="Apri pagina di prova…",
+            command=self._open_print_test,
+            style="Accent.TButton",
+        ).pack(anchor="w")
+        ttk.Label(
+            self.body,
+            textvariable=self.print_test_status_var,
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(12, 0))
+        ttk.Label(
+            self.body,
+            text=(
+                "La prova è facoltativa: puoi completare la configurazione "
+                "anche senza stampare."
+            ),
+            style="Muted.TLabel",
+            wraplength=650,
+        ).pack(anchor="w", pady=(18, 0))
+
+    def _open_print_test(self) -> None:
+        if not self._validate_pdf():
+            return
+        handle = tempfile.NamedTemporaryFile(
+            prefix="VoucherManagement-print-test-",
+            suffix=".pdf",
+            delete=False,
+        )
+        test_path = Path(handle.name)
+        handle.close()
+
+        settings = dict(self.app.settings)
+        settings.update(
+            structure_name=self.structure_name_var.get().strip(),
+            wifi_title=self.pdf_title_var.get().strip(),
+            logo_path=self.logo_var.get().strip(),
+        )
+        batch = VoucherBatch(
+            source_path=test_path,
+            vouchers=[
+                VoucherRecord(
+                    code="TEST-00000",
+                    recipient="PROVA DI STAMPA - NON VALIDO",
+                    duration_minutes=60,
+                )
+            ],
+        )
+        try:
+            render_batch_pdf(batch, test_path, settings)
+        except Exception as exc:
+            test_path.unlink(missing_ok=True)
+            self.app.logger.error(
+                "onboarding_print_test_render_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Prova di stampa",
+                "Impossibile creare la pagina di prova.",
+                parent=self,
+            )
+            return
+
+        def submitted() -> None:
+            self._print_test_submitted = True
+            self.print_test_status_var.set(
+                "Pagina di prova inviata alla stampante"
+            )
+
+        PrintTestPreview(
+            self.app,
+            test_path,
+            delete_on_close=True,
+            on_submitted=submitted,
+        )
 
     def _render_retention(self) -> None:
         self.header_var.set("Conservazione dello storico")
@@ -459,6 +655,8 @@ class FirstRunWizard(tk.Toplevel):
                 "Network",
                 str(info.get("applicationVersion") or "—"),
             ),
+            ("Titolo PDF", self.pdf_title_var.get().strip()),
+            ("Contatto PDF", self.pdf_contact_var.get().strip() or "—"),
             (
                 "Retention",
                 f"{self.retention_days_var.get().strip()} giorni",
@@ -536,6 +734,53 @@ class FirstRunWizard(tk.Toplevel):
             return False
         return True
 
+    def _validate_controller_fields(self) -> bool:
+        if not self.controller_name_var.get().strip():
+            messagebox.showerror(
+                "Controller UniFi",
+                "Inserire un nome per il profilo controller.",
+                parent=self,
+            )
+            return False
+        try:
+            normalize_api_root(self.controller_root_var.get())
+        except (ValueError, UniFiApiError) as exc:
+            messagebox.showerror(
+                "Controller UniFi",
+                str(exc),
+                parent=self,
+            )
+            return False
+        if not self._controller_is_current() and not self.api_key_var.get():
+            messagebox.showerror(
+                "Controller UniFi",
+                "Inserire la API key per verificare il controller.",
+                parent=self,
+            )
+            return False
+        return True
+
+    def _validate_pdf(self) -> bool:
+        if not self.pdf_title_var.get().strip():
+            messagebox.showerror(
+                "PDF e stampa",
+                "Inserire il titolo del documento.",
+                parent=self,
+            )
+            return False
+        value = self.logo_var.get().strip()
+        if value:
+            try:
+                validate_logo_image(Path(value))
+            except (LogoValidationError, OSError) as exc:
+                messagebox.showerror(
+                    "Logo non valido",
+                    str(exc),
+                    parent=self,
+                )
+                return False
+        return True
+
     def _validated_retention(self) -> int | None:
         try:
             value = int(self.retention_days_var.get())
@@ -553,14 +798,21 @@ class FirstRunWizard(tk.Toplevel):
     def _next(self) -> None:
         if self.page == self.PAGE_IDENTITY and not self._validate_identity():
             return
-        if self.page == self.PAGE_CONTROLLER:
+        if (
+            self.page == self.PAGE_CONTROLLER
+            and not self._validate_controller_fields()
+        ):
+            return
+        if self.page == self.PAGE_VERIFY:
             if not self._controller_is_current():
                 self._verify_controller()
                 return
+        if self.page == self.PAGE_PDF and not self._validate_pdf():
+            return
         if self.page == self.PAGE_RETENTION:
             if self._validated_retention() is None:
                 return
-        if self.page == self.PAGE_SUMMARY:
+        if self.page == self.PAGE_PRINT_TEST:
             self._finish()
             return
         self.page += 1
@@ -768,7 +1020,7 @@ class FirstRunWizard(tk.Toplevel):
                 str(exc),
                 parent=self,
             )
-            self.page = self.PAGE_IDENTITY
+            self.page = self.PAGE_PDF
             self._render_page()
             return
 
@@ -792,10 +1044,10 @@ class FirstRunWizard(tk.Toplevel):
                 structure_name=self.structure_name_var.get(),
                 wifi_title=self.wifi_title_var.get(),
                 logo_path=logo_path,
-                pdf_title=self.wifi_title_var.get(),
-                pdf_subtitle=self.structure_name_var.get(),
-                pdf_contact="",
-                pdf_notes="",
+                pdf_title=self.pdf_title_var.get(),
+                pdf_subtitle=self.pdf_subtitle_var.get(),
+                pdf_contact=self.pdf_contact_var.get(),
+                pdf_notes=self.pdf_notes_var.get(),
                 unused_unprinted_days=retention,
             )
             self.app.settings = complete_onboarding(
