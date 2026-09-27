@@ -45,6 +45,64 @@ def test_fresh_shared_target_is_pristine_after_bootstrap(tmp_path):
         database.close()
 
 
+def test_live_bootstrap_session_keeps_fresh_shared_target_pristine(tmp_path):
+    root = tmp_path / "ProgramData" / "VoucherManagement"
+    paths = AppPaths(
+        base_override=tmp_path / "program",
+        shared_root_override=root,
+    )
+    paths.ensure_writable()
+    database = Database(paths.database)
+    try:
+        database.initialize()
+        _initialize_history(root)
+        database.start_application_session(
+            session_uuid="bootstrap-session",
+            windows_user="operator",
+            started_at="2026-09-27T08:00:00+00:00",
+            app_version="4.3.3",
+        )
+
+        assert shared_target_is_pristine(database, paths) is True
+    finally:
+        database.close()
+
+
+def test_controller_linked_session_makes_shared_target_non_pristine(tmp_path):
+    root = tmp_path / "ProgramData" / "VoucherManagement"
+    paths = AppPaths(
+        base_override=tmp_path / "program",
+        shared_root_override=root,
+    )
+    paths.ensure_writable()
+    database = Database(paths.database)
+    try:
+        database.initialize()
+        _initialize_history(root)
+        database.start_application_session(
+            session_uuid="used-session",
+            windows_user="operator",
+            started_at="2026-09-27T08:00:00+00:00",
+            app_version="4.3.3",
+        )
+        controller_id = database.create_controller(
+            name="Controller",
+            api_root="https://controller.example/proxy/network/integration/v1",
+            created_at="2026-09-27T08:01:00+00:00",
+        )
+        database.close_application_session(
+            session_uuid="used-session",
+            closed_at="2026-09-27T08:02:00+00:00",
+            controller_id=controller_id,
+            close_status="CLOSED",
+            backup_status="DISABLED",
+        )
+
+        assert shared_target_is_pristine(database, paths) is False
+    finally:
+        database.close()
+
+
 def test_shared_target_stops_being_pristine_after_real_data(tmp_path):
     root = tmp_path / "ProgramData" / "VoucherManagement"
     paths = AppPaths(
