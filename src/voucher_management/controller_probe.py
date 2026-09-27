@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable
 
 from .unifi_api import UniFiClient
@@ -19,6 +20,7 @@ class ControllerProbeResult:
     client: UniFiClient
     info: dict
     vouchers: tuple
+    observed_at: str
 
 
 def probe_controller(
@@ -36,8 +38,10 @@ def probe_controller(
     )
     info = client.connect(api_key)
     vouchers = tuple(client.list_vouchers())
+    observed_at = datetime.now(timezone.utc).isoformat()
     return ControllerProbeResult(
         client=client,
         info=dict(info),
         vouchers=vouchers,
+        observed_at=observed_at,
     )
