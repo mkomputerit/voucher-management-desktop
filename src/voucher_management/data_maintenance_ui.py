@@ -90,7 +90,7 @@ class DataMaintenanceMixin:
             )
             return False
 
-    def request_close(self) -> None:
+    def request_close(self, *, on_abort=None) -> None:
         """Close safely, creating the configured encrypted recovery snapshot.
 
         The password exists only for this close attempt. Cancelling either the
@@ -105,6 +105,8 @@ class DataMaintenanceMixin:
                 "di chiudere Voucher Management.",
                 parent=self,
             )
+            if on_abort is not None:
+                on_abort()
             return
 
         if not bool(self.settings.get("backup_on_close", True)):
@@ -125,6 +127,8 @@ class DataMaintenanceMixin:
             ),
         )
         if password is None:
+            if on_abort is not None:
+                on_abort()
             return
 
         target = (
@@ -134,9 +138,15 @@ class DataMaintenanceMixin:
                 f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.vmbk"
             )
         )
-        self._start_close_backup(target, password)
+        self._start_close_backup(target, password, on_abort=on_abort)
 
-    def _start_close_backup(self, target: Path, password: str) -> None:
+    def _start_close_backup(
+        self,
+        target: Path,
+        password: str,
+        *,
+        on_abort=None,
+    ) -> None:
         """Run one encrypted shutdown backup attempt without blocking Tk."""
 
         service = self._backup_service()
@@ -184,12 +194,18 @@ class DataMaintenanceMixin:
                 parent=self,
             )
             if decision is True:
-                self._start_close_backup(target, password)
+                self._start_close_backup(
+                    target,
+                    password,
+                    on_abort=on_abort,
+                )
             elif decision is False:
                 self._finish_close(
                     close_status="CLOSED_WITHOUT_BACKUP",
                     backup_status="FAILED",
                 )
+            elif on_abort is not None:
+                on_abort()
 
         started = self._run_background_task(
             "Backup di chiusura…",
@@ -207,6 +223,8 @@ class DataMaintenanceMixin:
                 "un'altra operazione.",
                 parent=self,
             )
+            if on_abort is not None:
+                on_abort()
 
     def _finish_close(
         self,
