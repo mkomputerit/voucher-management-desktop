@@ -100,9 +100,10 @@ The 5.0 deployment model therefore requires these compensating controls:
   operator group, then verifies the resulting Allow ACEs recursively; stale
   explicit grants to other principals cause installation to fail rather than
   leaving the database broadly readable;
-- review-driven retention never touches used or physically printed vouchers;
-  eligible old/absent unused and unprinted records keep their historical row
-  while reusable voucher codes and operator-entered personal text are removed;
+- review-driven retention never touches used, physically printed or
+  PDF-generated vouchers; eligible old/absent unused records with no generated
+  PDF keep their historical row while reusable voucher codes and
+  operator-entered personal text are removed;
 - reports expose voucher codes only when the report purpose requires them;
 - temporary copies of the live SQLite database are not used for backup; SQLite
   backup/snapshot facilities must produce a transactionally consistent image.
