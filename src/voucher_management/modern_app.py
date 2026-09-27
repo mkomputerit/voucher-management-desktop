@@ -27,6 +27,7 @@ from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
 from .report_ui import ReportDialog
 from .retention_ui import RetentionMixin
+from .sync_store import load_local_vouchers
 from .utils import format_fingerprint
 from .data_maintenance_ui import DataMaintenanceMixin
 from .controller_connection_ui import ControllerConnectionMixin
@@ -119,6 +120,8 @@ class SettingsDialog(tk.Toplevel):
             app.controller_profile_name_var = tk.StringVar(
                 value=current_name or "Controller UniFi"
             )
+        self.controller_choice_var = tk.StringVar()
+        self._controller_profiles_by_label = {}
 
         shell = ttk.Frame(self, padding=22)
         shell.pack(fill="both", expand=True)
@@ -248,39 +251,74 @@ class SettingsDialog(tk.Toplevel):
             frame,
             text="Controller UniFi",
             style="SectionTitle.TLabel",
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ).grid(row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(
             frame,
             text=(
-                "Il controller è una configurazione della postazione. "
+                "Seleziona un profilo salvato oppure preparane uno nuovo. "
                 "La API key serve solo per la connessione corrente e non "
                 "viene salvata."
             ),
             style="Muted.TLabel",
-            wraplength=620,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 14))
+            wraplength=650,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(3, 14))
 
-        ttk.Label(frame, text="Nome profilo").grid(
+        ttk.Label(frame, text="Profili salvati").grid(
             row=2, column=0, sticky="w", pady=7, padx=(0, 18)
         )
+        profile_row = ttk.Frame(frame)
+        profile_row.grid(row=2, column=1, columnspan=2, sticky="ew", pady=7)
+        profile_row.columnconfigure(0, weight=1)
+        self.controller_combo = ttk.Combobox(
+            profile_row,
+            textvariable=self.controller_choice_var,
+            state="readonly",
+        )
+        self.controller_combo.grid(row=0, column=0, sticky="ew")
+        self.controller_combo.bind(
+            "<<ComboboxSelected>>",
+            self._select_controller_profile,
+        )
+        ttk.Button(
+            profile_row,
+            text="Nuovo",
+            command=self._new_controller_profile,
+        ).grid(row=0, column=1, padx=(8, 0))
+
+        ttk.Label(frame, text="Nome profilo").grid(
+            row=3, column=0, sticky="w", pady=7, padx=(0, 18)
+        )
+        name_row = ttk.Frame(frame)
+        name_row.grid(row=3, column=1, columnspan=2, sticky="ew", pady=7)
+        name_row.columnconfigure(0, weight=1)
         ttk.Entry(
-            frame,
+            name_row,
             textvariable=self.app.controller_profile_name_var,
-        ).grid(row=2, column=1, sticky="ew", pady=7)
+        ).grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            name_row,
+            text="Rinomina",
+            command=self._rename_controller_profile,
+        ).grid(row=0, column=1, padx=(8, 0))
+        ttk.Button(
+            name_row,
+            text="Rimuovi",
+            command=self._remove_controller_profile,
+        ).grid(row=0, column=2, padx=(8, 0))
 
         ttk.Label(frame, text="Indirizzo controller").grid(
-            row=3, column=0, sticky="w", pady=7, padx=(0, 18)
+            row=4, column=0, sticky="w", pady=7, padx=(0, 18)
         )
         ttk.Entry(
             frame,
             textvariable=self.app.api_root_var,
-        ).grid(row=3, column=1, sticky="ew", pady=7)
+        ).grid(row=4, column=1, columnspan=2, sticky="ew", pady=7)
 
         ttk.Label(frame, text="API key").grid(
-            row=4, column=0, sticky="w", pady=7, padx=(0, 18)
+            row=5, column=0, sticky="w", pady=7, padx=(0, 18)
         )
         key_row = ttk.Frame(frame)
-        key_row.grid(row=4, column=1, sticky="ew", pady=7)
+        key_row.grid(row=5, column=1, columnspan=2, sticky="ew", pady=7)
         key_row.columnconfigure(0, weight=1)
         ttk.Entry(
             key_row,
@@ -298,19 +336,138 @@ class SettingsDialog(tk.Toplevel):
             frame,
             textvariable=self.app.connection_var,
             style="ConnectionStatus.TLabel",
-            wraplength=620,
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            wraplength=650,
+        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(12, 0))
         ttk.Label(
             frame,
             text=(
-                "Se il certificato non è riconosciuto da Windows, "
-                "Voucher Management mostra l'impronta da verificare prima "
-                "di inviare la API key."
+                "Rimuovere un profilo non elimina voucher, stampe o storico: "
+                "nasconde soltanto quella configurazione. Se viene aggiunto "
+                "di nuovo lo stesso controller, la sua identità storica viene "
+                "riutilizzata."
             ),
             style="Muted.TLabel",
-            wraplength=620,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+            wraplength=650,
+        ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
         frame.columnconfigure(1, weight=1)
+        self._refresh_controller_profiles()
+
+    def _controller_label(self, profile: dict) -> str:
+        name = str(profile.get("name") or "Controller").strip()
+        root = str(profile.get("api_root") or "").strip()
+        return f"{name} — {root}"
+
+    def _refresh_controller_profiles(
+        self,
+        *,
+        select_id: int | None = None,
+    ) -> None:
+        profiles = self.app.database.controller_profiles()
+        mapping = {
+            self._controller_label(profile): profile
+            for profile in profiles
+        }
+        self._controller_profiles_by_label = mapping
+        self.controller_combo["values"] = tuple(mapping)
+
+        wanted_id = (
+            select_id
+            if select_id is not None
+            else self.app.active_controller_id
+        )
+        selected_label = ""
+        for label, profile in mapping.items():
+            if wanted_id is not None and int(profile["id"]) == int(wanted_id):
+                selected_label = label
+                break
+        self.controller_choice_var.set(selected_label)
+
+    def _selected_controller_profile(self) -> dict | None:
+        return self._controller_profiles_by_label.get(
+            self.controller_choice_var.get()
+        )
+
+    def _select_controller_profile(self, _event=None) -> None:
+        profile = self._selected_controller_profile()
+        if profile is None:
+            return
+        self.app.select_controller_profile(profile)
+
+    def _new_controller_profile(self) -> None:
+        self.controller_choice_var.set("")
+        self.app.controller_profile_name_var.set("Controller UniFi")
+        self.app.api_root_var.set("")
+        self.app.api_key_var.set("")
+        self.app.connection_var.set(
+            "Nuovo profilo: inserire indirizzo e API key per verificarlo"
+        )
+
+    def _rename_controller_profile(self) -> None:
+        profile = self._selected_controller_profile()
+        if profile is None:
+            messagebox.showinfo(
+                "Controller",
+                "Selezionare prima un profilo salvato.",
+                parent=self,
+            )
+            return
+        name = self.app.controller_profile_name_var.get().strip()
+        if not name:
+            messagebox.showerror(
+                "Controller",
+                "Inserire un nome per il profilo.",
+                parent=self,
+            )
+            return
+        try:
+            self.app.database.rename_controller(int(profile["id"]), name)
+        except Exception as exc:
+            self.app.logger.warning(
+                "controller_profile_rename_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Controller",
+                "Impossibile rinominare il profilo.",
+                parent=self,
+            )
+            return
+        self._refresh_controller_profiles(select_id=int(profile["id"]))
+
+    def _remove_controller_profile(self) -> None:
+        profile = self._selected_controller_profile()
+        if profile is None:
+            messagebox.showinfo(
+                "Controller",
+                "Selezionare prima un profilo salvato.",
+                parent=self,
+            )
+            return
+        if not messagebox.askyesno(
+            "Rimuovi controller",
+            "Rimuovere questo profilo dalla configurazione?\n\n"
+            "Voucher, stampe e storico restano conservati.",
+            parent=self,
+        ):
+            return
+        controller_id = int(profile["id"])
+        try:
+            self.app.database.deactivate_controller(controller_id)
+        except Exception as exc:
+            self.app.logger.warning(
+                "controller_profile_remove_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Controller",
+                "Impossibile rimuovere il profilo.",
+                parent=self,
+            )
+            return
+
+        if self.app.active_controller_id == controller_id:
+            self.app.clear_active_controller_profile()
+        self._refresh_controller_profiles()
 
     def _build_pdf_tab(self, frame: ttk.Frame) -> None:
         ttk.Label(
@@ -1494,6 +1651,54 @@ class ModernVoucherApp(
                 text="Apri…",
                 command=command,
             ).pack(anchor="w")
+
+    def select_controller_profile(self, profile: dict) -> None:
+        """Switch the operator workspace to one saved local controller profile."""
+
+        controller_id = int(profile["id"])
+        api_root = str(profile.get("api_root") or "").strip()
+        name = str(profile.get("name") or "Controller UniFi").strip()
+        cert_sha256 = str(profile.get("cert_sha256") or "").strip()
+
+        if self.client is not None and self.client.base_url != api_root:
+            self.client = None
+        self.active_controller_id = controller_id
+        self.api_root_var.set(api_root)
+        self.controller_profile_name_var.set(name)
+        self.api_key_var.set("")
+        self.settings = self.settings_store.update(
+            controller_api_root=api_root,
+            controller_cert_sha256=cert_sha256,
+        )
+        self.vouchers = load_local_vouchers(
+            self.database,
+            controller_id=controller_id,
+        )
+        self.checked_ids.clear()
+        if self.client is not None:
+            self.connection_var.set(f"Connesso • {name}")
+        else:
+            self.connection_var.set(f"Modalità locale • {name}")
+        self.populate()
+        self._refresh_workspace_summary()
+
+    def clear_active_controller_profile(self) -> None:
+        """Clear current controller selection without deleting historical data."""
+
+        self.client = None
+        self.active_controller_id = None
+        self.api_root_var.set("")
+        self.api_key_var.set("")
+        self.controller_profile_name_var.set("Controller UniFi")
+        self.settings = self.settings_store.update(
+            controller_api_root="",
+            controller_cert_sha256="",
+        )
+        self.vouchers = []
+        self.checked_ids.clear()
+        self.connection_var.set("Non connesso")
+        self.populate()
+        self._refresh_workspace_summary()
 
     def _show_page(self, page: str) -> None:
         frame = self._page_frames.get(page)
