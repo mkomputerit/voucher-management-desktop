@@ -145,6 +145,29 @@ the primary action; advanced editing is secondary. Completion is recorded in
 the shared SQLite installation settings, so the explanation is installation-
 scoped rather than repeated for every Windows profile.
 
+## First-run and upgrade disposition
+
+Startup classifies the local archive before presenting onboarding UI. A completed
+`installation_profile` identifies a configured 5.0 installation. Existing
+controller/migration/audit facts without that completion marker identify an
+upgrade or restored installation and are never forced through new-install
+onboarding.
+
+In shared ProgramData mode, migratable LocalAppData always takes precedence over
+first-run onboarding. Normal controller/print/report operations remain blocked
+behind a modal migration decision until the operator either performs the
+explicit encrypted migration or closes the application. A controller-free
+`application_sessions` row created by the current startup is a bootstrap audit
+artifact, not operational use, so it does not by itself make an otherwise fresh
+ProgramData target non-pristine.
+
+First-run controller verification keeps the API key only in the active client
+object, records the time at which the complete voucher snapshot was actually
+observed, and persists only the controller root/certificate trust plus the
+operator-selected controller profile name. Onboarding completion persists
+retention policy, the installation profile and the installation-scoped retention
+introduction marker atomically in SQLite.
+
 ## Delivery milestones
 
 The 5.0 transition is intentionally split into independent engineering gates so
