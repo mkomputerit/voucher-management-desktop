@@ -26,6 +26,14 @@
 - Wired the existing `application_sessions` schema into runtime lifecycle
   auditing so a clean close records its controller and backup outcome while a
   hard crash remains distinguishable by an open session record.
+- Wired the existing `backup_history` schema into the 5.0 backup lifecycle.
+  Manual backups, automatic shutdown backups and verified pre-migration backups
+  now record final SUCCESS/FAILED outcomes. Successful rows identify the final
+  delivered backup container by SHA-256 and retain its backup format and SQLite
+  schema version. Audit rows store only a destination category and filename
+  basename, never a full Windows path, password or exception message. The
+  shared-data migration records its verified source backup in the resulting
+  ProgramData database without modifying the original per-user source.
 - Added review-driven 5.0 voucher retention. The installation defaults to
   180 days and permanently protects vouchers that were used, physically
   printed or already have a generated PDF. Only old vouchers that are no
