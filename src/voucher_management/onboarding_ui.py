@@ -53,7 +53,10 @@ def startup_onboarding_state(app) -> OnboardingState:
     if app.database.metadata_value(ONBOARDING_IN_PROGRESS_KEY) == "1":
         return OnboardingState.REQUIRED
 
-    if legacy_installation_has_evidence(app.paths, app.settings):
+    if legacy_installation_has_evidence(
+        app.paths,
+        getattr(app, "settings", {}),
+    ):
         return OnboardingState.EXISTING_INSTALLATION
 
     if (
