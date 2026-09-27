@@ -905,6 +905,14 @@ class DataMaintenanceMixin:
             return
 
         def completed(result) -> None:
+            audit_note = (
+                ""
+                if result.backup_audit_recorded
+                else (
+                    "\n\nAttenzione: il trasferimento è riuscito, ma "
+                    "l'audit locale del backup sorgente non è stato registrato."
+                )
+            )
             messagebox.showinfo(
                 "Migrazione completata",
                 "I dati del profilo Windows sono stati trasferiti "
@@ -913,7 +921,7 @@ class DataMaintenanceMixin:
                 f"Rollback del precedente ProgramData:\n"
                 f"{result.rollback_path}\n\n"
                 "La copia originale nel profilo utente è rimasta invariata. "
-                "Riavviare Voucher Management.",
+                f"Riavviare Voucher Management.{audit_note}",
                 parent=parent,
             )
             self.destroy()
