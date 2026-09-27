@@ -76,12 +76,26 @@ begin
   Value := CommandLineOperatorUser;
   if Value = '' then
   begin
-    if Assigned(OperatorPage) then
+    if OperatorPage <> nil then
       Value := Trim(OperatorPage.Values[0]);
   end;
   if Value = '' then
     Value := DefaultOperatorUser;
   Result := Value;
+end;
+
+function SelectedDataRoot: String;
+begin
+  Result := ExpandConstant('{param:DATAROOT|}');
+  if Result = '' then
+    Result := ExpandConstant('{commonappdata}\VoucherManagement');
+end;
+
+function SelectedOperatorGroup: String;
+begin
+  Result := ExpandConstant('{param:OPERATORGROUP|}');
+  if Result = '' then
+    Result := 'Voucher Management Operators';
 end;
 
 procedure InitializeWizard;
@@ -170,7 +184,8 @@ begin
     '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '" ' +
     '-ConfigureOnly ' +
     '-InstallRoot "' + ExpandConstant('{app}') + '" ' +
-    '-DataRoot "' + ExpandConstant('{commonappdata}\VoucherManagement') + '" ' +
+    '-DataRoot "' + SelectedDataRoot + '" ' +
+    '-OperatorGroup "' + SelectedOperatorGroup + '" ' +
     '-OperatorUser "' + OperatorUser + '" ' +
     '-SkipShortcut';
 
