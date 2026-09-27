@@ -17,6 +17,7 @@ from .logo_validation import LogoValidationError, validate_logo_image
 from .shared_data_migration import source_has_migratable_data
 from .onboarding import (
     DEFAULT_VOUCHER_RETENTION_DAYS,
+    ONBOARDING_IN_PROGRESS_KEY,
     OnboardingDraft,
     OnboardingState,
     begin_onboarding,
@@ -49,7 +50,7 @@ def startup_onboarding_state(app) -> OnboardingState:
 
     # Once onboarding has begun, its durable retry marker wins over filesystem
     # evidence produced by the partial attempt itself.
-    if app.database.metadata_value("onboarding_in_progress") == "1":
+    if app.database.metadata_value(ONBOARDING_IN_PROGRESS_KEY) == "1":
         return OnboardingState.REQUIRED
 
     if legacy_installation_has_evidence(app.paths, app.settings):
