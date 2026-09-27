@@ -17,6 +17,7 @@ from .logo_validation import LogoValidationError, validate_logo_image
 from .shared_data_migration import source_has_migratable_data
 from .onboarding import (
     DEFAULT_VOUCHER_RETENTION_DAYS,
+    LEGACY_MIGRATION_DECLINED_KEY,
     ONBOARDING_IN_PROGRESS_KEY,
     OnboardingDraft,
     OnboardingState,
@@ -58,6 +59,15 @@ def startup_onboarding_state(app) -> OnboardingState:
         getattr(app, "settings", {}),
     ):
         return OnboardingState.EXISTING_INSTALLATION
+
+    if (
+        getattr(app.paths, "shared_mode", False)
+        and app.database.metadata_value(LEGACY_MIGRATION_DECLINED_KEY) == "1"
+    ):
+        # The operator explicitly chose a fresh shared installation. Preserve
+        # the old per-user tree untouched but do not trap future startups
+        # behind the migration gate.
+        return OnboardingState.REQUIRED
 
     if (
         getattr(app.paths, "shared_mode", False)
