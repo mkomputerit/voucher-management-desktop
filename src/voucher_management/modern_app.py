@@ -1333,6 +1333,16 @@ class ModernVoucherApp(
             "Configurazione dell'applicazione, controller, stampa, retention e backup.",
         )
 
+        if not hasattr(self, "controller_profile_name_var"):
+            current_name = (
+                self.database.controller_name(self.active_controller_id)
+                if self.active_controller_id is not None
+                else None
+            )
+            self.controller_profile_name_var = tk.StringVar(
+                value=current_name or "Controller UniFi"
+            )
+
         controller = ttk.Frame(page, padding=16, style="Card.TFrame")
         controller.pack(fill="x", pady=(0, 12))
         ttk.Label(
@@ -1348,19 +1358,27 @@ class ModernVoucherApp(
             ),
             style="Muted.TLabel",
         ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(3, 10))
-        ttk.Label(controller, text="API root").grid(
+        ttk.Label(controller, text="Nome profilo").grid(
             row=2, column=0, sticky="w", padx=(0, 8)
+        )
+        ttk.Entry(
+            controller,
+            textvariable=self.controller_profile_name_var,
+        ).grid(row=2, column=1, columnspan=3, sticky="ew", padx=(0, 12))
+
+        ttk.Label(controller, text="API root").grid(
+            row=3, column=0, sticky="w", padx=(0, 8), pady=(8, 0)
         )
         self.api_root_entry = ttk.Entry(
             controller,
             textvariable=self.api_root_var,
         )
         self.api_root_entry.grid(
-            row=2, column=1, sticky="ew", padx=(0, 16)
+            row=3, column=1, sticky="ew", padx=(0, 16), pady=(8, 0)
         )
         self.api_root_entry.bind("<Return>", lambda _event: self.connect())
         ttk.Label(controller, text="API key").grid(
-            row=2, column=2, sticky="w", padx=(0, 8)
+            row=3, column=2, sticky="w", padx=(0, 8), pady=(8, 0)
         )
         self.api_key_entry = ttk.Entry(
             controller,
@@ -1369,7 +1387,7 @@ class ModernVoucherApp(
             width=28,
         )
         self.api_key_entry.grid(
-            row=2, column=3, sticky="ew", padx=(0, 12)
+            row=3, column=3, sticky="ew", padx=(0, 12), pady=(8, 0)
         )
         self.api_key_entry.bind("<Return>", lambda _event: self.connect())
         self.connect_button = ttk.Button(
@@ -1378,13 +1396,13 @@ class ModernVoucherApp(
             command=self.connect,
             style="Accent.TButton",
         )
-        self.connect_button.grid(row=2, column=4, sticky="e")
+        self.connect_button.grid(row=3, column=4, sticky="e", pady=(8, 0))
         ttk.Label(
             controller,
             textvariable=self.connection_var,
             style="ConnectionStatus.TLabel",
         ).grid(
-            row=3,
+            row=4,
             column=0,
             columnspan=5,
             sticky="w",
@@ -1400,24 +1418,24 @@ class ModernVoucherApp(
 
         cards = (
             (
-                "Generali / PDF",
-                "Identità, tema, logo e archivio dei documenti.",
-                lambda: SettingsDialog(self),
+                "Generali",
+                "Identità della postazione e tema Windows.",
+                lambda: SettingsDialog(self, initial_tab="Generali"),
+            ),
+            (
+                "PDF / stampa",
+                "Logo, aspetto voucher e archivio PDF.",
+                lambda: SettingsDialog(self, initial_tab="PDF / stampa"),
             ),
             (
                 "Retention",
-                "Rivedi i voucher candidati alla minimizzazione.",
-                lambda: self.open_retention_review(parent=self),
+                "Conservazione e revisione dei voucher storici.",
+                lambda: SettingsDialog(self, initial_tab="Retention"),
             ),
             (
                 "Backup",
-                "Crea o ripristina una copia protetta dei dati.",
-                self.create_backup,
-            ),
-            (
-                "Ripristino",
-                "Ripristina un backup Voucher Management.",
-                self.restore_backup,
+                "Backup, ripristino e strumenti dati avanzati.",
+                lambda: SettingsDialog(self, initial_tab="Backup"),
             ),
         )
         for column, (title, detail, command) in enumerate(cards):
