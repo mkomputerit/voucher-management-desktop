@@ -234,11 +234,17 @@ jobs:
             throw "Native Setup not found: $setup"
           }
           $info = (Get-Item -LiteralPath $setup).VersionInfo
-          if ($info.ProductVersion -ne $version) {
-            throw "Setup ProductVersion mismatch: expected '$version', got '$($info.ProductVersion)'"
+          $productVersion = ([string]$info.ProductVersion).Trim()
+          $fileVersion = ([string]$info.FileVersion).Trim()
+          $productName = ([string]$info.ProductName).Trim()
+          if ($productVersion -ne $version) {
+            throw "Setup ProductVersion mismatch: expected '$version', got '$productVersion'"
           }
-          if ($info.ProductName -ne "Voucher Management") {
-            throw "Setup ProductName mismatch: $($info.ProductName)"
+          if ($fileVersion -ne $version) {
+            throw "Setup FileVersion mismatch: expected '$version', got '$fileVersion'"
+          }
+          if ($productName -ne "Voucher Management") {
+            throw "Setup ProductName mismatch: $productName"
           }
 
       - name: Test native Windows Setup
