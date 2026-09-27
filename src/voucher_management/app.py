@@ -273,7 +273,14 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             "show_retention_intro_if_needed",
             None,
         )
-        if retention_intro is not None:
+        retention_intro_allowed = getattr(
+            self,
+            "_retention_intro_allowed_on_startup",
+            None,
+        )
+        if retention_intro is not None and (
+            retention_intro_allowed is None or retention_intro_allowed()
+        ):
             self.after_idle(retention_intro)
         if logo_warning:
             messagebox.showwarning(
