@@ -385,3 +385,42 @@ def test_empty_scoped_report_keeps_controller_label(tmp_path):
         assert dataset.controller_label == "Sala Assemblee"
     finally:
         database.close()
+
+
+
+def test_retention_archived_row_remains_in_history_with_archived_status(tmp_path):
+    database, controller_id = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller_id,
+            unifi_id="archived",
+            code="1234567890",
+            name="Old guest",
+            created_at="2025-01-01T09:00:00+00:00",
+        )
+        with database.transaction() as db:
+            db.execute(
+                """UPDATE vouchers
+                   SET code=?, name='', assigned_to='', notes='', archived_at=?
+                   WHERE id=?""",
+                (
+                    f"ARCHIVED-{voucher_id}",
+                    "2026-09-27T08:00:00+00:00",
+                    voucher_id,
+                ),
+            )
+
+        dataset = build_report_dataset(
+            database,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+
+        row = next(item for item in dataset.rows if item.voucher_id == voucher_id)
+        assert row.status == "Archiviato"
+        assert row.archived_at == "2026-09-27T08:00:00+00:00"
+        assert row.code == ""
+        assert row.recipient == ""
+    finally:
+        database.close()
