@@ -13,11 +13,15 @@ from voucher_management.onboarding import (
     OnboardingState,
     begin_onboarding,
     complete_onboarding,
+    legacy_installation_has_evidence,
     onboarding_state,
 )
-from voucher_management.onboarding_ui import schedule_first_run_onboarding
+from voucher_management.onboarding_ui import (
+    schedule_first_run_onboarding,
+    startup_onboarding_state,
+)
 from voucher_management.retention import retention_intro_seen
-from voucher_management.settings import SettingsStore
+from voucher_management.settings import DEFAULT_SETTINGS, SettingsStore
 
 
 NOW = "2026-09-27T08:00:00+00:00"
@@ -236,6 +240,103 @@ def test_onboarding_rejects_unsafe_retention(days, tmp_path):
         assert database.installation_profile() is None
     finally:
         database.close()
+
+
+def _startup_app(tmp_path, database, *, settings=None, shared_mode=False):
+    root = tmp_path / "active"
+    paths = type(
+        "Paths",
+        (),
+        {
+            "shared_mode": shared_mode,
+            "per_user_root": tmp_path / "profile",
+            "history": root / "data" / "history.jsonl",
+            "prints": root / "Print",
+            "logos": root / "Loghi",
+        },
+    )()
+    return type(
+        "FakeApp",
+        (),
+        {
+            "database": database,
+            "paths": paths,
+            "settings": dict(DEFAULT_SETTINGS if settings is None else settings),
+            "after_idle": lambda self, callback: None,
+        },
+    )()
+
+
+def test_portable_4x_settings_are_not_forced_through_new_install(tmp_path):
+    database = _database(tmp_path)
+    settings = dict(DEFAULT_SETTINGS)
+    settings["controller_api_root"] = (
+        "https://controller.example/proxy/network/integration/v1"
+    )
+    app = _startup_app(tmp_path, database, settings=settings)
+    try:
+        assert (
+            startup_onboarding_state(app)
+            is OnboardingState.EXISTING_INSTALLATION
+        )
+    finally:
+        database.close()
+
+
+def test_portable_4x_history_is_not_forced_through_new_install(tmp_path):
+    database = _database(tmp_path)
+    app = _startup_app(tmp_path, database)
+    app.paths.history.parent.mkdir(parents=True)
+    app.paths.history.write_text('{"type":"print"}\n', encoding="utf-8")
+    try:
+        assert (
+            startup_onboarding_state(app)
+            is OnboardingState.EXISTING_INSTALLATION
+        )
+    finally:
+        database.close()
+
+
+def test_history_fingerprint_bootstrap_alone_still_requires_onboarding(tmp_path):
+    database = _database(tmp_path)
+    settings = dict(DEFAULT_SETTINGS)
+    settings["history_key_fingerprint"] = "bootstrap"
+    app = _startup_app(tmp_path, database, settings=settings)
+    try:
+        assert startup_onboarding_state(app) is OnboardingState.REQUIRED
+    finally:
+        database.close()
+
+
+def test_interrupted_onboarding_marker_wins_over_partial_filesystem_state(
+    tmp_path,
+):
+    database = _database(tmp_path)
+    settings = dict(DEFAULT_SETTINGS)
+    settings["structure_name"] = "Parzialmente configurata"
+    app = _startup_app(tmp_path, database, settings=settings)
+    try:
+        begin_onboarding(database)
+        assert startup_onboarding_state(app) is OnboardingState.REQUIRED
+    finally:
+        database.close()
+
+
+def test_legacy_evidence_helper_fails_closed_on_managed_files(tmp_path):
+    root = tmp_path / "legacy"
+    paths = type(
+        "Paths",
+        (),
+        {
+            "history": root / "data" / "history.jsonl",
+            "prints": root / "Print",
+            "logos": root / "Loghi",
+        },
+    )()
+    paths.logos.mkdir(parents=True)
+    (paths.logos / "logo.png").write_bytes(b"synthetic")
+
+    assert legacy_installation_has_evidence(paths, dict(DEFAULT_SETTINGS)) is True
 
 
 def test_scheduler_runs_wizard_only_for_required_first_run(tmp_path):

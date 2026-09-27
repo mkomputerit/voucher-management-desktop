@@ -14,6 +14,15 @@
 - Added installer-controlled shared Windows deployment under ProgramData with a
   dedicated operator group, machine-wide file locking, restrictive verified
   NTFS ACLs and explicit LocalAppData-to-ProgramData migration.
+- Added first-run onboarding for genuinely new 5.0 installations with
+  installation identity, structure/Wi-Fi branding, managed logo selection,
+  ephemeral UniFi API-key verification, explicit TLS trust, a persistent
+  operator-named controller profile and installation-scoped retention setup.
+  Shared-mode legacy data takes precedence over onboarding and normal
+  operations remain blocked until the explicit migration decision is resolved.
+  Portable 4.x settings/history/PDF/logo evidence is also detected before the
+  wizard so an upgrade without a pre-existing SQLite database is never treated
+  as a brand-new installation.
 - Added WAL-safe SQLite backup/restore using `sqlite3.Connection.backup()`,
   standalone snapshot normalization, `PRAGMA integrity_check`, schema/hash
   verification and exclusion of live WAL/SHM/journal sidecars.
@@ -45,13 +54,17 @@
   A later controller reappearance reactivates the same durable row.
 - Added real Windows CI coverage for shared deployment ACLs, upgrade behavior,
   preserved-data uninstall and explicit `-RemoveData` cleanup.
+- Hardened the stable-release trigger so a final `CHANGELOG.md` release-date
+  commit is itself sufficient to run the complete Windows verification and
+  explicit `[release]` publication path on `main`.
 - Added SQLite-backed administrative reporting with summary, used, expired,
   printed-never-used, never-printed, nominal and full-history views, plus atomic
   printable PDF and CSV export. Summary/audit report rows are sanitized through
   the central report credential policy and never expose voucher codes in clear.
-- 5.0 remains unreleased: `version.txt`, package metadata and the Windows
-  executable continue to report 4.3.3 until the remaining 5.0 release gates
-  are complete. No 5.0 tag or stable package is produced from this branch.
+- The reviewed release-candidate branch reports 5.0.0 in package and Windows
+  metadata, but 5.0 remains unpublished until the final release review is
+  approved and an explicit `[release]` commit reaches `main`. No 5.0 tag or
+  stable package is produced by the release-candidate branch itself.
 
 ## 4.3.3 - 2026-09-23
 

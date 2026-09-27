@@ -47,9 +47,11 @@ The application currently provides:
   their historical audit record; unverifiable HMAC history blocks retention
   rather than guessing whether a credential-bearing document exists;
 - persistent custom logo library;
+- installation-scoped first-run onboarding for genuinely new 5.0 deployments,
+  including explicit UniFi/TLS verification and migration precedence;
 - Windows 11 light/dark themes.
 
-Voucher Management 4.3.3 uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
+The Voucher Management 5.0.0 release candidate uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
 
 ## Current limitations
 
@@ -72,7 +74,11 @@ Voucher Management 4.3.3 uses Ubiquiti's documented Network integration API with
 
 ## Public release
 
-Voucher Management 4.3.3:
+Voucher Management 4.3.3 is the current published stable release. The 5.0.0
+release candidate is under final review and is not published until the explicit
+release gate runs on `main`.
+
+Published releases:
 
 1. use the neutral **Voucher Management** product identity;
 2. use the MIT License;
