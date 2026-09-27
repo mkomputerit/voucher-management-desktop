@@ -226,6 +226,14 @@ def test_scheduler_runs_wizard_only_for_required_first_run(tmp_path):
         (),
         {
             "database": database,
+            "paths": type(
+                "Paths",
+                (),
+                {
+                    "shared_mode": False,
+                    "per_user_root": tmp_path / "profile",
+                },
+            )(),
             "after_idle": lambda self, callback: scheduled.append(callback),
         },
     )()
@@ -244,6 +252,37 @@ def test_scheduler_runs_wizard_only_for_required_first_run(tmp_path):
         database.close()
 
 
+def test_shared_first_run_defers_to_explicit_per_user_migration(tmp_path):
+    database = _database(tmp_path)
+    per_user = tmp_path / "LocalAppData" / "VoucherManagement"
+    store = SettingsStore(per_user / "config" / "settings.json")
+    store.save({"structure_name": "Legacy Sala"})
+
+    scheduled = []
+    app = type(
+        "FakeApp",
+        (),
+        {
+            "database": database,
+            "paths": type(
+                "Paths",
+                (),
+                {
+                    "shared_mode": True,
+                    "per_user_root": per_user,
+                },
+            )(),
+            "after_idle": lambda self, callback: scheduled.append(callback),
+        },
+    )()
+    try:
+        state = schedule_first_run_onboarding(app)
+        assert state is OnboardingState.EXISTING_INSTALLATION
+        assert scheduled == []
+    finally:
+        database.close()
+
+
 def test_scheduler_does_not_force_existing_installation(tmp_path):
     database = _database(tmp_path)
     database.create_controller(
@@ -257,6 +296,14 @@ def test_scheduler_does_not_force_existing_installation(tmp_path):
         (),
         {
             "database": database,
+            "paths": type(
+                "Paths",
+                (),
+                {
+                    "shared_mode": False,
+                    "per_user_root": tmp_path / "profile",
+                },
+            )(),
             "after_idle": lambda self, callback: scheduled.append(callback),
         },
     )()
