@@ -197,11 +197,14 @@ class DataMaintenanceMixin:
                 parent=self,
             )
             if decision is True:
-                self._start_close_backup(
-                    target,
-                    password,
-                    on_abort=on_abort,
-                )
+                if on_abort is None:
+                    self._start_close_backup(target, password)
+                else:
+                    self._start_close_backup(
+                        target,
+                        password,
+                        on_abort=on_abort,
+                    )
             elif decision is False:
                 self._finish_close(
                     close_status="CLOSED_WITHOUT_BACKUP",
