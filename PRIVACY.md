@@ -31,13 +31,22 @@ local `pending_print_audit.json` file temporarily stores only HMAC voucher
 identifiers plus print metadata needed for idempotent recovery. It does not
 contain voucher codes in clear text and is not included in portable backups.
 
-Backups may be created either as a legacy unencrypted ZIP or as a
-password-protected `.vmbk` file. The encrypted form protects the complete
-portable snapshot, including generated PDFs and the local history key. Backup
-passwords are used only for the active create/restore operation and are not
-stored in settings, logs or backup metadata. Encrypted validation/restore uses
+The normal backup workflow creates only password-protected `.vmbk` files.
+Legacy unencrypted ZIP archives remain readable for restore compatibility but
+are no longer offered as normal backup output. The encrypted form protects the
+complete portable snapshot, including generated PDFs and the local history key.
+Backup passwords are used only for the active create/restore operation and are
+not stored in settings, logs or backup metadata. Encrypted validation/restore uses
 an OS-managed anonymous/auto-delete temporary file for decrypted ZIP bytes,
 rather than a named plaintext archive under the application-data directory.
+
+Voucher Management 5.0 also applies review-driven local retention.
+Used or physically printed vouchers are never retention candidates. Old,
+unused, unprinted vouchers are proposed only after they are absent from a
+complete controller snapshot. Nothing is minimized automatically. When an
+operator explicitly archives a candidate, the durable historical row remains
+but the reusable voucher code, recipient label, nominal assignment and free-text
+notes are removed.
 
 Manual history exchange packages (`.vmhx`) are always password-protected.
 They contain local audit rows and the portable history key needed to preserve
