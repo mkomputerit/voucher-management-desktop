@@ -591,12 +591,41 @@ class FirstRunWizard(tk.Toplevel):
                 "Pagina di prova inviata alla stampante"
             )
 
-        PrintTestPreview(
-            self.app,
-            test_path,
-            delete_on_close=True,
-            on_submitted=submitted,
-        )
+        try:
+            self.grab_release()
+        except tk.TclError:
+            self.app.logger.debug("onboarding_print_test_grab_release_ignored")
+
+        try:
+            preview = PrintTestPreview(
+                self.app,
+                test_path,
+                delete_on_close=True,
+                on_submitted=submitted,
+            )
+            preview.transient(self)
+            preview.grab_set()
+        except Exception:
+            try:
+                self.grab_set()
+            except tk.TclError:
+                self.app.logger.debug(
+                    "onboarding_print_test_grab_restore_ignored"
+                )
+            raise
+
+        def restore_wizard_grab(event=None) -> None:
+            if event is not None and event.widget is not preview:
+                return
+            try:
+                if self.winfo_exists():
+                    self.after_idle(self.grab_set)
+            except tk.TclError:
+                self.app.logger.debug(
+                    "onboarding_print_test_grab_restore_ignored"
+                )
+
+        preview.bind("<Destroy>", restore_wizard_grab, add="+")
 
     def _render_retention(self) -> None:
         self.header_var.set("Conservazione dello storico")
