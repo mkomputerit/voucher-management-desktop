@@ -152,7 +152,7 @@ def test_connect_worker_contains_network_and_tls_prompt_is_callback_only():
 
 
 def test_network_busy_state_drives_progress_and_network_buttons():
-    widgets = [_Widget() for _ in range(6)]
+    widgets = [_Widget() for _ in range(7)]
     progress = _Progress()
     label = _Label()
     fake = SimpleNamespace(
@@ -162,6 +162,7 @@ def test_network_busy_state_drives_progress_and_network_buttons():
         delete_button=widgets[3],
         print_button=widgets[4],
         open_pdf_button=widgets[5],
+        report_button=widgets[6],
         background_operation_var=_Var(),
         background_progress=progress,
         background_operation_label=label,

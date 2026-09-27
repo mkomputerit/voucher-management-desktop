@@ -19,6 +19,10 @@
   verification and exclusion of live WAL/SHM/journal sidecars.
 - Added real Windows CI coverage for shared deployment ACLs, upgrade behavior,
   preserved-data uninstall and explicit `-RemoveData` cleanup.
+- Added SQLite-backed administrative reporting with summary, used, expired,
+  printed-never-used, never-printed, nominal and full-history views, plus atomic
+  printable PDF and CSV export. Summary/audit report rows are sanitized through
+  the central report credential policy and never expose voucher codes in clear.
 - 5.0 remains unreleased: `version.txt`, package metadata and the Windows
   executable continue to report 4.3.3 until the remaining 5.0 release gates
   are complete. No 5.0 tag or stable package is produced from this branch.
