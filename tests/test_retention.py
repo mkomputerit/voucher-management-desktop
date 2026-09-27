@@ -162,8 +162,6 @@ def test_candidates_require_old_absent_unused_unprinted_rows(tmp_path):
             document_copies=1,
             printed_at=OLD,
             windows_user="operator",
-            history=_history(),
-            settings={},
         )
 
         candidates = retention_candidates(
