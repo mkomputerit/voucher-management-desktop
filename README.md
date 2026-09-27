@@ -35,6 +35,9 @@ The application currently provides:
 - encrypted/authenticated `.vmbk` backup creation and restore of
   application-managed data, including a default backup-before-close workflow;
   plaintext ZIP remains accepted only for legacy restore compatibility;
+- SQLite backup audit for manual, shutdown and migration safety backups,
+  recording privacy-safe outcome metadata plus SHA-256/format/schema facts for
+  verified final artifacts without storing passwords or full destination paths;
 - SQLite-backed administrative reporting with printable PDF and CSV export for
   summary, used, expired, printed-never-used, never-printed, nominal and
   full-history views; administrative exports never expose voucher codes in clear;
