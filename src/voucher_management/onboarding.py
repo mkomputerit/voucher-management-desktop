@@ -18,6 +18,7 @@ from .settings import DEFAULT_SETTINGS, SettingsStore
 
 DEFAULT_VOUCHER_RETENTION_DAYS = 180
 ONBOARDING_IN_PROGRESS_KEY = "onboarding_in_progress"
+LEGACY_MIGRATION_DECLINED_KEY = "shared_legacy_migration_declined"
 
 
 class OnboardingState(str, Enum):
