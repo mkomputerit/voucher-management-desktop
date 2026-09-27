@@ -20,6 +20,9 @@
   operator-named controller profile and installation-scoped retention setup.
   Shared-mode legacy data takes precedence over onboarding and normal
   operations remain blocked until the explicit migration decision is resolved.
+  Portable 4.x settings/history/PDF/logo evidence is also detected before the
+  wizard so an upgrade without a pre-existing SQLite database is never treated
+  as a brand-new installation.
 - Added WAL-safe SQLite backup/restore using `sqlite3.Connection.backup()`,
   standalone snapshot normalization, `PRAGMA integrity_check`, schema/hash
   verification and exclusion of live WAL/SHM/journal sidecars.

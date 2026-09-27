@@ -21,6 +21,7 @@ from .onboarding import (
     OnboardingState,
     begin_onboarding,
     complete_onboarding,
+    legacy_installation_has_evidence,
     onboarding_state,
 )
 from .unifi_api import (
@@ -43,9 +44,19 @@ def startup_onboarding_state(app) -> OnboardingState:
     """Return the startup disposition before scheduling any modal UI."""
 
     state = onboarding_state(app.database)
+    if state is not OnboardingState.REQUIRED:
+        return state
+
+    # Once onboarding has begun, its durable retry marker wins over filesystem
+    # evidence produced by the partial attempt itself.
+    if app.database.metadata_value("onboarding_in_progress") == "1":
+        return OnboardingState.REQUIRED
+
+    if legacy_installation_has_evidence(app.paths, app.settings):
+        return OnboardingState.EXISTING_INSTALLATION
+
     if (
-        state is OnboardingState.REQUIRED
-        and getattr(app.paths, "shared_mode", False)
+        getattr(app.paths, "shared_mode", False)
         and source_has_migratable_data(app.paths.per_user_root)
     ):
         # Shared ProgramData must remain pristine until the explicit per-user
@@ -53,7 +64,7 @@ def startup_onboarding_state(app) -> OnboardingState:
         # write app_metadata/profile rows and correctly make migration refuse
         # to overwrite the target.
         return OnboardingState.MIGRATION_AVAILABLE
-    return state
+    return OnboardingState.REQUIRED
 
 
 def schedule_first_run_onboarding(

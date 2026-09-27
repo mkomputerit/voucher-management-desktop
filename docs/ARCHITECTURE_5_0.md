@@ -151,7 +151,12 @@ Startup classifies the local archive before presenting onboarding UI. A complete
 `installation_profile` identifies a configured 5.0 installation. Existing
 controller/migration/audit facts without that completion marker identify an
 upgrade or restored installation and are never forced through new-install
-onboarding.
+onboarding. The same fail-safe applies to a portable 4.x upgrade that has no
+SQLite facts yet: meaningful non-default settings, non-empty HMAC history or
+managed PDF/logo files are existing-installation evidence. The bootstrap
+history-key fingerprint created by a fresh 5.0 startup is explicitly ignored.
+An `onboarding_in_progress` marker has higher priority so a partially completed
+5.0 wizard always resumes instead of being reclassified by its own writes.
 
 In shared ProgramData mode, migratable LocalAppData always takes precedence over
 first-run onboarding. Normal controller/print/report operations remain blocked

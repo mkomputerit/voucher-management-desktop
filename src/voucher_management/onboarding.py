@@ -13,7 +13,7 @@ from pathlib import Path
 from .database import Database
 from .identity import DEFAULT_STRUCTURE_TYPE, DEFAULT_WIFI_TITLE
 from .retention import RETENTION_INTRO_KEY
-from .settings import SettingsStore
+from .settings import DEFAULT_SETTINGS, SettingsStore
 
 
 DEFAULT_VOUCHER_RETENTION_DAYS = 180
@@ -44,6 +44,43 @@ class OnboardingDraft:
     pdf_contact: str = ""
     pdf_notes: str = ""
     unused_unprinted_days: int = DEFAULT_VOUCHER_RETENTION_DAYS
+
+
+def legacy_installation_has_evidence(paths, settings: dict) -> bool:
+    """Detect pre-5 persistent data without treating bootstrap files as usage.
+
+    A public 4.x installation can have settings/history/PDF/logo data but no
+    SQLite database. Such an upgrade must never be forced through the wizard
+    for a genuinely new 5.0 installation. The history-key fingerprint is
+    ignored because a fresh 5.0 startup creates that bootstrap identity before
+    onboarding is scheduled.
+    """
+
+    for key, default in DEFAULT_SETTINGS.items():
+        if key == "history_key_fingerprint":
+            continue
+        if settings.get(key, default) != default:
+            return True
+
+    history = Path(paths.history)
+    try:
+        if history.is_file() and history.stat().st_size > 0:
+            return True
+    except OSError:
+        # Unreadable legacy evidence is not a safe reason to classify the
+        # installation as new.
+        return True
+
+    for attribute in ("prints", "logos"):
+        folder = Path(getattr(paths, attribute))
+        try:
+            if folder.is_dir() and any(
+                item.is_file() for item in folder.rglob("*")
+            ):
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def onboarding_state(database: Database) -> OnboardingState:
