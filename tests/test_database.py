@@ -596,3 +596,20 @@ def test_successful_backup_history_requires_verified_sha256(tmp_path):
             )
     finally:
         db.close()
+
+
+
+def test_backup_history_rejects_full_path_as_destination(tmp_path):
+    db = _db(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="destination"):
+            db.record_backup_history(
+                started_at="start",
+                completed_at="done",
+                destination=r"C:\\Temp\\Backups",
+                filename="backup.vmbk",
+                status="FAILED",
+                error_summary="BackupError",
+            )
+    finally:
+        db.close()
