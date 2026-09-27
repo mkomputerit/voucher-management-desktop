@@ -26,7 +26,7 @@ REPORT_KIND_BY_LABEL = dict(REPORT_CHOICES)
 class ReportDialog(tk.Toplevel):
     """Small operator-facing report export workflow."""
 
-    def __init__(self, app):
+    def __init__(self, app, *, initial_kind: str | None = None):
         super().__init__(app)
         self.app = app
         self.title("Report")
@@ -35,7 +35,13 @@ class ReportDialog(tk.Toplevel):
         self._busy = False
         self.protocol("WM_DELETE_WINDOW", self._close)
 
-        self.kind_var = tk.StringVar(value=REPORT_CHOICES[0][0])
+        labels = {label for label, _kind in REPORT_CHOICES}
+        selected_kind = (
+            initial_kind
+            if initial_kind in labels
+            else REPORT_CHOICES[0][0]
+        )
+        self.kind_var = tk.StringVar(value=selected_kind)
         self.scope_var = tk.StringVar(
             value=(
                 "Controller attivo"
