@@ -68,6 +68,25 @@ def test_interrupted_onboarding_stays_required_after_partial_controller_data(
         database.close()
 
 
+def test_backup_audit_history_is_not_treated_as_fresh_installation(tmp_path):
+    database = _database(tmp_path)
+    try:
+        database.record_backup_history(
+            started_at=NOW,
+            completed_at=NOW,
+            destination="MANUAL",
+            filename="audit-only.vmbk",
+            status="SUCCESS",
+            sha256="a" * 64,
+            backup_format=2,
+            schema_version=2,
+        )
+
+        assert onboarding_state(database) is OnboardingState.EXISTING_INSTALLATION
+    finally:
+        database.close()
+
+
 def test_existing_operational_database_is_not_forced_through_new_install(tmp_path):
     database = _database(tmp_path)
     try:
