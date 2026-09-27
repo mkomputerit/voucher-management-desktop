@@ -430,3 +430,69 @@ THIS IS NOT VALID SQL;
         )
     finally:
         db.close()
+
+
+
+def test_application_session_records_clean_close_and_backup_outcome(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="2026-09-27T05:00:00+00:00",
+        )
+        db.start_application_session(
+            session_uuid="session-1",
+            windows_user=r"DOMAIN\\operator",
+            started_at="2026-09-27T05:01:00+00:00",
+            app_version="4.3.3",
+        )
+
+        open_row = db.connection.execute(
+            "SELECT * FROM application_sessions WHERE session_uuid='session-1'"
+        ).fetchone()
+        assert open_row["closed_at"] is None
+        assert open_row["backup_status"] is None
+
+        db.close_application_session(
+            session_uuid="session-1",
+            closed_at="2026-09-27T06:00:00+00:00",
+            controller_id=controller,
+            close_status="CLOSED",
+            backup_status="SUCCESS",
+        )
+
+        row = db.connection.execute(
+            "SELECT * FROM application_sessions WHERE session_uuid='session-1'"
+        ).fetchone()
+        assert row["windows_user"] == r"DOMAIN\\operator"
+        assert row["controller_id"] == controller
+        assert row["closed_at"] == "2026-09-27T06:00:00+00:00"
+        assert row["close_status"] == "CLOSED"
+        assert row["backup_status"] == "SUCCESS"
+    finally:
+        db.close()
+
+
+def test_application_session_cannot_be_closed_twice(tmp_path):
+    db = _db(tmp_path)
+    try:
+        db.start_application_session(
+            session_uuid="session-2",
+            windows_user="operator",
+            started_at="start",
+            app_version="4.3.3",
+        )
+        args = dict(
+            session_uuid="session-2",
+            closed_at="close",
+            controller_id=None,
+            close_status="CLOSED",
+            backup_status="DISABLED",
+        )
+        db.close_application_session(**args)
+
+        with pytest.raises(RuntimeError, match="already closed"):
+            db.close_application_session(**args)
+    finally:
+        db.close()

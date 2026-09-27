@@ -374,6 +374,80 @@ COMMIT;
         if result != "ok":
             raise RuntimeError(f"SQLite integrity check failed: {result}")
 
+    def start_application_session(
+        self,
+        *,
+        session_uuid: str,
+        windows_user: str,
+        started_at: str,
+        app_version: str,
+    ) -> None:
+        """Record one application lifetime before normal operator work begins."""
+
+        values = (
+            str(session_uuid).strip(),
+            str(windows_user).strip(),
+            str(started_at).strip(),
+            str(app_version).strip(),
+        )
+        if not all(values):
+            raise ValueError("application session fields must not be empty")
+        with self.transaction() as db:
+            db.execute(
+                """INSERT INTO application_sessions
+                   (session_uuid, windows_user, started_at, app_version)
+                   VALUES (?, ?, ?, ?)""",
+                values,
+            )
+
+    def close_application_session(
+        self,
+        *,
+        session_uuid: str,
+        closed_at: str,
+        controller_id: int | None,
+        close_status: str,
+        backup_status: str,
+    ) -> None:
+        """Complete an open session exactly once.
+
+        A session left with closed_at=NULL is intentionally distinguishable
+        from an operator-requested clean close, for example after a hard crash.
+        """
+
+        normalized_uuid = str(session_uuid).strip()
+        normalized_time = str(closed_at).strip()
+        normalized_close = str(close_status).strip()
+        normalized_backup = str(backup_status).strip()
+        if not all(
+            (
+                normalized_uuid,
+                normalized_time,
+                normalized_close,
+                normalized_backup,
+            )
+        ):
+            raise ValueError("application close fields must not be empty")
+
+        with self.transaction() as db:
+            cursor = db.execute(
+                """UPDATE application_sessions
+                   SET closed_at=?, controller_id=?, close_status=?,
+                       backup_status=?
+                   WHERE session_uuid=? AND closed_at IS NULL""",
+                (
+                    normalized_time,
+                    controller_id,
+                    normalized_close,
+                    normalized_backup,
+                    normalized_uuid,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    "application session is missing or already closed"
+                )
+
     def create_controller(
         self, *, name: str, api_root: str, created_at: str,
         description: str = "", cert_sha256: str = "",

@@ -11,6 +11,7 @@ def test_public_defaults_contain_no_operational_controller_address(tmp_path):
     assert DEFAULT_SETTINGS["structure_name"] == ""
     assert DEFAULT_SETTINGS["wifi_title"] == "Guest Wi-Fi"
     assert DEFAULT_SETTINGS["print_retention_days"] == 0
+    assert DEFAULT_SETTINGS["backup_on_close"] is True
 
     store = SettingsStore(tmp_path / "config" / "settings.json")
     assert store.load()["controller_api_root"] == ""
@@ -248,3 +249,30 @@ def test_update_sanitizes_invalid_numeric_values(tmp_path):
     persisted = json.loads(store.path.read_text(encoding="utf-8"))
     assert persisted["print_retention_days"] == 0
     assert persisted["log_retention_days"] == 30
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true", "false", []])
+def test_backup_on_close_accepts_only_real_booleans(tmp_path, value):
+    path = tmp_path / "config" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"backup_on_close": value}),
+        encoding="utf-8",
+    )
+
+    store = SettingsStore(path)
+    loaded = store.load()
+
+    assert loaded["backup_on_close"] is True
+    assert "backup_on_close" in store.consume_warning()
+
+
+def test_backup_on_close_false_is_preserved(tmp_path):
+    path = tmp_path / "config" / "settings.json"
+    store = SettingsStore(path)
+
+    updated = store.update(backup_on_close=False)
+
+    assert updated["backup_on_close"] is False
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["backup_on_close"] is False

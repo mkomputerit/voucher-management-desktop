@@ -17,6 +17,15 @@
 - Added WAL-safe SQLite backup/restore using `sqlite3.Connection.backup()`,
   standalone snapshot normalization, `PRAGMA integrity_check`, schema/hash
   verification and exclusion of live WAL/SHM/journal sidecars.
+- Added the 5.0 shutdown safety gate: ordinary window close creates an
+  encrypted authenticated backup by default before exit, never persists the
+  backup password, refuses to interrupt active background work and offers
+  Retry / Close anyway / Cancel after a failed backup. Normal backup creation
+  in the UI now produces only protected `.vmbk` files; legacy plaintext ZIP
+  remains restore-only compatibility.
+- Wired the existing `application_sessions` schema into runtime lifecycle
+  auditing so a clean close records its controller and backup outcome while a
+  hard crash remains distinguishable by an open session record.
 - Added real Windows CI coverage for shared deployment ACLs, upgrade behavior,
   preserved-data uninstall and explicit `-RemoveData` cleanup.
 - Added SQLite-backed administrative reporting with summary, used, expired,

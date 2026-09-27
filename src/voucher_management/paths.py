@@ -85,6 +85,14 @@ class AppPaths:
         self.logs = self.user_root / "logs"
         self.logos = self.user_root / "Loghi"
         self.prints = self.user_root / "Print"
+        # Automatic disaster-recovery snapshots must live outside the managed
+        # application tree: BackupService deliberately rejects destinations
+        # below user_root so a restore can never overwrite its own backup.
+        # Keeping the folder in the current operator's home also avoids relying
+        # on broader ProgramData ACLs in shared-deployment mode.
+        self.automatic_backups = (
+            Path.home() / "Voucher Management Backups"
+        )
 
         self.assets = self.base / "assets"
         self.history = self.data / "history.jsonl"

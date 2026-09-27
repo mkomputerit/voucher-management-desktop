@@ -32,8 +32,9 @@ The application currently provides:
   export/import for deliberate idempotent merging between compatible stations;
   new generation events carry stable IDs so independent identical events from
   separate stations remain distinct during convergence;
-- portable backup/restore of application-managed data, with optional
-  password-protected authenticated `.vmbk` backups and legacy ZIP support;
+- encrypted/authenticated `.vmbk` backup creation and restore of
+  application-managed data, including a default backup-before-close workflow;
+  plaintext ZIP remains accepted only for legacy restore compatibility;
 - SQLite-backed administrative reporting with printable PDF and CSV export for
   summary, used, expired, printed-never-used, never-printed, nominal and
   full-history views; administrative exports never expose voucher codes in clear;

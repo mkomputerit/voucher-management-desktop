@@ -16,6 +16,7 @@ from pathlib import Path
 from queue import Empty
 import sys
 import tkinter as tk
+from uuid import uuid4
 from typing import Callable
 from tkinter import messagebox
 
@@ -134,6 +135,13 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         try:
             self.database.initialize()
             self.database.integrity_check()
+            self.session_uuid = uuid4().hex
+            self.database.start_application_session(
+                session_uuid=self.session_uuid,
+                windows_user=self._windows_operator_identity(),
+                started_at=datetime.now(timezone.utc).isoformat(),
+                app_version=__version__,
+            )
         except Exception:
             self.database.close()
             self.instance_guard.release()
@@ -254,6 +262,11 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self.count_var = tk.StringVar(value="0 voucher")
         self.action_var = tk.StringVar(value="PREPARA STAMPA")
         self._build_ui()
+        # Route only an ordinary window-manager close through the 5.0
+        # disaster-recovery workflow. Internal destroy() calls used after a
+        # successful restore/migration intentionally bypass this hook.
+        close_handler = getattr(self, "request_close", self.destroy)
+        self.protocol("WM_DELETE_WINDOW", close_handler)
         self._populate_initial_snapshot()
         if logo_warning:
             messagebox.showwarning(
