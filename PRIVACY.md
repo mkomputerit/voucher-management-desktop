@@ -41,9 +41,10 @@ an OS-managed anonymous/auto-delete temporary file for decrypted ZIP bytes,
 rather than a named plaintext archive under the application-data directory.
 
 Voucher Management 5.0 also applies review-driven local retention.
-Used or physically printed vouchers are never retention candidates. Old,
-unused, unprinted vouchers are proposed only after they are absent from a
-complete controller snapshot. Nothing is minimized automatically. When an
+Used, physically printed or PDF-generated vouchers are never retention
+candidates. Old unused vouchers with no generated PDF are proposed only after
+they are absent from a complete controller snapshot. Nothing is minimized
+automatically. When an
 operator explicitly archives a candidate, the durable historical row remains
 but the reusable voucher code, recipient label, nominal assignment and free-text
 notes are removed.
