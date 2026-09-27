@@ -9,6 +9,7 @@ import pytest
 from voucher_management.database import Database
 from voucher_management.onboarding import (
     DEFAULT_VOUCHER_RETENTION_DAYS,
+    LEGACY_MIGRATION_DECLINED_KEY,
     OnboardingDraft,
     OnboardingState,
     begin_onboarding,
@@ -401,6 +402,25 @@ def test_shared_first_run_defers_to_explicit_per_user_migration(tmp_path):
         state = schedule_first_run_onboarding(app)
         assert state is OnboardingState.MIGRATION_AVAILABLE
         assert scheduled == []
+    finally:
+        database.close()
+
+
+def test_shared_operator_can_explicitly_choose_fresh_installation(tmp_path):
+    database = _database(tmp_path)
+    per_user = tmp_path / "LocalAppData" / "VoucherManagement"
+    store = SettingsStore(per_user / "config" / "settings.json")
+    store.save({"structure_name": "Legacy Sala"})
+    app = _startup_app(tmp_path, database, shared_mode=True)
+    app.paths.per_user_root = per_user
+    try:
+        assert (
+            startup_onboarding_state(app)
+            is OnboardingState.MIGRATION_AVAILABLE
+        )
+        database.set_metadata_value(LEGACY_MIGRATION_DECLINED_KEY, "1")
+        assert startup_onboarding_state(app) is OnboardingState.REQUIRED
+        assert (per_user / "config" / "settings.json").is_file()
     finally:
         database.close()
 
