@@ -812,5 +812,17 @@ class FirstRunWizard(tk.Toplevel):
             self.grab_release()
         except tk.TclError:
             self.app.logger.debug("onboarding_grab_release_ignored")
-        self.destroy()
-        self.app.destroy()
+
+        self.withdraw()
+
+        def restore_wizard() -> None:
+            try:
+                if not self.winfo_exists() or not self.app.winfo_exists():
+                    return
+                self.deiconify()
+                self.grab_set()
+                self.lift()
+            except tk.TclError:
+                self.app.logger.debug("onboarding_restore_after_close_cancel_ignored")
+
+        self.app.request_close(on_abort=restore_wizard)
