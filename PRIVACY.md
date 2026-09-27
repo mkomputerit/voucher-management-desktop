@@ -31,6 +31,14 @@ local `pending_print_audit.json` file temporarily stores only HMAC voucher
 identifiers plus print metadata needed for idempotent recovery. It does not
 contain voucher codes in clear text and is not included in portable backups.
 
+Backup operations are also represented in the local SQLite
+`backup_history` audit. Successful entries contain timestamps, a purpose
+category, the backup filename basename, SHA-256 of the final backup container,
+backup-format version and SQLite schema version. Failed entries retain no
+unverified hash/format/schema metadata. Full Windows destination paths,
+passwords and exception messages are not stored; failure detail is limited to
+the exception type.
+
 The normal backup workflow creates only password-protected `.vmbk` files.
 Legacy unencrypted ZIP archives remain readable for restore compatibility but
 are no longer offered as normal backup output. The encrypted form protects the
