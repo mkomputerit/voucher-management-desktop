@@ -39,12 +39,8 @@ def _format_fingerprint(value: str) -> str:
     )
 
 
-def schedule_first_run_onboarding(
-    app,
-    *,
-    wizard_factory=None,
-) -> OnboardingState:
-    """Schedule the wizard only for a genuinely new/incomplete installation."""
+def startup_onboarding_state(app) -> OnboardingState:
+    """Return the startup disposition before scheduling any modal UI."""
 
     state = onboarding_state(app.database)
     if (
@@ -57,7 +53,17 @@ def schedule_first_run_onboarding(
         # write app_metadata/profile rows and correctly make migration refuse
         # to overwrite the target.
         return OnboardingState.MIGRATION_AVAILABLE
+    return state
 
+
+def schedule_first_run_onboarding(
+    app,
+    *,
+    wizard_factory=None,
+) -> OnboardingState:
+    """Schedule the wizard only for a genuinely new/incomplete installation."""
+
+    state = startup_onboarding_state(app)
     if state is OnboardingState.REQUIRED:
         factory = wizard_factory or FirstRunWizard
         app.after_idle(lambda: factory(app))
