@@ -62,17 +62,22 @@ def legacy_installation_has_evidence(paths, settings: dict) -> bool:
         if settings.get(key, default) != default:
             return True
 
-    history = Path(paths.history)
-    try:
-        if history.is_file() and history.stat().st_size > 0:
+    history_value = getattr(paths, "history", None)
+    if history_value is not None:
+        history = Path(history_value)
+        try:
+            if history.is_file() and history.stat().st_size > 0:
+                return True
+        except OSError:
+            # Unreadable legacy evidence is not a safe reason to classify the
+            # installation as new.
             return True
-    except OSError:
-        # Unreadable legacy evidence is not a safe reason to classify the
-        # installation as new.
-        return True
 
     for attribute in ("prints", "logos"):
-        folder = Path(getattr(paths, attribute))
+        folder_value = getattr(paths, attribute, None)
+        if folder_value is None:
+            continue
+        folder = Path(folder_value)
         try:
             if folder.is_dir() and any(
                 item.is_file() for item in folder.rglob("*")
