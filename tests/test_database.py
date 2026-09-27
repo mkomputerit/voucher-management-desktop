@@ -204,6 +204,50 @@ def test_get_or_create_controller_reuses_api_root_without_credentials(tmp_path):
         db.close()
 
 
+def test_controller_profiles_can_be_renamed_deactivated_and_reactivated(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.get_or_create_controller(
+            name="Reception",
+            api_root="https://controller.example",
+            observed_at="2026-09-27T08:00:00+00:00",
+            cert_sha256="AA",
+        )
+
+        profiles = db.controller_profiles()
+        assert len(profiles) == 1
+        assert profiles[0]["id"] == controller
+        assert profiles[0]["name"] == "Reception"
+        assert profiles[0]["cert_sha256"] == "AA"
+
+        db.rename_controller(controller, "Ingresso")
+        assert db.controller_name(controller) == "Ingresso"
+
+        db.deactivate_controller(controller)
+        assert db.controller_profiles() == []
+        inactive = db.controller_profiles(include_inactive=True)
+        assert len(inactive) == 1
+        assert inactive[0]["id"] == controller
+        assert inactive[0]["is_active"] == 0
+
+        reactivated = db.get_or_create_controller(
+            name="Ingresso principale",
+            api_root="https://controller.example",
+            observed_at="2026-09-27T09:00:00+00:00",
+            cert_sha256="BB",
+        )
+        assert reactivated == controller
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM controllers"
+        ).fetchone()[0] == 1
+        restored = db.controller_profiles()
+        assert restored[0]["name"] == "Ingresso principale"
+        assert restored[0]["cert_sha256"] == "BB"
+        assert restored[0]["is_active"] == 1
+    finally:
+        db.close()
+
+
 def test_record_print_audit_is_idempotent_and_sequences_reprints(tmp_path):
     db = _db(tmp_path)
     try:
