@@ -17,8 +17,10 @@ from .logo_validation import LogoValidationError, validate_logo_image
 from .onboarding import (
     DEFAULT_VOUCHER_RETENTION_DAYS,
     OnboardingDraft,
+    OnboardingState,
     begin_onboarding,
     complete_onboarding,
+    onboarding_state,
 )
 from .unifi_api import (
     UniFiApiError,
@@ -34,6 +36,20 @@ def _format_fingerprint(value: str) -> str:
         compact[index:index + 2]
         for index in range(0, len(compact), 2)
     )
+
+
+def schedule_first_run_onboarding(
+    app,
+    *,
+    wizard_factory=None,
+) -> OnboardingState:
+    """Schedule the wizard only for a genuinely new/incomplete installation."""
+
+    state = onboarding_state(app.database)
+    if state is OnboardingState.REQUIRED:
+        factory = wizard_factory or FirstRunWizard
+        app.after_idle(lambda: factory(app))
+    return state
 
 
 class FirstRunWizard(tk.Toplevel):
@@ -772,6 +788,6 @@ class FirstRunWizard(tk.Toplevel):
         try:
             self.grab_release()
         except tk.TclError:
-            pass
+            self.app.logger.debug("onboarding_grab_release_ignored")
         self.destroy()
         self.app.destroy()
