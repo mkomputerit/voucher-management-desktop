@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from voucher_management.database import Database
+from voucher_management.history import HistoryError
 from voucher_management.retention import (
     DEFAULT_UNUSED_UNPRINTED_DAYS,
     archive_retention_candidates,
@@ -359,5 +360,50 @@ def test_generated_pdf_evidence_blocks_review_and_archive(tmp_path):
         ).fetchone()
         assert row["code"] == "1234567890"
         assert row["archived_at"] is None
+    finally:
+        database.close()
+
+
+
+def test_unverifiable_history_blocks_archive_without_partial_change(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="history-failure",
+            code="1234567890",
+        )
+        history = SimpleNamespace(
+            stats_for_codes=lambda codes, settings: (
+                (_ for _ in ()).throw(HistoryError("corrupt"))
+            )
+        )
+
+        try:
+            archive_retention_candidates(
+                database,
+                voucher_ids=[voucher_id],
+                archived_at=NOW,
+                windows_user="operator",
+                history=history,
+                settings={},
+            )
+        except HistoryError:
+            pass
+        else:
+            raise AssertionError("unverifiable history must block retention")
+
+        row = database.connection.execute(
+            "SELECT code, archived_at FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["code"] == "1234567890"
+        assert row["archived_at"] is None
+        assert database.connection.execute(
+            """SELECT COUNT(*) FROM voucher_events
+               WHERE voucher_id=? AND event_type='RETENTION_ARCHIVED'""",
+            (voucher_id,),
+        ).fetchone()[0] == 0
     finally:
         database.close()
