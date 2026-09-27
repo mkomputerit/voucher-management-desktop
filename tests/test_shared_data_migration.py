@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from voucher_management import shared_data_migration as shared_module
 from voucher_management.database import Database
 from voucher_management.history import HistoryService
 from voucher_management.paths import AppPaths
@@ -217,3 +218,43 @@ def test_migration_refuses_backup_inside_shared_target(tmp_path):
         assert "fuori dai dati applicativi" in str(exc)
     else:
         raise AssertionError("backup inside target root must be rejected")
+
+
+
+def test_shared_migration_audit_failure_does_not_undo_successful_transfer(
+    tmp_path,
+    monkeypatch,
+):
+    source_root = tmp_path / "profile" / "VoucherManagement"
+    source_store = SettingsStore(source_root / "config" / "settings.json")
+    source_settings = dict(DEFAULT_SETTINGS)
+    source_settings["wifi_title"] = "Migrated title"
+    source_store.save(source_settings)
+    _initialize_history(source_root)
+
+    target_root = tmp_path / "ProgramData" / "VoucherManagement"
+    target_paths = AppPaths(
+        base_override=tmp_path / "program",
+        shared_root_override=target_root,
+    )
+    target_paths.ensure_writable()
+
+    monkeypatch.setattr(
+        shared_module.Database,
+        "record_backup_history",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic audit failure")
+        ),
+    )
+
+    result = execute_shared_data_migration(
+        source_root=source_root,
+        target_paths=target_paths,
+        backup_destination=tmp_path / "safety" / "migration.vmbk",
+        backup_password="correct horse battery",
+    )
+
+    assert result.backup_audit_recorded is False
+    restored = SettingsStore(target_paths.settings).load()
+    assert restored["wifi_title"] == "Migrated title"
+    assert source_store.load()["wifi_title"] == "Migrated title"
