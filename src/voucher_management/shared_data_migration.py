@@ -8,9 +8,11 @@ inherits WAL-safe snapshotting, archive validation and rollback semantics.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .backup import BackupService
+from .database import Database
 from .locking import LockTimeout, exclusive_file_lock
 from .settings import DEFAULT_SETTINGS, SettingsStore
 from .single_instance import InstanceAlreadyRunning, SingleInstanceGuard
@@ -69,6 +71,7 @@ class SharedDataMigrationResult:
 
     backup_path: Path
     rollback_path: Path
+    backup_audit_recorded: bool
 
 
 def source_has_migratable_data(source_root: Path) -> bool:
@@ -207,23 +210,15 @@ def execute_shared_data_migration(
         try:
             with exclusive_file_lock(source_paths.history_lock, timeout=0.0):
                 source_backup = BackupService(source_paths)
-                backup_path = Path(
-                    source_backup.create(
-                        destination,
-                        password=backup_password,
-                    )
+                artifact = source_backup.create_verified(
+                    destination,
+                    password=backup_password,
                 )
-                if (
-                    not backup_path.is_file()
-                    or not source_backup.is_encrypted_backup(backup_path)
-                ):
+                backup_path = Path(artifact.path)
+                if not backup_path.is_file() or not artifact.encrypted:
                     raise SharedDataMigrationError(
                         "Backup pre-migrazione non verificabile"
                     )
-                source_backup.validate_encrypted(
-                    backup_path,
-                    backup_password,
-                )
         except LockTimeout as exc:
             raise SharedDataMigrationError(
                 "La cronologia utente è in uso. Chiudere la versione precedente."
@@ -252,7 +247,34 @@ def execute_shared_data_migration(
             "Ripristino dei dati nell'archivio condiviso non riuscito"
         ) from exc
 
+    audit_recorded = False
+    audit_database = None
+    try:
+        audit_database = Database(Path(target_paths.database))
+        audit_database.initialize()
+        audit_database.integrity_check()
+        audit_database.record_backup_history(
+            started_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            destination="SHARED_DATA_MIGRATION",
+            filename=backup_path.name,
+            status="SUCCESS",
+            sha256=artifact.sha256,
+            backup_format=artifact.backup_format,
+            schema_version=artifact.schema_version,
+        )
+        audit_recorded = True
+    except Exception:
+        # The migration itself has already restored successfully. Do not claim
+        # rollback or mutate the untouched source merely because the optional
+        # resulting-target audit row could not be written.
+        audit_recorded = False
+    finally:
+        if audit_database is not None:
+            audit_database.close()
+
     return SharedDataMigrationResult(
         backup_path=backup_path,
         rollback_path=Path(rollback),
+        backup_audit_recorded=audit_recorded,
     )
