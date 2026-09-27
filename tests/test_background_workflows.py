@@ -548,13 +548,18 @@ def test_create_encrypted_backup_uses_shared_password_prompt(monkeypatch):
     calls = []
     password = exchange_phrase("s")
     service = SimpleNamespace(
-        create=lambda target, password=None: calls.append(
+        create_verified=lambda target, password=None: calls.append(
             ("create", Path(target), password)
         )
-        or Path(target)
+        or backup_artifact(target)
     )
     fake = SimpleNamespace(
         _backup_service=lambda: service,
+        _backup_audit_started_at=lambda: "2026-09-27T07:00:00+00:00",
+        _record_backup_audit=lambda **kwargs: calls.append(
+            ("audit", kwargs)
+        )
+        or True,
         _dialog_busy_scope=lambda parent: None,
         _run_background_task=capture_runner(tasks),
     )
@@ -1113,8 +1118,8 @@ def test_backup_audit_writer_uses_basename_and_verified_metadata():
         fake,
         started_at="2026-09-27T07:00:00+00:00",
         destination="MANUAL",
-        target=Path("C:/Users/Test/Desktop/backup.vmbk"),
-        artifact=backup_artifact("C:/Users/Test/Desktop/backup.vmbk"),
+        target=Path("C:/Temp/audit-backup.vmbk"),
+        artifact=backup_artifact("C:/Temp/audit-backup.vmbk"),
     )
 
     assert result is True
