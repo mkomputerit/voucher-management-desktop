@@ -836,12 +836,12 @@ def test_history_import_prepare_confirm_apply_are_split_across_workers(
 
 
 
-def test_request_close_without_backup_enabled_destroys_immediately(monkeypatch):
-    destroyed = []
+def test_request_close_without_backup_enabled_closes_with_disabled_status(monkeypatch):
+    closed = []
     fake = SimpleNamespace(
         settings={"backup_on_close": False},
         _background_results=None,
-        destroy=lambda: destroyed.append(True),
+        _finish_close=lambda **kwargs: closed.append(kwargs),
     )
     monkeypatch.setattr(
         maintenance_ui,
@@ -853,7 +853,9 @@ def test_request_close_without_backup_enabled_destroys_immediately(monkeypatch):
 
     modern_app.ModernVoucherApp.request_close(fake)
 
-    assert destroyed == [True]
+    assert closed == [
+        {"close_status": "CLOSED", "backup_status": "DISABLED"}
+    ]
 
 
 def test_request_close_refuses_to_interrupt_background_operation(monkeypatch):
@@ -892,7 +894,7 @@ def test_request_close_runs_encrypted_backup_before_destroy(monkeypatch, tmp_pat
         paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
         _backup_service=lambda: service,
         _run_background_task=capture_runner(tasks),
-        destroy=lambda: calls.append(("destroy", None)),
+        _finish_close=lambda **kwargs: calls.append(("close", kwargs)),
         logger=SimpleNamespace(warning=lambda *args: calls.append(("warning", args))),
     )
     monkeypatch.setattr(
@@ -911,7 +913,10 @@ def test_request_close_runs_encrypted_backup_before_destroy(monkeypatch, tmp_pat
     assert calls[0][1].suffix == ".vmbk"
     assert calls[0][2] == password
     tasks[0]["success"](result)
-    assert calls[-1] == ("destroy", None)
+    assert calls[-1] == (
+        "close",
+        {"close_status": "CLOSED", "backup_status": "SUCCESS"},
+    )
 
 
 def test_failed_close_backup_can_retry_without_losing_password(
@@ -926,7 +931,7 @@ def test_failed_close_backup_can_retry_without_losing_password(
         paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
         _backup_service=lambda: SimpleNamespace(create=lambda *args, **kwargs: None),
         _run_background_task=capture_runner(tasks),
-        destroy=lambda: None,
+        _finish_close=lambda **kwargs: None,
         logger=SimpleNamespace(warning=lambda *args: None),
     )
     monkeypatch.setattr(
@@ -952,14 +957,14 @@ def test_failed_close_backup_can_retry_without_losing_password(
 
 def test_failed_close_backup_can_close_anyway(monkeypatch, tmp_path):
     tasks = []
-    destroyed = []
+    closed = []
     fake = SimpleNamespace(
         settings={"backup_on_close": True},
         _background_results=None,
         paths=SimpleNamespace(automatic_backups=tmp_path / "backups"),
         _backup_service=lambda: SimpleNamespace(create=lambda *args, **kwargs: None),
         _run_background_task=capture_runner(tasks),
-        destroy=lambda: destroyed.append(True),
+        _finish_close=lambda **kwargs: closed.append(kwargs),
         logger=SimpleNamespace(warning=lambda *args: None),
     )
     monkeypatch.setattr(
@@ -976,7 +981,12 @@ def test_failed_close_backup_can_close_anyway(monkeypatch, tmp_path):
     modern_app.ModernVoucherApp.request_close(fake)
     tasks[0]["error"](maintenance_ui.BackupError("synthetic failure"))
 
-    assert destroyed == [True]
+    assert closed == [
+        {
+            "close_status": "CLOSED_WITHOUT_BACKUP",
+            "backup_status": "FAILED",
+        }
+    ]
 
 
 def test_cancelling_close_backup_password_keeps_application_open(
@@ -1002,3 +1012,33 @@ def test_cancelling_close_backup_password_keeps_application_open(
 
     assert tasks == []
     assert destroyed == []
+
+
+
+def test_finish_close_records_session_before_destroy():
+    events = []
+
+    class SessionDatabase:
+        def close_application_session(self, **kwargs):
+            events.append(("audit", kwargs))
+
+    fake = SimpleNamespace(
+        database=SessionDatabase(),
+        session_uuid="session-1",
+        active_controller_id=7,
+        logger=SimpleNamespace(warning=lambda *args: events.append(("warning", args))),
+        destroy=lambda: events.append(("destroy", None)),
+    )
+
+    modern_app.ModernVoucherApp._finish_close(
+        fake,
+        close_status="CLOSED",
+        backup_status="SUCCESS",
+    )
+
+    assert events[0][0] == "audit"
+    assert events[0][1]["session_uuid"] == "session-1"
+    assert events[0][1]["controller_id"] == 7
+    assert events[0][1]["close_status"] == "CLOSED"
+    assert events[0][1]["backup_status"] == "SUCCESS"
+    assert events[-1] == ("destroy", None)
