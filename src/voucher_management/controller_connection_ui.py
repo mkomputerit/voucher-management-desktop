@@ -204,11 +204,17 @@ class ControllerConnectionMixin:
         client: UniFiClient,
         info: dict,
         vouchers,
+        *,
+        profile_name: str | None = None,
     ) -> None:
         snapshot = list(vouchers)
         observed_at = datetime.now(timezone.utc).isoformat()
         controller_id = self.database.get_or_create_controller(
-            name=str(info.get("siteName") or "Controller UniFi"),
+            name=(
+                str(profile_name).strip()
+                if profile_name and str(profile_name).strip()
+                else str(info.get("siteName") or "Controller UniFi")
+            ),
             api_root=client.base_url,
             observed_at=observed_at,
             cert_sha256=client.trusted_cert_sha256 or "",
