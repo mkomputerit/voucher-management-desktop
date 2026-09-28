@@ -144,17 +144,12 @@ def test_home_click_toggles_one_voucher_without_dropping_hidden_selection():
         home_recent_tree=tree,
         _home_voucher_by_iid={"home-1": visible},
         checked_ids={"hidden"},
-        by_iid={},
-        tree=SimpleNamespace(selection_set=lambda _iids: None),
         home_print_action_var=FakeVar(),
         bell=lambda: None,
         _is_expired=VoucherApp._is_expired,
     )
-    fake._sync_home_selection_ui = (
-        lambda: ModernVoucherApp._sync_home_selection_ui(fake)
-    )
     fake._sync_selection_ui = (
-        lambda iids=None: ModernVoucherApp._sync_selection_ui(fake, iids)
+        lambda iids=None: ModernVoucherApp._sync_home_selection_ui(fake)
     )
 
     result = ModernVoucherApp._on_home_recent_click(
