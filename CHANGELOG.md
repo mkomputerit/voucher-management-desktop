@@ -104,6 +104,10 @@
   create/print/sync actions beside their actual context, and turn the former
   duplicated quick-action card into simple navigation to Voucher, Report and
   Settings.
+- Refine the Voucher workspace for constrained Windows displays: separate the
+  destructive delete action, let search expand naturally, and add horizontal
+  scrolling so the full operational table remains reachable at higher DPI or
+  narrower window sizes without changing print-selection behavior.
 
 ## 5.0.0 - 2026-09-27
 

@@ -1322,7 +1322,12 @@ class ModernVoucherApp(
             command=self.print_selected,
             style="Accent.TButton",
         )
-        self.print_button.pack(side="left", padx=(8, 16))
+        self.print_button.pack(side="left", padx=(8, 12))
+        ttk.Separator(actions, orient="vertical").pack(
+            side="left",
+            fill="y",
+            padx=(0, 12),
+        )
         ttk.Button(
             actions,
             text="Seleziona da stampare",
@@ -1344,6 +1349,7 @@ class ModernVoucherApp(
             actions,
             text="Elimina",
             command=self.delete_selected,
+            style="Danger.TButton",
         )
         self.delete_button.pack(side="right")
 
@@ -1354,8 +1360,12 @@ class ModernVoucherApp(
             padding=(12, 8),
         )
         filters.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        ttk.Label(filters, text="Vista", style="Muted.TLabel").pack(
-            side="left", padx=(0, 7)
+        filters.columnconfigure(3, weight=1)
+        ttk.Label(filters, text="Vista", style="Muted.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=(0, 7),
         )
         cb = ttk.Combobox(
             filters,
@@ -1364,19 +1374,22 @@ class ModernVoucherApp(
             values=("Da stampare", "Attivi", "Scaduti", "Tutti"),
             width=15,
         )
-        cb.pack(side="left")
+        cb.grid(row=0, column=1, sticky="w")
         cb.bind("<<ComboboxSelected>>", lambda _e: self.populate())
-        ttk.Label(filters, text="Cerca", style="Muted.TLabel").pack(
-            side="left", padx=(20, 7)
+        ttk.Label(filters, text="Cerca", style="Muted.TLabel").grid(
+            row=0,
+            column=2,
+            sticky="w",
+            padx=(20, 7),
         )
-        search = ttk.Entry(filters, textvariable=self.search_var, width=34)
-        search.pack(side="left")
+        search = ttk.Entry(filters, textvariable=self.search_var)
+        search.grid(row=0, column=3, sticky="ew")
         search.bind("<KeyRelease>", self._schedule_search_populate)
         ttk.Label(
             filters,
             textvariable=self.count_var,
             style="Muted.TLabel",
-        ).pack(side="right")
+        ).grid(row=0, column=4, sticky="e", padx=(14, 0))
 
         table_card = ttk.Labelframe(
             frame,
@@ -1440,10 +1453,17 @@ class ModernVoucherApp(
             font=("Segoe UI Variable Text", 10, "bold"),
         )
         self.tree.bind("<Button-1>", self.on_tree_click)
+        table.columnconfigure(0, weight=1)
+        table.rowconfigure(0, weight=1)
         sy = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sy.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        sy.pack(side="right", fill="y")
+        sx = ttk.Scrollbar(table, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(
+            yscrollcommand=sy.set,
+            xscrollcommand=sx.set,
+        )
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        sy.grid(row=0, column=1, sticky="ns")
+        sx.grid(row=1, column=0, sticky="ew")
 
         ttk.Label(
             table_card,
@@ -2508,6 +2528,11 @@ class ModernVoucherApp(
             "Hero.TButton",
             font=("Segoe UI Variable Text", 10, "bold"),
             padding=(18, 10),
+        )
+        style.configure(
+            "Danger.TButton",
+            foreground=disconnected_red,
+            font=("Segoe UI Variable Text", 10, "bold"),
         )
         style.configure(
             "Nav.TButton",
