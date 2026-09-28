@@ -2,6 +2,12 @@
 
 ## 5.1.0 - Unreleased
 
+- Keep Home and Voucher keyboard highlighting aligned with the actual print
+  selection: arrows move focus and Space toggles the focused voucher, preserving
+  hidden selections and excluding expired vouchers without selection-event loops.
+- Add vertical and horizontal scrolling to both Home tables and correct recovery
+  instructions to point to Settings > Manutenzione.
+
 - Begin the operator-first desktop redesign with first-class Home, Voucher,
   Report and Settings workspaces.
 - Move controller URL/API-key controls out of the main operational surface and

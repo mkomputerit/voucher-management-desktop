@@ -718,7 +718,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         if not selected:
             messagebox.showinfo(
                 "Stampa",
-                "Selezionare uno o più voucher attivi dalla prima colonna",
+                "Selezionare uno o più voucher attivi nella tabella",
                 parent=self,
             )
             return

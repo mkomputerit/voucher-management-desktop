@@ -1268,7 +1268,7 @@ class ModernVoucherApp(
         recent_header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         ttk.Label(
             recent_header,
-            text="Seleziona una o più righe e stampa direttamente dalla Home.",
+            text="Seleziona con clic o barra spaziatrice, poi stampa.",
             style="Muted.TLabel",
         ).pack(side="left")
         self.home_create_button = ttk.Button(
@@ -1289,7 +1289,7 @@ class ModernVoucherApp(
             columns=("code", "recipient", "state", "expires", "created"),
             show="headings",
             height=6,
-            selectmode="extended",
+            selectmode="none",
             style="HomeVoucher.Treeview",
         )
         for key, label, width, anchor in (
@@ -1307,12 +1307,24 @@ class ModernVoucherApp(
                 stretch=(key == "recipient"),
             )
         self.home_recent_tree.grid(row=1, column=0, sticky="nsew")
-        # Only real pointer clicks change the print selection. Programmatic
+        recent_y = ttk.Scrollbar(
+            recent, orient="vertical", command=self.home_recent_tree.yview
+        )
+        recent_x = ttk.Scrollbar(
+            recent, orient="horizontal", command=self.home_recent_tree.xview
+        )
+        self.home_recent_tree.configure(
+            yscrollcommand=recent_y.set, xscrollcommand=recent_x.set
+        )
+        recent_y.grid(row=1, column=1, sticky="ns")
+        recent_x.grid(row=2, column=0, sticky="ew")
+        # Only explicit clicks/Space change the print selection. Programmatic
         # highlighting stays one-way to preserve the post-refresh anti-loop fix.
         self.home_recent_tree.bind(
             "<Button-1>",
             self._on_home_recent_click,
         )
+        self.home_recent_tree.bind("<space>", self._on_voucher_selection_key)
 
         activity = ttk.Labelframe(
             frame,
@@ -1342,6 +1354,17 @@ class ModernVoucherApp(
             "detail", width=420, anchor="w", stretch=True
         )
         self.home_activity_tree.grid(row=0, column=0, sticky="nsew")
+        activity_y = ttk.Scrollbar(
+            activity, orient="vertical", command=self.home_activity_tree.yview
+        )
+        activity_x = ttk.Scrollbar(
+            activity, orient="horizontal", command=self.home_activity_tree.xview
+        )
+        self.home_activity_tree.configure(
+            yscrollcommand=activity_y.set, xscrollcommand=activity_x.set
+        )
+        activity_y.grid(row=0, column=1, sticky="ns")
+        activity_x.grid(row=1, column=0, sticky="ew")
 
         quick = ttk.Labelframe(
             frame,
@@ -1488,7 +1511,7 @@ class ModernVoucherApp(
             table,
             columns=cols,
             show="headings",
-            selectmode="extended",
+            selectmode="none",
             style="Voucher.Treeview",
         )
         self.tree.heading("check", text="✓", command=self.toggle_all_visible)
@@ -1522,6 +1545,7 @@ class ModernVoucherApp(
             font=("Segoe UI Variable Text", 10, "bold"),
         )
         self.tree.bind("<Button-1>", self.on_tree_click)
+        self.tree.bind("<space>", self._on_voucher_selection_key)
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
         sy = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
@@ -1537,7 +1561,7 @@ class ModernVoucherApp(
         ttk.Label(
             table_card,
             text=(
-                "Blu = voucher selezionato per la stampa. Dopo una stampa "
+                "Clic o barra spaziatrice per selezionare. Blu = selezionato. Dopo una stampa "
                 "fisica confermata la selezione viene rimossa automaticamente."
             ),
             style="Muted.TLabel",
@@ -2911,10 +2935,38 @@ class ModernVoucherApp(
         voucher = mapping.get(iid)
         if voucher is None:
             return "break"
+        tree.focus_set()
+        tree.focus(iid)
         if self._is_expired(voucher):
             self.bell()
             return "break"
 
+        if voucher.id in self.checked_ids:
+            self.checked_ids.remove(voucher.id)
+        else:
+            self.checked_ids.add(voucher.id)
+        self._sync_selection_ui()
+        return "break"
+
+    def _on_voucher_selection_key(self, event):
+        """Toggle the focused voucher without a second native selection model.
+
+        Both voucher trees use selectmode=none: arrow keys move focus only,
+        while Space changes the same print selection as a pointer click.
+        Programmatic highlights stay one-way to avoid refresh event loops.
+        """
+
+        tree = event.widget
+        mapping = (
+            getattr(self, "_home_voucher_by_iid", {})
+            if tree is self.home_recent_tree else self.by_iid
+        )
+        voucher = mapping.get(tree.focus())
+        if voucher is None:
+            return "break"
+        if self._is_expired(voucher):
+            self.bell()
+            return "break"
         if voucher.id in self.checked_ids:
             self.checked_ids.remove(voucher.id)
         else:
@@ -3000,6 +3052,8 @@ class ModernVoucherApp(
         iid = self.tree.identify_row(event.y)
         if not iid or iid not in self.by_iid:
             return "break"
+        self.tree.focus_set()
+        self.tree.focus(iid)
         voucher = self.by_iid[iid]
         if self._is_expired(voucher):
             self.bell()
@@ -3027,7 +3081,7 @@ class ModernVoucherApp(
                     f"{exc}\n\n"
                     "Selezione, stampa ed eliminazione vengono sospese "
                     "per evitare decisioni basate su dati incompleti.\n\n"
-                    "Aprire Impostazioni > Backup > "
+                    "Aprire Impostazioni > Manutenzione > "
                     "Verifica cronologia per diagnosticare o "
                     "recuperare la chiave della cronologia.",
                     parent=self,

@@ -1391,7 +1391,7 @@ class DataMaintenanceMixin:
                     "\n\nPassi successivi:\n"
                     "1. Riavviare Voucher Management.\n"
                     "2. Ricollegare e sincronizzare il controller UniFi.\n"
-                    "3. Aprire Impostazioni > Backup e scegliere "
+                    "3. Aprire Impostazioni > Manutenzione e scegliere "
                     "'Importa cronologia stampe precedente…'.\n\n"
                     "Solo dopo questa importazione lo storico precedente sarà "
                     "materializzato nel database 5.x e nei report."

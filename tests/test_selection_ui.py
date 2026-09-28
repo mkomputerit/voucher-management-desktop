@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from voucher_management.app import VoucherApp
 from voucher_management.modern_app import ModernVoucherApp
 
@@ -124,6 +126,15 @@ class HomeTree:
     def __init__(self):
         self.highlighted = []
         self.selection_set_calls = 0
+        self.focused = "home-1"
+
+    def focus_set(self):
+        pass
+
+    def focus(self, iid=None):
+        if iid is not None:
+            self.focused = iid
+        return self.focused
 
     def identify_region(self, _x, _y):
         return "cell"
@@ -180,3 +191,79 @@ def test_programmatic_home_highlight_is_one_way_and_does_not_call_click_handler(
     assert tree.highlighted == ["home-1"]
     assert tree.selection_set_calls == 1
     assert fake.checked_ids == {"visible"}
+
+
+@pytest.mark.parametrize("workspace", ["home", "voucher"])
+@pytest.mark.parametrize("status", ["VALID_MULTI", "EXPIRED"])
+def test_space_uses_print_selection_and_preserves_hidden_vouchers(workspace, status):
+    tree = HomeTree()
+    visible = SimpleNamespace(id="visible", status=status)
+    calls = []
+    fake = SimpleNamespace(
+        home_recent_tree=tree if workspace == "home" else HomeTree(),
+        _home_voucher_by_iid={"home-1": visible},
+        by_iid={"home-1": visible},
+        checked_ids={"hidden"},
+        _is_expired=VoucherApp._is_expired,
+        bell=lambda: calls.append("bell"),
+        _sync_selection_ui=lambda: calls.append("sync"),
+    )
+    event = SimpleNamespace(widget=tree)
+    assert ModernVoucherApp._on_voucher_selection_key(fake, event) == "break"
+    if status == "EXPIRED":
+        assert fake.checked_ids == {"hidden"}
+        assert calls == ["bell"]
+    else:
+        assert fake.checked_ids == {"hidden", "visible"}
+        assert calls == ["sync"]
+        ModernVoucherApp._on_voucher_selection_key(fake, event)
+        assert fake.checked_ids == {"hidden"}
+
+
+def test_native_keyboard_navigation_cannot_change_print_highlighting():
+    """Exercise Tk class bindings as well as the application Space binding."""
+    import tkinter as tk
+    import sys
+    from tkinter import ttk
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        if sys.platform == "win32":
+            raise
+        pytest.skip("Tk display unavailable")
+    try:
+        tree = ttk.Treeview(root, selectmode="none")
+        tree.pack()
+        tree.insert("", "end", iid="first", text="First")
+        tree.insert("", "end", iid="second", text="Second")
+        fake = SimpleNamespace(
+            home_recent_tree=tree,
+            _home_voucher_by_iid={
+                iid: SimpleNamespace(id=iid, status="VALID_MULTI")
+                for iid in ("first", "second")
+            },
+            checked_ids={"first", "hidden"},
+            _is_expired=VoucherApp._is_expired,
+            bell=lambda: None,
+        )
+        fake._sync_selection_ui = lambda: tree.selection_set(
+            [iid for iid in tree.get_children() if iid in fake.checked_ids]
+        )
+        tree.bind("<space>", lambda event: ModernVoucherApp._on_voucher_selection_key(fake, event))
+        root.update()
+        tree.focus_force()
+        tree.focus("first")
+        fake._sync_selection_ui()
+        root.update()
+        tree.event_generate("<Down>")
+        root.update()
+        assert tree.focus() == "second"
+        assert tree.selection() == ("first",)
+        assert fake.checked_ids == {"first", "hidden"}
+        tree.event_generate("<space>")
+        root.update()
+        assert set(tree.selection()) == {"first", "second"}
+        assert fake.checked_ids == {"first", "second", "hidden"}
+    finally:
+        root.destroy()
