@@ -63,6 +63,7 @@ def _legacy_backup(
     extra_pdf_lines: tuple[str, ...] = (),
     codes: tuple[str, ...] = ("12345-67890", "98765-43210"),
     backup_name: str = "legacy-backup.zip",
+    event_prefix: str = "",
 ) -> Path:
     source = tmp_path / f"{Path(backup_name).stem}-source"
     (source / "config").mkdir(parents=True)
@@ -86,7 +87,7 @@ def _legacy_backup(
             [
                 {
                     "event": "generate",
-                    "event_id": f"generate-{index}",
+                    "event_id": f"{event_prefix}generate-{index}",
                     "voucher_id": _digest(code),
                     "recipient": f"Ospite {index}",
                     "duration_minutes": 1440,
@@ -100,7 +101,7 @@ def _legacy_backup(
                     "output_file": "Voucher_Legacy.pdf",
                     "document_copies": 1,
                     "physical_copies": 1,
-                    "print_job_id": f"legacy-job-{index}",
+                    "print_job_id": f"{event_prefix}legacy-job-{index}",
                 },
             ]
         )
@@ -477,6 +478,7 @@ def test_extended_history_reimport_preserves_minimized_legacy_identity(
             tmp_path,
             codes=("44444-33333",),
             backup_name="legacy-unrelated.zip",
+            event_prefix="unrelated-",
         )
         unrelated_result = execute_legacy_backup_import(
             database=database,
