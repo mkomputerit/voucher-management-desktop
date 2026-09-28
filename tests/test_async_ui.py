@@ -137,7 +137,9 @@ def test_connect_worker_contains_network_persistence_and_tls_prompt_is_callback_
             success=success,
             error=error,
         ),
-        _finish_connection=lambda *args: calls.append(("finish", args)),
+        _finish_connection=lambda *args, **kwargs: calls.append(
+            ("finish", args, kwargs)
+        ),
         _confirm_changed_certificate=lambda *args: calls.append(
             ("changed-prompt", args)
         ),
