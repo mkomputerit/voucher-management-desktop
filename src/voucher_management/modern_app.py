@@ -930,8 +930,8 @@ class ModernVoucherApp(
         sidebar = ttk.Frame(
             root,
             style="Sidebar.TFrame",
-            padding=(18, 22),
-            width=232,
+            padding=(16, 18),
+            width=228,
         )
         sidebar.grid(row=0, column=0, sticky="ns")
         sidebar.grid_propagate(False)
@@ -939,7 +939,7 @@ class ModernVoucherApp(
         sidebar.rowconfigure(2, weight=1)
 
         brand = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        brand.grid(row=0, column=0, sticky="ew", pady=(0, 22))
+        brand.grid(row=0, column=0, sticky="ew", pady=(0, 18))
         ttk.Label(
             brand,
             text=PRODUCT_NAME,
@@ -969,7 +969,7 @@ class ModernVoucherApp(
                 width=22,
                 compound="left",
             )
-            button.pack(fill="x", pady=3)
+            button.pack(fill="x", pady=2)
             self._nav_buttons[key] = button
         self._refresh_sidebar_icons()
 
@@ -1009,13 +1009,13 @@ class ModernVoucherApp(
         )
         self.sidebar_action_button.pack(fill="x")
 
-        main = ttk.Frame(root, padding=(28, 20, 28, 24))
+        main = ttk.Frame(root, padding=(24, 16, 24, 20))
         main.grid(row=0, column=1, sticky="nsew")
         main.columnconfigure(0, weight=1)
         main.rowconfigure(2, weight=1)
 
         header = ttk.Frame(main)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         title_box = ttk.Frame(header)
         title_box.pack(side="left", fill="x", expand=True)
         ttk.Label(
@@ -1036,7 +1036,7 @@ class ModernVoucherApp(
 
         self.background_operation_var = tk.StringVar()
         progress_box = ttk.Frame(main)
-        progress_box.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        progress_box.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         progress_box.columnconfigure(0, weight=1)
         self.background_progress = ttk.Progressbar(
             progress_box,
@@ -1092,13 +1092,13 @@ class ModernVoucherApp(
     def _build_home_workspace(self, frame: ttk.Frame) -> None:
         """Build the operator dashboard shown after startup."""
 
-        frame.columnconfigure(0, weight=3)
-        frame.columnconfigure(1, weight=1)
-        frame.rowconfigure(1, weight=1)
-        frame.rowconfigure(2, weight=1)
+        frame.columnconfigure(0, weight=7)
+        frame.columnconfigure(1, weight=3)
+        frame.rowconfigure(1, weight=3)
+        frame.rowconfigure(2, weight=2)
 
         metrics = ttk.Frame(frame)
-        metrics.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 16))
+        metrics.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
         for column in range(4):
             metrics.columnconfigure(column, weight=1)
         for column, (label, variable, hint) in enumerate((
@@ -1111,7 +1111,7 @@ class ModernVoucherApp(
                 metrics,
                 text=label,
                 style="Card.TLabelframe",
-                padding=(16, 12),
+                padding=(14, 10),
             )
             card.grid(
                 row=0,
@@ -1136,14 +1136,14 @@ class ModernVoucherApp(
             style="Card.TLabelframe",
             padding=(12, 10),
         )
-        recent.grid(row=1, column=0, sticky="nsew", padx=(0, 12), pady=(0, 12))
+        recent.grid(row=1, column=0, sticky="nsew", padx=(0, 10), pady=(0, 10))
         recent.columnconfigure(0, weight=1)
         recent.rowconfigure(1, weight=1)
         recent_header = ttk.Frame(recent)
         recent_header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         ttk.Label(
             recent_header,
-            text="Ultimi voucher disponibili nella postazione",
+            text="Ultimi voucher disponibili • seleziona le righe da stampare",
             style="Muted.TLabel",
         ).pack(side="left")
         self.home_create_button = ttk.Button(
@@ -1163,7 +1163,7 @@ class ModernVoucherApp(
             recent,
             columns=("code", "recipient", "state", "expires", "created"),
             show="headings",
-            height=5,
+            height=6,
             selectmode="extended",
             style="HomeVoucher.Treeview",
         )
@@ -1193,11 +1193,11 @@ class ModernVoucherApp(
 
         controller = ttk.Labelframe(
             frame,
-            text="Stato controller UniFi",
+            text="Controller UniFi",
             style="Card.TLabelframe",
-            padding=(18, 14),
+            padding=(16, 12),
         )
-        controller.grid(row=1, column=1, sticky="nsew", pady=(0, 12))
+        controller.grid(row=1, column=1, sticky="nsew", pady=(0, 10))
         home_status_line = ttk.Frame(controller)
         home_status_line.pack(fill="x")
         self.home_status_dot = ttk.Label(
@@ -1254,14 +1254,14 @@ class ModernVoucherApp(
             style="Card.TLabelframe",
             padding=(12, 10),
         )
-        activity.grid(row=2, column=0, sticky="nsew", padx=(0, 12))
+        activity.grid(row=2, column=0, sticky="nsew", padx=(0, 10))
         activity.columnconfigure(0, weight=1)
         activity.rowconfigure(0, weight=1)
         self.home_activity_tree = ttk.Treeview(
             activity,
             columns=("time", "activity", "detail"),
             show="headings",
-            height=4,
+            height=5,
         )
         self.home_activity_tree.heading("time", text="Quando")
         self.home_activity_tree.heading("activity", text="Attività")
@@ -1273,24 +1273,28 @@ class ModernVoucherApp(
 
         quick = ttk.Labelframe(
             frame,
-            text="Azioni rapide",
+            text="Vai a",
             style="Card.TLabelframe",
             padding=(14, 12),
         )
         quick.grid(row=2, column=1, sticky="nsew")
+        ttk.Label(
+            quick,
+            text="Apri un'area senza duplicare le azioni operative qui sopra.",
+            style="Muted.TLabel",
+            wraplength=260,
+        ).pack(anchor="w", pady=(0, 10))
         for text, command, primary in (
-            ("＋  Crea nuovo voucher", self.create, True),
-            ("Stampa voucher selezionati", self._home_print_selected, True),
-            ("Vai ai voucher", lambda: self._show_workspace("voucher"), False),
-            ("Apri report", lambda: self._show_workspace("report"), False),
-            ("Vai alle impostazioni", lambda: self._show_workspace("settings"), False),
+            ("Elenco voucher", lambda: self._show_workspace("voucher"), True),
+            ("Report", lambda: self._show_workspace("report"), False),
+            ("Impostazioni", lambda: self._show_workspace("settings"), False),
         ):
             ttk.Button(
                 quick,
                 text=text,
                 command=command,
                 style="Accent.TButton" if primary else "TButton",
-            ).pack(fill="x", pady=(0, 5))
+            ).pack(fill="x", pady=(0, 6))
 
     def _build_voucher_workspace(self, frame: ttk.Frame) -> None:
         """Build the daily voucher workspace with one clear primary workflow."""
@@ -2459,7 +2463,7 @@ class ModernVoucherApp(
         )
         style.configure(
             "PageTitle.TLabel",
-            font=("Segoe UI Variable Display", 24, "bold"),
+            font=("Segoe UI Variable Display", 22, "bold"),
         )
         style.configure(
             "HeroTitle.TLabel",
@@ -2498,7 +2502,7 @@ class ModernVoucherApp(
             )
         style.configure(
             "Metric.TLabel",
-            font=("Segoe UI Variable Display", 26, "bold"),
+            font=("Segoe UI Variable Display", 24, "bold"),
         )
         style.configure(
             "Hero.TButton",

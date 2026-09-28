@@ -99,6 +99,11 @@
 - Make fail-closed legacy identity conflicts actionable without silently
   skipping evidence, and render sidebar icons from supersampled geometry at the
   requested DPI size instead of enlarging a fixed 20-pixel bitmap.
+- Rebalance the Home workspace for daily operation: give recent vouchers and
+  durable activity more space, compact the shell for short displays, keep
+  create/print/sync actions beside their actual context, and turn the former
+  duplicated quick-action card into simple navigation to Voucher, Report and
+  Settings.
 
 ## 5.0.0 - 2026-09-27
 
