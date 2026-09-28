@@ -800,6 +800,8 @@ class DataMaintenanceMixin:
                     f"{result.reused_vouchers}\n"
                     f"Voucher storici creati: "
                     f"{result.historical_vouchers_created}\n"
+                    f"Voucher già minimizzati preservati: "
+                    f"{result.minimized_vouchers_preserved}\n"
                     f"PDF importati: {result.pdfs_copied}\n"
                     f"PDF già presenti: "
                     f"{result.pdfs_already_present}\n\n"

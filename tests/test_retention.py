@@ -407,3 +407,90 @@ def test_unverifiable_history_blocks_archive_without_partial_change(tmp_path):
         ).fetchone()[0] == 0
     finally:
         database.close()
+
+
+def test_legacy_materialized_generation_blocks_retention_with_empty_live_history(
+    tmp_path,
+):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="legacy-generated",
+            code="1234567890",
+        )
+        with database.transaction() as db:
+            db.execute(
+                """INSERT INTO voucher_events
+                   (event_uuid, voucher_id, event_type, occurred_at, source,
+                    windows_user, details_json)
+                   VALUES ('legacy-generated-event', ?,
+                           'LEGACY_PDF_GENERATED', ?, 'MIGRATION', NULL, '{}')""",
+                (voucher_id, OLD),
+            )
+
+        assert reviewable_retention_candidates(
+            database,
+            history=_history(),
+            settings={},
+            now=NOW,
+        ) == ()
+
+        result = archive_retention_candidates(
+            database,
+            voucher_ids=[voucher_id],
+            archived_at=NOW,
+            windows_user="operator",
+            history=_history(),
+            settings={},
+        )
+        assert result.archived_ids == ()
+        assert result.skipped_ids == (voucher_id,)
+    finally:
+        database.close()
+
+
+def test_legacy_evidence_ready_generation_blocks_before_materialization(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="legacy-evidence",
+            code="1234567890",
+        )
+        with database.transaction() as db:
+            db.execute(
+                """INSERT INTO migration_runs
+                   (migration_uuid, source_kind, source_history_sha256,
+                    started_at, status, total_rows, resolved_rows,
+                    ambiguous_rows, unresolved_rows)
+                   VALUES ('retention-legacy-run', 'LEGACY_4X_HISTORY',
+                           'history-sha', ?, 'EVIDENCE_READY', 1, 1, 0, 0)""",
+                (OLD,),
+            )
+            db.execute(
+                """INSERT INTO legacy_audit_events
+                   (legacy_event_key, source_line, voucher_digest, event_type,
+                    occurred_at, payload_json, resolution_status, voucher_id,
+                    first_migration_uuid, last_migration_uuid)
+                   VALUES ('legacy-evidence-key', 1, ?, 'generate', ?, '{}',
+                           'RESOLVED', ?, 'retention-legacy-run',
+                           'retention-legacy-run')""",
+                ("a" * 64, OLD, voucher_id),
+            )
+
+        result = archive_retention_candidates(
+            database,
+            voucher_ids=[voucher_id],
+            archived_at=NOW,
+            windows_user="operator",
+            history=_history(),
+            settings={},
+        )
+
+        assert result.archived_ids == ()
+        assert result.skipped_ids == (voucher_id,)
+    finally:
+        database.close()

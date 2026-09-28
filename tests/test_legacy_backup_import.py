@@ -359,3 +359,154 @@ def test_oversized_legacy_pdf_is_rejected_before_pdfium(monkeypatch, tmp_path):
             raise AssertionError("oversized legacy PDF must be rejected")
     finally:
         database.close()
+
+
+def test_reimport_does_not_restore_retention_minimized_legacy_voucher(tmp_path):
+    source = _legacy_backup(tmp_path)
+    paths, database = _live(tmp_path)
+    try:
+        first = execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=source,
+            safety_backup_destination=tmp_path / "pre-import-1.vmbk",
+            safety_backup_password="a" * 24,
+            imported_at="2026-09-28T08:00:00+00:00",
+            migration_uuid="legacy-import-minimize-1",
+        )
+        voucher = database.connection.execute(
+            """SELECT id FROM vouchers
+               WHERE code='12345-67890'"""
+        ).fetchone()
+        voucher_id = int(voucher["id"])
+        archived_at = "2027-06-01T08:00:00+00:00"
+
+        # Reproduce a row minimized by an earlier build, including its durable
+        # retention audit fact.  The new importer must never resurrect either
+        # the credential or recipient on a later import of the same history.
+        with database.transaction() as db:
+            db.execute(
+                """UPDATE vouchers
+                   SET code=?, name='', assigned_to='', notes='', archived_at=?
+                   WHERE id=?""",
+                (f"ARCHIVED-{voucher_id}", archived_at, voucher_id),
+            )
+            db.execute(
+                """INSERT INTO voucher_events
+                   (event_uuid, voucher_id, event_type, occurred_at, source,
+                    windows_user, details_json)
+                   VALUES (?, ?, 'RETENTION_ARCHIVED', ?, 'OPERATOR',
+                           'TEST\\operator', '{"credential_removed":true}')""",
+                (f"retention-{voucher_id}", voucher_id, archived_at),
+            )
+
+        second = execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=source,
+            safety_backup_destination=tmp_path / "pre-import-2.vmbk",
+            safety_backup_password="b" * 24,
+            imported_at="2027-06-02T08:00:00+00:00",
+            migration_uuid="legacy-import-minimize-2",
+        )
+
+        row = database.connection.execute(
+            "SELECT code, name, archived_at FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["code"] == f"ARCHIVED-{voucher_id}"
+        assert row["name"] == ""
+        assert row["archived_at"] == archived_at
+        assert second.minimized_vouchers_preserved >= 1
+        assert second.evidence.already_applied is True
+        assert first.evidence.resolved_rows == second.evidence.resolved_rows
+    finally:
+        database.close()
+
+
+def test_reimport_repairs_credential_resurrected_by_early_5_1_bug(tmp_path):
+    source = _legacy_backup(tmp_path)
+    paths, database = _live(tmp_path)
+    try:
+        execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=source,
+            safety_backup_destination=tmp_path / "pre-import-1.vmbk",
+            safety_backup_password="a" * 24,
+            imported_at="2026-09-28T08:00:00+00:00",
+            migration_uuid="legacy-import-repair-1",
+        )
+        row = database.connection.execute(
+            "SELECT id FROM vouchers WHERE code='12345-67890'"
+        ).fetchone()
+        voucher_id = int(row["id"])
+        archived_at = "2027-06-01T08:00:00+00:00"
+        with database.transaction() as db:
+            db.execute(
+                """UPDATE vouchers
+                   SET code='12345-67890', name='Ospite 1', archived_at=?
+                   WHERE id=?""",
+                (archived_at, voucher_id),
+            )
+            db.execute(
+                """INSERT INTO voucher_events
+                   (event_uuid, voucher_id, event_type, occurred_at, source,
+                    windows_user, details_json)
+                   VALUES (?, ?, 'RETENTION_ARCHIVED', ?, 'OPERATOR',
+                           'TEST\\operator', '{"credential_removed":true}')""",
+                (f"retention-repair-{voucher_id}", voucher_id, archived_at),
+            )
+
+        result = execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=source,
+            safety_backup_destination=tmp_path / "pre-import-2.vmbk",
+            safety_backup_password="b" * 24,
+            imported_at="2027-06-02T08:00:00+00:00",
+            migration_uuid="legacy-import-repair-2",
+        )
+
+        repaired = database.connection.execute(
+            "SELECT code, name, archived_at FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert repaired["code"] == f"ARCHIVED-{voucher_id}"
+        assert repaired["name"] == ""
+        assert repaired["archived_at"] == archived_at
+        assert result.minimized_vouchers_preserved >= 1
+    finally:
+        database.close()
+
+
+def test_specific_legacy_import_error_is_preserved_after_safety_backup(
+    monkeypatch,
+    tmp_path,
+):
+    source = _legacy_backup(tmp_path)
+    paths, database = _live(tmp_path)
+    try:
+        monkeypatch.setattr(
+            legacy_backup_import,
+            "_copy_pdf_archive",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                LegacyMigrationError("Percorso PDF del backup non sicuro")
+            ),
+        )
+        try:
+            execute_legacy_backup_import(
+                database=database,
+                live_backup_service=BackupService(paths),
+                source=source,
+                safety_backup_destination=tmp_path / "pre-import.vmbk",
+                safety_backup_password="a" * 24,
+                imported_at="2026-09-28T08:00:00+00:00",
+                migration_uuid="legacy-import-specific-error",
+            )
+        except LegacyMigrationError as exc:
+            assert str(exc) == "Percorso PDF del backup non sicuro"
+        else:
+            raise AssertionError("specific LegacyMigrationError must propagate")
+    finally:
+        database.close()

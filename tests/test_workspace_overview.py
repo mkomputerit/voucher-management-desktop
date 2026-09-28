@@ -96,3 +96,32 @@ def test_recent_workspace_activity_respects_controller_scope(tmp_path):
         assert all("Sala" not in row.detail for row in rows)
     finally:
         database.close()
+
+
+def test_local_activity_does_not_label_legacy_import_as_recent_discovery(tmp_path):
+    database = _database(tmp_path)
+    try:
+        archive = database.create_controller(
+            name="Archivio backup precedente",
+            api_root="legacy-backup://" + ("a" * 64),
+            created_at="2026-09-28T08:00:00+00:00",
+        )
+        database.upsert_voucher(
+            controller_id=archive,
+            unifi_id="legacy-one",
+            code="1234567890",
+            name="Ospite storico",
+            imported_at="2026-09-28T12:00:00+00:00",
+            last_synced_at="2026-09-28T12:00:00+00:00",
+        )
+
+        rows = load_recent_workspace_activity(
+            database,
+            controller_id=None,
+            limit=10,
+        )
+
+        assert all(row.title != "Voucher rilevato" for row in rows)
+        assert all(row.detail != "Ospite storico" for row in rows)
+    finally:
+        database.close()

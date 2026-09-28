@@ -63,6 +63,18 @@
 - Show the source ZIP SHA-256 before legacy import and recommend a fresh .vmbk
   export after successful conversion because the old ZIP format is not
   externally authenticated.
+- Make retention minimization irreversible across legacy reimports: a
+  previously scrubbed credential/recipient is never reconstructed, and early
+  5.1 rows accidentally rehydrated after retention are scrubbed again from the
+  durable RETENTION_ARCHIVED audit fact.
+- Treat both materialized legacy PDF-generation events and resolved pre-
+  materialization legacy evidence as retention blockers, even when the current
+  installation's HMAC history file contains no corresponding event.
+- Preserve specific legacy-import validation errors after the pre-import safety
+  backup instead of replacing them with a generic partial-import message.
+- Exclude synthetic legacy-backup controllers from Home's "Voucher rilevato"
+  feed so importing historical data is not presented as a new controller
+  discovery in local-only mode.
 
 ## 5.0.0 - 2026-09-27
 

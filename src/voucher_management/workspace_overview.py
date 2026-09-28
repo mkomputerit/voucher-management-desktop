@@ -100,10 +100,13 @@ def load_recent_workspace_activity(
         )
 
     for row in database.connection.execute(
-        f"""SELECT imported_at, name, code
+        f"""SELECT v.imported_at, v.name, v.code
             FROM vouchers AS v
-            WHERE archived_at IS NULL {controller_clause}
-            ORDER BY imported_at DESC
+            JOIN controllers AS c ON c.id=v.controller_id
+            WHERE v.archived_at IS NULL
+              AND c.api_root NOT LIKE 'legacy-backup://%'
+              {controller_clause}
+            ORDER BY v.imported_at DESC
             LIMIT ?""",
         (*params, limit),
     ):
