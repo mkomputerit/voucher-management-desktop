@@ -21,13 +21,13 @@ from voucher_management.legacy_backup_import import (
 from voucher_management.security.history_key import HistoryKeyStore
 
 
-SECRET = "legacy-backup-import-secret-value"
-FINGERPRINT = hashlib.sha256(SECRET.encode("utf-8")).hexdigest()[:16]
+FIXTURE_KEY = secrets.token_hex(32)
+FINGERPRINT = hashlib.sha256(FIXTURE_KEY.encode("utf-8")).hexdigest()[:16]
 
 
 def _digest(code: str) -> str:
     return hmac.new(
-        SECRET.encode("utf-8"),
+        FIXTURE_KEY.encode("utf-8"),
         code.encode("ascii"),
         hashlib.sha256,
     ).hexdigest()
@@ -62,7 +62,7 @@ def _legacy_backup(tmp_path: Path) -> Path:
         ),
         encoding="utf-8",
     )
-    HistoryKeyStore(source).set(SECRET)
+    HistoryKeyStore(source).set(FIXTURE_KEY)
 
     rows = []
     for index, code in enumerate(("12345-67890", "98765-43210"), start=1):
@@ -115,8 +115,8 @@ def _live(tmp_path: Path):
     root = tmp_path / "live"
     for name in ("config", "data", "Print", "Loghi"):
         (root / name).mkdir(parents=True, exist_ok=True)
-    live_secret = "0123456789abcdef0123456789abcdef"
-    live_fp = hashlib.sha256(live_secret.encode("utf-8")).hexdigest()[:16]
+    live_key = secrets.token_hex(32)
+    live_fp = hashlib.sha256(live_key.encode("utf-8")).hexdigest()[:16]
     (root / "config" / "settings.json").write_text(
         json.dumps(
             {
@@ -126,7 +126,7 @@ def _live(tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    HistoryKeyStore(root).set(live_secret)
+    HistoryKeyStore(root).set(live_key)
     (root / "data" / "history.jsonl").write_text("", encoding="utf-8")
 
     paths = SimpleNamespace(
