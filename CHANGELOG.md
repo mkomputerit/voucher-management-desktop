@@ -2,6 +2,14 @@
 
 ## 5.1.0 - Unreleased
 
+- Reconnect from Home through a compact saved-controller summary asking only
+  for the session API key, without opening Settings. Healthy active sessions
+  still synchronize directly; failed sessions can enter a fresh key through
+  the same TLS verification and background connection workflow.
+- Give the Home table priority for a complete ten-voucher batch, compact the
+  controller summary, remove redundant area shortcuts and collapse recent
+  activity by default into an optional two-row panel.
+
 - Explain in the privacy documentation and print preview that the recipient
   stays on newly generated cut vouchers handed to guests.
 - Replace legacy-conflict instructions for a nonexistent in-app repair flow

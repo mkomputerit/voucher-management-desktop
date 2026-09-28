@@ -255,6 +255,80 @@ def fit_dialog(window: tk.Toplevel, parent: tk.Misc, *, min_width: int = 0, min_
     window.minsize(min(width, screen_w - 40), min(height, screen_h - 60))
 
 
+class QuickConnectDialog(tk.Toplevel):
+    """Collect a session-only key for the saved controller without leaving Home."""
+
+    def __init__(self, app, *, api_root: str, controller_name: str, last_sync: str):
+        super().__init__(app)
+        self.app = app
+        self.api_root = api_root
+        self.controller_name = controller_name
+        self.key_var = tk.StringVar(master=self)
+        self.error_var = tk.StringVar(master=self)
+        self.title("Connetti e sincronizza")
+        self.transient(app)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.bind("<Return>", lambda _event: self.accept())
+
+        body = ttk.Frame(self, padding=20)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        ttk.Label(body, text=controller_name, style="SectionTitle.TLabel", wraplength=480).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(body, text=api_root, wraplength=480).grid(
+            row=1, column=0, sticky="w", pady=(5, 10)
+        )
+        ttk.Label(
+            body, text=f"Ultima sincronizzazione: {last_sync}", style="Muted.TLabel"
+        ).grid(row=2, column=0, sticky="w")
+        ttk.Label(body, text="API key").grid(
+            row=3, column=0, sticky="w", pady=(18, 5)
+        )
+        self.key_entry = ttk.Entry(body, textvariable=self.key_var, show="•", width=48)
+        self.key_entry.grid(row=4, column=0, sticky="ew")
+        ttk.Label(
+            body,
+            text="La chiave viene usata solo per questa sessione e non viene salvata.",
+            style="Muted.TLabel", wraplength=480,
+        ).grid(row=5, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(body, textvariable=self.error_var, wraplength=480).grid(
+            row=6, column=0, sticky="w", pady=(4, 0)
+        )
+        actions = ttk.Frame(body)
+        actions.grid(row=7, column=0, sticky="e", pady=(12, 0))
+        ttk.Button(actions, text="Annulla", command=self.destroy).pack(side="left", padx=(0, 8))
+        ttk.Button(
+            actions, text="Connetti e sincronizza", command=self.accept,
+            style="Accent.TButton",
+        ).pack(side="left")
+        fit_dialog(self, app, min_width=460)
+        self.grab_set()
+        self.key_entry.focus_set()
+
+    def accept(self) -> None:
+        key = self.key_var.get()
+        if not key.strip():
+            self.error_var.set("Inserisci la API key del controller.")
+            self.key_entry.focus_set()
+            return
+        if self.app._background_results is not None:
+            self.error_var.set("Attendi il completamento dell'operazione in corso.")
+            return
+        # Use exactly the endpoint shown in this dialog, then delegate to the
+        # existing connection/TLS workflow, which clears its visible key field.
+        self.app.api_root_var.set(self.api_root)
+        self.app.controller_name_var.set(self.controller_name)
+        self.app.api_key_var.set(key)
+        self.destroy()
+        self.app.connect()
+
+    def destroy(self) -> None:
+        self.key_var.set("")
+        super().destroy()
+
+
 class SettingsDialog(tk.Toplevel):
     """Operator settings grouped like a native management console."""
 
@@ -1133,88 +1207,41 @@ class ModernVoucherApp(
     def _build_home_workspace(self, frame: ttk.Frame) -> None:
         """Build a portal-like dashboard around the operator's daily tasks."""
 
-        frame.columnconfigure(0, weight=7)
-        frame.columnconfigure(1, weight=3)
-        frame.rowconfigure(2, weight=3)
-        frame.rowconfigure(3, weight=2)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
 
-        connection = ttk.Labelframe(
-            frame,
-            text="Controller UniFi",
-            style="Card.TLabelframe",
-            padding=(18, 14),
-        )
-        connection.grid(
-            row=0,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(0, 12),
-        )
+        # A short connection strip leaves the workspace to the voucher batch.
+        connection = ttk.Frame(frame, padding=(12, 8))
+        connection.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         connection.columnconfigure(0, weight=1)
-        connection.columnconfigure(1, weight=0)
-
+        ttk.Label(
+            connection, textvariable=self.home_controller_name_var,
+            style="SectionTitle.TLabel", wraplength=280,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 16))
+        ttk.Label(connection, text="Ultima sincronizzazione", style="Muted.TLabel").grid(
+            row=0, column=1, sticky="w", padx=(0, 16)
+        )
+        ttk.Label(connection, textvariable=self.home_last_sync_var).grid(
+            row=1, column=1, sticky="w"
+        )
         status_line = ttk.Frame(connection)
-        status_line.grid(row=0, column=0, sticky="w")
+        status_line.grid(row=1, column=0, sticky="w", pady=(3, 0))
         self.home_status_dot = self._build_status_dot(status_line)
-        self.home_status_dot.pack(side="left", padx=(0, 9), pady=(2, 0))
+        self.home_status_dot.pack(side="left", padx=(0, 7))
         self.home_status_title_label = ttk.Label(
-            status_line,
-            textvariable=self.home_ready_var,
-            style="Status.TLabel",
+            status_line, textvariable=self.home_ready_var, style="Status.TLabel"
         )
-        self.home_status_title_label.pack(side="left", anchor="w")
-
-        ttk.Label(
-            connection,
-            textvariable=self.home_sync_detail_var,
-            style="Muted.TLabel",
-            wraplength=780,
-        ).grid(row=1, column=0, sticky="w", pady=(4, 10))
-
-        meta = ttk.Frame(connection)
-        meta.grid(row=2, column=0, sticky="w")
-        ttk.Label(
-            meta,
-            text="Controller",
-            style="Muted.TLabel",
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            meta,
-            textvariable=self.home_controller_name_var,
-            style="SectionTitle.TLabel",
-        ).grid(row=1, column=0, sticky="w", padx=(0, 32))
-        ttk.Label(
-            meta,
-            text="Ultima sincronizzazione",
-            style="Muted.TLabel",
-        ).grid(row=0, column=1, sticky="w")
-        ttk.Label(
-            meta,
-            textvariable=self.home_last_sync_var,
-            style="Body.TLabel",
-        ).grid(row=1, column=1, sticky="w")
-
+        self.home_status_title_label.pack(side="left")
         self.home_sync_button = ttk.Button(
-            connection,
-            textvariable=self.home_sync_action_var,
-            command=self._home_sync_or_connect,
-            style="Accent.TButton",
-            width=20,
+            connection, textvariable=self.home_sync_action_var,
+            command=self._home_sync_or_connect, style="Accent.TButton",
         )
-        self.home_sync_button.grid(
-            row=0,
-            column=1,
-            rowspan=3,
-            sticky="e",
-            padx=(20, 0),
-        )
+        self.home_sync_button.grid(row=0, column=2, rowspan=2, sticky="e", padx=(16, 0))
 
         metrics = ttk.Frame(frame)
         metrics.grid(
             row=1,
             column=0,
-            columnspan=2,
             sticky="ew",
             pady=(0, 12),
         )
@@ -1258,7 +1285,6 @@ class ModernVoucherApp(
         recent.grid(
             row=2,
             column=0,
-            columnspan=2,
             sticky="nsew",
             pady=(0, 10),
         )
@@ -1288,7 +1314,7 @@ class ModernVoucherApp(
             recent,
             columns=("code", "recipient", "state", "expires", "created"),
             show="headings",
-            height=6,
+            height=VOUCHERS_PER_PAGE,
             selectmode="none",
             style="HomeVoucher.Treeview",
         )
@@ -1332,14 +1358,20 @@ class ModernVoucherApp(
             style="Card.TLabelframe",
             padding=(12, 10),
         )
-        activity.grid(row=3, column=0, sticky="nsew", padx=(0, 10))
+        self.home_activity_frame = activity
+        self.home_activity_toggle = ttk.Button(
+            frame, text="Mostra attività recenti", command=self._toggle_home_activity,
+        )
+        self.home_activity_toggle.grid(row=3, column=0, sticky="w", pady=(2, 4))
+        activity.grid(row=4, column=0, sticky="ew")
+        activity.grid_remove()
         activity.columnconfigure(0, weight=1)
         activity.rowconfigure(0, weight=1)
         self.home_activity_tree = ttk.Treeview(
             activity,
             columns=("time", "activity", "detail"),
             show="headings",
-            height=5,
+            height=2,
         )
         self.home_activity_tree.heading("time", text="Quando")
         self.home_activity_tree.heading("activity", text="Attività")
@@ -1365,31 +1397,6 @@ class ModernVoucherApp(
         )
         activity_y.grid(row=0, column=1, sticky="ns")
         activity_x.grid(row=1, column=0, sticky="ew")
-
-        quick = ttk.Labelframe(
-            frame,
-            text="Aree",
-            style="Card.TLabelframe",
-            padding=(14, 12),
-        )
-        quick.grid(row=3, column=1, sticky="nsew")
-        ttk.Label(
-            quick,
-            text="Accesso rapido alle altre aree operative.",
-            style="Muted.TLabel",
-            wraplength=260,
-        ).pack(anchor="w", pady=(0, 10))
-        for text, command, primary in (
-            ("Voucher", lambda: self._show_workspace("voucher"), True),
-            ("Report", lambda: self._show_workspace("report"), False),
-            ("Impostazioni", lambda: self._show_workspace("settings"), False),
-        ):
-            ttk.Button(
-                quick,
-                text=text,
-                command=command,
-                style="Accent.TButton" if primary else "TButton",
-            ).pack(fill="x", pady=(0, 6))
 
     def _build_voucher_workspace(self, frame: ttk.Frame) -> None:
         """Build the daily voucher workspace with one clear primary workflow."""
@@ -2441,15 +2448,47 @@ class ModernVoucherApp(
         else:
             self.home_sync_action_var.set("Riconnetti")
 
+    def _toggle_home_activity(self) -> None:
+        if self.home_activity_frame.winfo_ismapped():
+            self.home_activity_frame.grid_remove()
+            self.home_activity_toggle.configure(text="Mostra attività recenti")
+        else:
+            self.home_activity_frame.grid()
+            self.home_activity_toggle.configure(text="Nascondi attività recenti")
+
     def _home_sync_or_connect(self) -> None:
-        if self.client is not None:
+        if self._background_results is not None:
+            self.bell()
+            return
+        if self.client is not None and not self._controller_status_failed:
             self.refresh()
             return
-        self._show_workspace("settings")
-        try:
-            self.api_key_entry.focus_set()
-        except tk.TclError:
-            pass
+        saved = self.settings_store.load()
+        api_root = str(saved.get("controller_api_root") or "").strip()
+        if not api_root:
+            # First configuration still needs an address; subsequent sessions
+            # only ask for the transient key, using the saved endpoint.
+            self._show_workspace("settings")
+            self.settings_notebook.select(1)
+            self.api_root_entry.focus_set()
+            return
+        existing = getattr(self, "_quick_connect_dialog", None)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.key_entry.focus_set()
+            return
+        row = self._controller_record()
+        name = (
+            str(row["name"] or "Controller UniFi")
+            if row is not None else "Controller UniFi"
+        )
+        last_sync = (
+            audit_time_label(row["last_successful_sync_at"])
+            if row is not None and row["last_successful_sync_at"] else "Mai"
+        )
+        self._quick_connect_dialog = QuickConnectDialog(
+            self, api_root=api_root, controller_name=name, last_sync=last_sync,
+        )
 
     def _controller_operation_failed(self) -> None:
         self._controller_status_failed = True
@@ -2900,7 +2939,7 @@ class ModernVoucherApp(
                 expires,
                 created,
                 expired,
-            ) in sorted(recent_rows)[:7]:
+            ) in sorted(recent_rows)[:VOUCHERS_PER_PAGE]:
                 iid = f"home-{voucher_id}"
                 self.home_recent_tree.insert(
                     "",
