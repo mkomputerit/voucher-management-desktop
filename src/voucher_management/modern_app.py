@@ -47,7 +47,11 @@ def audit_time_label(value: str) -> str:
         return "—"
 
 
-def _sidebar_icon_bitmap(kind: str, foreground: str) -> Image.Image:
+def _sidebar_icon_bitmap(
+    kind: str,
+    foreground: str,
+    size: int = 20,
+) -> Image.Image:
     """Draw a crisp monochrome navigation icon without external icon files."""
 
     image = Image.new("RGBA", (20, 20), (0, 0, 0, 0))
@@ -79,7 +83,81 @@ def _sidebar_icon_bitmap(kind: str, foreground: str) -> Image.Image:
             (14, 6, 16, 4), (4, 16, 6, 14),
         ):
             draw.line((x1, y1, x2, y2), fill=stroke, width=width)
+    size = max(16, int(size))
+    if size != 20:
+        return image.resize((size, size), Image.Resampling.LANCZOS)
     return image
+
+
+def _sidebar_icon_pixel_size(tk_scaling: object) -> int:
+    """Scale pixel-based sidebar icons to Windows/Tk display scaling."""
+
+    try:
+        scaling = float(tk_scaling)
+    except (TypeError, ValueError):
+        return 20
+    # Tk's 96-DPI baseline is 96/72 points per pixel.
+    factor = scaling / (96.0 / 72.0)
+    factor = min(1.6, max(1.0, factor))
+    return int(round(20 * factor))
+
+
+def _main_window_minimum(
+    screen_width: int,
+    screen_height: int,
+) -> tuple[int, int]:
+    """Keep the main-window minimum inside the usable display envelope."""
+
+    width = min(1220, max(640, int(screen_width) - 80))
+    height = min(740, max(500, int(screen_height) - 100))
+    return width, height
+
+
+def _controller_status_style_names(
+    status_key: str,
+) -> tuple[str, str, str, str]:
+    """Map controller state to text/dot styles with semantic warning amber."""
+
+    return {
+        "connected": (
+            "Success.Status.TLabel",
+            "SidebarSuccess.TLabel",
+            "ConnectedDot.TLabel",
+            "SidebarConnectedDot.TLabel",
+        ),
+        "syncing": (
+            "Busy.Status.TLabel",
+            "SidebarBusy.TLabel",
+            "BusyDot.TLabel",
+            "SidebarBusyDot.TLabel",
+        ),
+        "error": (
+            "Error.Status.TLabel",
+            "SidebarError.TLabel",
+            "DisconnectedDot.TLabel",
+            "SidebarDisconnectedDot.TLabel",
+        ),
+        "local": (
+            "Warning.Status.TLabel",
+            "SidebarWarning.TLabel",
+            "WarningDot.TLabel",
+            "SidebarWarningDot.TLabel",
+        ),
+        "unconfigured": (
+            "Warning.Status.TLabel",
+            "SidebarWarning.TLabel",
+            "WarningDot.TLabel",
+            "SidebarWarningDot.TLabel",
+        ),
+    }.get(
+        status_key,
+        (
+            "Status.TLabel",
+            "SidebarStatus.TLabel",
+            "DisconnectedDot.TLabel",
+            "SidebarDisconnectedDot.TLabel",
+        ),
+    )
 
 
 def fit_dialog(window: tk.Toplevel, parent: tk.Misc, *, min_width: int = 0, min_height: int = 0) -> None:
@@ -1424,11 +1502,13 @@ class ModernVoucherApp(
         pdf_print = ttk.Frame(notebook, padding=22)
         retention = ttk.Frame(notebook, padding=22)
         backup = ttk.Frame(notebook, padding=22)
+        maintenance_page = ttk.Frame(notebook, padding=22)
         notebook.add(general, text="Generali")
         notebook.add(controller, text="Controller")
         notebook.add(pdf_print, text="PDF / stampa")
         notebook.add(retention, text="Retention")
         notebook.add(backup, text="Backup")
+        notebook.add(maintenance_page, text="Manutenzione")
 
         general.columnconfigure(1, weight=1)
         ttk.Label(
@@ -1536,11 +1616,25 @@ class ModernVoucherApp(
             text="Stato",
             style="Muted.TLabel",
         ).grid(row=6, column=0, sticky="nw")
-        ttk.Label(
-            controller,
+        controller_status_line = ttk.Frame(controller)
+        controller_status_line.grid(
+            row=6,
+            column=1,
+            columnspan=2,
+            sticky="w",
+        )
+        self.settings_status_dot = ttk.Label(
+            controller_status_line,
+            text="●",
+            style="DisconnectedDot.TLabel",
+        )
+        self.settings_status_dot.pack(side="left", padx=(0, 7))
+        self.settings_status_title_label = ttk.Label(
+            controller_status_line,
             textvariable=self.controller_health_var,
             style="Status.TLabel",
-        ).grid(row=6, column=1, columnspan=2, sticky="w")
+        )
+        self.settings_status_title_label.pack(side="left")
         ttk.Label(
             controller,
             textvariable=self.controller_health_detail_var,
@@ -1630,7 +1724,9 @@ class ModernVoucherApp(
         ttk.Label(
             retention,
             text=(
-                "Voucher utilizzati o stampati restano protetti. Gli altri "
+                "Voucher utilizzati, stampati o con PDF generato restano "
+                "protetti. Le evidenze legacy importate sono anch'esse "
+                "conservate fuori dalla retention ordinaria. Gli altri voucher "
                 "possono diventare candidati solo dopo il periodo configurato "
                 "e vengono sempre mostrati prima di qualsiasi minimizzazione."
             ),
@@ -1685,51 +1781,65 @@ class ModernVoucherApp(
             command=lambda: self.import_legacy_backup(parent=self),
         ).pack(side="left", padx=(8, 0))
 
-        ttk.Separator(backup).pack(fill="x", pady=18)
         ttk.Label(
-            backup,
+            maintenance_page,
             text="Recupero e manutenzione",
             style="SectionTitle.TLabel",
         ).pack(anchor="w")
         ttk.Label(
-            backup,
+            maintenance_page,
             text=(
                 "Strumenti da usare solo quando serve recuperare cronologia, "
-                "una stampa pendente o dati di una versione precedente."
+                "una stampa pendente o dati di una versione precedente. "
+                "Le operazioni quotidiane di backup restano nella scheda Backup."
             ),
             style="Muted.TLabel",
             wraplength=760,
-        ).pack(anchor="w", pady=(3, 10))
-        maintenance = ttk.Frame(backup)
-        maintenance.pack(anchor="w")
-        ttk.Button(
-            maintenance,
-            text="Verifica cronologia…",
-            command=lambda: HistoryRecoveryDialog(self),
-        ).pack(side="left")
-        ttk.Button(
-            maintenance,
-            text="Recupera stampa pendente…",
-            command=lambda: self.recover_pending_print_audit(parent=self),
-        ).pack(side="left", padx=(8, 0))
-        ttk.Button(
-            maintenance,
-            text="Importa cronologia…",
-            command=lambda: self.import_history_exchange(parent=self),
-        ).pack(side="left", padx=(8, 0))
-        ttk.Button(
-            maintenance,
-            text="Esporta cronologia…",
-            command=lambda: self.export_history_exchange(parent=self),
-        ).pack(side="left", padx=(8, 0))
+        ).pack(anchor="w", pady=(3, 14))
+        maintenance_actions = ttk.Frame(maintenance_page)
+        maintenance_actions.pack(anchor="w")
+        for column in range(2):
+            maintenance_actions.columnconfigure(column, weight=1)
+        for row, column, text, command in (
+            (0, 0, "Verifica cronologia…", lambda: HistoryRecoveryDialog(self)),
+            (
+                0,
+                1,
+                "Recupera stampa pendente…",
+                lambda: self.recover_pending_print_audit(parent=self),
+            ),
+            (
+                1,
+                0,
+                "Importa cronologia…",
+                lambda: self.import_history_exchange(parent=self),
+            ),
+            (
+                1,
+                1,
+                "Esporta cronologia…",
+                lambda: self.export_history_exchange(parent=self),
+            ),
+        ):
+            ttk.Button(
+                maintenance_actions,
+                text=text,
+                command=command,
+            ).grid(
+                row=row,
+                column=column,
+                sticky="ew",
+                padx=(0 if column == 0 else 8, 0),
+                pady=(0 if row == 0 else 8, 0),
+            )
         if getattr(self.paths, "shared_mode", False):
             ttk.Button(
-                backup,
+                maintenance_page,
                 text="Migra dati del profilo Windows…",
                 command=lambda: self.migrate_per_user_data_to_shared(parent=self),
-            ).pack(anchor="w", pady=(12, 0))
+            ).pack(anchor="w", pady=(14, 0))
         ttk.Button(
-            backup,
+            maintenance_page,
             text="Importa cronologia già ripristinata…",
             command=lambda: self.migrate_legacy_history(parent=self),
         ).pack(anchor="w", pady=(8, 0))
@@ -1986,7 +2096,7 @@ class ModernVoucherApp(
             ),
             "settings": (
                 "Impostazioni",
-                "Generali, controller, PDF, retention e backup",
+                "Generali, controller, PDF, retention, backup e manutenzione",
             ),
         }
         if key not in self._workspace_pages:
@@ -2056,21 +2166,16 @@ class ModernVoucherApp(
         )
         self._controller_workspace_status = status
 
-        status_style = {
-            "connected": "Success.Status.TLabel",
-            "syncing": "Busy.Status.TLabel",
-            "error": "Error.Status.TLabel",
-            "local": "Warning.Status.TLabel",
-            "unconfigured": "Warning.Status.TLabel",
-        }.get(status.key, "Status.TLabel")
-        sidebar_style = {
-            "connected": "SidebarSuccess.TLabel",
-            "syncing": "SidebarBusy.TLabel",
-            "error": "SidebarError.TLabel",
-            "local": "SidebarWarning.TLabel",
-            "unconfigured": "SidebarWarning.TLabel",
-        }.get(status.key, "SidebarStatus.TLabel")
-        for widget_name in ("home_status_title_label",):
+        (
+            status_style,
+            sidebar_style,
+            dot_style,
+            sidebar_dot_style,
+        ) = _controller_status_style_names(status.key)
+        for widget_name in (
+            "home_status_title_label",
+            "settings_status_title_label",
+        ):
             widget = getattr(self, widget_name, None)
             if widget is not None:
                 widget.configure(style=status_style)
@@ -2078,17 +2183,10 @@ class ModernVoucherApp(
         if sidebar_label is not None:
             sidebar_label.configure(style=sidebar_style)
 
-        dot_style = {
-            "connected": "ConnectedDot.TLabel",
-            "syncing": "BusyDot.TLabel",
-        }.get(status.key, "DisconnectedDot.TLabel")
-        sidebar_dot_style = {
-            "connected": "SidebarConnectedDot.TLabel",
-            "syncing": "SidebarBusyDot.TLabel",
-        }.get(status.key, "SidebarDisconnectedDot.TLabel")
-        home_dot = getattr(self, "home_status_dot", None)
-        if home_dot is not None:
-            home_dot.configure(style=dot_style)
+        for dot_name in ("home_status_dot", "settings_status_dot"):
+            dot = getattr(self, dot_name, None)
+            if dot is not None:
+                dot.configure(style=dot_style)
         sidebar_dot = getattr(self, "sidebar_status_dot", None)
         if sidebar_dot is not None:
             sidebar_dot.configure(style=sidebar_dot_style)
@@ -2242,6 +2340,7 @@ class ModernVoucherApp(
         connected_green = "#55D17A" if dark else "#107C10"
         disconnected_red = "#FF6B6B" if dark else "#C42B1C"
         busy_blue = "#62A9FF" if dark else "#0067C0"
+        warning_orange = "#F7B955" if dark else "#9A6700"
 
         style.configure("Sidebar.TFrame", background=sidebar_bg)
         style.configure(
@@ -2265,7 +2364,7 @@ class ModernVoucherApp(
         for name, foreground in (
             ("SidebarSuccess.TLabel", connected_green),
             ("SidebarBusy.TLabel", busy_blue),
-            ("SidebarWarning.TLabel", disconnected_red),
+            ("SidebarWarning.TLabel", warning_orange),
             ("SidebarError.TLabel", disconnected_red),
         ):
             style.configure(
@@ -2294,6 +2393,12 @@ class ModernVoucherApp(
             font=("Segoe UI Variable Text", 12, "bold"),
         )
         style.configure(
+            "SidebarWarningDot.TLabel",
+            background=sidebar_bg,
+            foreground=warning_orange,
+            font=("Segoe UI Variable Text", 12, "bold"),
+        )
+        style.configure(
             "ConnectedDot.TLabel",
             foreground=connected_green,
             font=("Segoe UI Variable Text", 12, "bold"),
@@ -2306,6 +2411,11 @@ class ModernVoucherApp(
         style.configure(
             "BusyDot.TLabel",
             foreground=busy_blue,
+            font=("Segoe UI Variable Text", 12, "bold"),
+        )
+        style.configure(
+            "WarningDot.TLabel",
+            foreground=warning_orange,
             font=("Segoe UI Variable Text", 12, "bold"),
         )
         style.configure(
@@ -2337,10 +2447,10 @@ class ModernVoucherApp(
             font=("Segoe UI Variable Text", 11, "bold"),
         )
         for name, foreground in (
-            ("Success.Status.TLabel", "#107c10"),
-            ("Busy.Status.TLabel", "#0067c0"),
-            ("Warning.Status.TLabel", "#9a6500"),
-            ("Error.Status.TLabel", "#c42b1c"),
+            ("Success.Status.TLabel", connected_green),
+            ("Busy.Status.TLabel", busy_blue),
+            ("Warning.Status.TLabel", warning_orange),
+            ("Error.Status.TLabel", disconnected_red),
         ):
             style.configure(
                 name,
@@ -2364,6 +2474,7 @@ class ModernVoucherApp(
         )
         style.configure(
             "NavActive.TButton",
+            foreground=selection_blue,
             font=("Segoe UI Variable Text", 10, "bold"),
             padding=(12, 10),
             anchor="w",
@@ -2397,7 +2508,11 @@ class ModernVoucherApp(
             font=("Segoe UI Variable Text", 9, "bold"),
             padding=(7, 9),
         )
-        self.minsize(1220, 740)
+        minimum = _main_window_minimum(
+            self.winfo_screenwidth(),
+            self.winfo_screenheight(),
+        )
+        self.minsize(*minimum)
 
     def _refresh_sidebar_icons(self) -> None:
         """Regenerate theme-aware navigation icons for the sidebar."""
@@ -2407,10 +2522,15 @@ class ModernVoucherApp(
         preference = str(self.settings.get("ui_theme", "system") or "system")
         dark = darkdetect.isDark() if preference == "system" else preference == "dark"
         foreground = "#F5F7FA" if dark else "#243247"
+        try:
+            tk_scaling = self.tk.call("tk", "scaling")
+        except tk.TclError:
+            tk_scaling = 96.0 / 72.0
+        icon_size = _sidebar_icon_pixel_size(tk_scaling)
         images = {}
         for key in ("home", "voucher", "report", "settings"):
             images[key] = ImageTk.PhotoImage(
-                _sidebar_icon_bitmap(key, foreground),
+                _sidebar_icon_bitmap(key, foreground, icon_size),
                 master=self,
             )
             button = self._nav_buttons.get(key)

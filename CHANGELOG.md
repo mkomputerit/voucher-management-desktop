@@ -85,6 +85,14 @@
   current database can no longer cryptographically link to a minimized row.
 - Centralize the synthetic legacy-controller API-root prefix so import and Home
   filtering cannot drift onto different string literals.
+- Refine the operator shell for Windows scaling and clearer status semantics:
+  sidebar icons follow Tk DPI scaling, warning/local controller states use
+  amber instead of error red, Settings shows the same status dot, the active
+  navigation item uses the primary blue accent and the main-window minimum no
+  longer assumes a 740-pixel-tall desktop.
+- Move recovery/history tools out of the routine Backup tab into a dedicated
+  Settings > Manutenzione page and explain that verified imported legacy
+  generation/print evidence remains outside ordinary retention.
 
 ## 5.0.0 - 2026-09-27
 

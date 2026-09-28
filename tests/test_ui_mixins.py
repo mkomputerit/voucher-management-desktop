@@ -5,7 +5,12 @@ from types import SimpleNamespace
 from voucher_management.app import VoucherApp
 from voucher_management.controller_connection_ui import ControllerConnectionMixin
 from voucher_management.data_maintenance_ui import DataMaintenanceMixin
-from voucher_management.modern_app import ModernVoucherApp
+from voucher_management.modern_app import (
+    ModernVoucherApp,
+    _controller_status_style_names,
+    _main_window_minimum,
+    _sidebar_icon_pixel_size,
+)
 from voucher_management.retention_ui import RetentionMixin
 from voucher_management.voucher_creation_ui import VoucherCreationMixin
 from voucher_management.voucher_deletion_ui import VoucherDeletionMixin
@@ -113,3 +118,27 @@ def test_failed_restore_reopens_and_verifies_database(tmp_path):
         fake.database.integrity_check()
     finally:
         fake.database.close()
+
+
+def test_controller_status_styles_keep_warning_states_distinct_from_errors():
+    local = _controller_status_style_names("local")
+    unconfigured = _controller_status_style_names("unconfigured")
+    error = _controller_status_style_names("error")
+
+    assert local[0] == "Warning.Status.TLabel"
+    assert local[2] == "WarningDot.TLabel"
+    assert unconfigured[2] == "WarningDot.TLabel"
+    assert error[0] == "Error.Status.TLabel"
+    assert error[2] == "DisconnectedDot.TLabel"
+
+
+def test_sidebar_icon_size_tracks_windows_tk_scaling():
+    assert _sidebar_icon_pixel_size(96 / 72) == 20
+    assert _sidebar_icon_pixel_size((96 / 72) * 1.25) == 25
+    assert _sidebar_icon_pixel_size((96 / 72) * 1.5) == 30
+    assert _sidebar_icon_pixel_size("invalid") == 20
+
+
+def test_main_window_minimum_stays_inside_short_display():
+    assert _main_window_minimum(1600, 755) == (1220, 655)
+    assert _main_window_minimum(1093, 614) == (1013, 514)
