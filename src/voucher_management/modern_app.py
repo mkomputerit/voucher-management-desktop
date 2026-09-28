@@ -959,6 +959,7 @@ class ModernVoucherApp(
             self.connect_button,
             self.create_button,
             self.home_create_button,
+            self.home_print_button,
             self.home_sync_button,
             self.sidebar_action_button,
             self.refresh_button,
@@ -1035,11 +1036,19 @@ class ModernVoucherApp(
             style="Accent.TButton",
         )
         self.home_create_button.pack(side="right")
+        self.home_print_button = ttk.Button(
+            recent_header,
+            textvariable=self.home_print_action_var,
+            command=self._home_print_selected,
+        )
+        self.home_print_button.pack(side="right", padx=(0, 8))
         self.home_recent_tree = ttk.Treeview(
             recent,
             columns=("code", "recipient", "state", "expires", "created"),
             show="headings",
-            height=7,
+            height=5,
+            selectmode="extended",
+            style="HomeVoucher.Treeview",
         )
         for key, label, width, anchor in (
             ("code", "Voucher", 125, "center"),
@@ -1056,6 +1065,10 @@ class ModernVoucherApp(
                 stretch=(key == "recipient"),
             )
         self.home_recent_tree.grid(row=1, column=0, sticky="nsew")
+        self.home_recent_tree.bind(
+            "<<TreeviewSelect>>",
+            self._home_recent_selection_changed,
+        )
 
         controller = ttk.Labelframe(
             frame,
@@ -1064,12 +1077,20 @@ class ModernVoucherApp(
             padding=(18, 14),
         )
         controller.grid(row=1, column=1, sticky="nsew", pady=(0, 12))
+        home_status_line = ttk.Frame(controller)
+        home_status_line.pack(fill="x")
+        self.home_status_dot = ttk.Label(
+            home_status_line,
+            text="●",
+            style="DisconnectedDot.TLabel",
+        )
+        self.home_status_dot.pack(side="left", padx=(0, 7))
         self.home_status_title_label = ttk.Label(
-            controller,
+            home_status_line,
             textvariable=self.home_ready_var,
             style="Status.TLabel",
         )
-        self.home_status_title_label.pack(anchor="w")
+        self.home_status_title_label.pack(side="left", anchor="w")
         ttk.Label(
             controller,
             textvariable=self.home_sync_detail_var,
@@ -1119,7 +1140,7 @@ class ModernVoucherApp(
             activity,
             columns=("time", "activity", "detail"),
             show="headings",
-            height=6,
+            height=4,
         )
         self.home_activity_tree.heading("time", text="Quando")
         self.home_activity_tree.heading("activity", text="Attività")
@@ -1138,6 +1159,7 @@ class ModernVoucherApp(
         quick.grid(row=2, column=1, sticky="nsew")
         for text, command, primary in (
             ("＋  Crea nuovo voucher", self.create, True),
+            ("Stampa voucher selezionati", self._home_print_selected, True),
             ("Vai ai voucher", lambda: self._show_workspace("voucher"), False),
             ("Apri report", lambda: self._show_workspace("report"), False),
             ("Vai alle impostazioni", lambda: self._show_workspace("settings"), False),
@@ -1147,28 +1169,35 @@ class ModernVoucherApp(
                 text=text,
                 command=command,
                 style="Accent.TButton" if primary else "TButton",
-            ).pack(fill="x", pady=(0, 8))
+            ).pack(fill="x", pady=(0, 5))
 
     def _build_voucher_workspace(self, frame: ttk.Frame) -> None:
+        """Build the daily voucher workspace with one clear primary workflow."""
+
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(2, weight=1)
 
-        actions = ttk.Frame(frame)
-        actions.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        actions = ttk.Labelframe(
+            frame,
+            text="Azioni",
+            style="Card.TLabelframe",
+            padding=(12, 10),
+        )
+        actions.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         self.create_button = ttk.Button(
             actions,
             text="＋ Nuovo voucher",
             command=self.create,
-            style="Hero.TButton",
+            style="Accent.TButton",
         )
         self.create_button.pack(side="left")
         self.print_button = ttk.Button(
             actions,
             textvariable=self.action_var,
             command=self.print_selected,
-            style="Hero.TButton",
+            style="Accent.TButton",
         )
-        self.print_button.pack(side="left", padx=(10, 18))
+        self.print_button.pack(side="left", padx=(8, 16))
         ttk.Button(
             actions,
             text="Seleziona da stampare",
@@ -1193,13 +1222,16 @@ class ModernVoucherApp(
         )
         self.delete_button.pack(side="right")
 
-        filters = ttk.Frame(frame)
-        filters.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        ttk.Label(
-            filters,
-            text="Vista",
-            style="Muted.TLabel",
-        ).pack(side="left", padx=(0, 7))
+        filters = ttk.Labelframe(
+            frame,
+            text="Ricerca e filtro",
+            style="Card.TLabelframe",
+            padding=(12, 8),
+        )
+        filters.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        ttk.Label(filters, text="Vista", style="Muted.TLabel").pack(
+            side="left", padx=(0, 7)
+        )
         cb = ttk.Combobox(
             filters,
             textvariable=self.filter_var,
@@ -1209,16 +1241,10 @@ class ModernVoucherApp(
         )
         cb.pack(side="left")
         cb.bind("<<ComboboxSelected>>", lambda _e: self.populate())
-        ttk.Label(
-            filters,
-            text="Cerca",
-            style="Muted.TLabel",
-        ).pack(side="left", padx=(20, 7))
-        search = ttk.Entry(
-            filters,
-            textvariable=self.search_var,
-            width=34,
+        ttk.Label(filters, text="Cerca", style="Muted.TLabel").pack(
+            side="left", padx=(20, 7)
         )
+        search = ttk.Entry(filters, textvariable=self.search_var, width=34)
         search.pack(side="left")
         search.bind("<KeyRelease>", self._schedule_search_populate)
         ttk.Label(
@@ -1227,8 +1253,18 @@ class ModernVoucherApp(
             style="Muted.TLabel",
         ).pack(side="right")
 
-        table = ttk.Frame(frame)
-        table.grid(row=2, column=0, sticky="nsew")
+        table_card = ttk.Labelframe(
+            frame,
+            text="Elenco voucher",
+            style="Card.TLabelframe",
+            padding=(8, 8),
+        )
+        table_card.grid(row=2, column=0, sticky="nsew")
+        table_card.columnconfigure(0, weight=1)
+        table_card.rowconfigure(0, weight=1)
+
+        table = ttk.Frame(table_card)
+        table.grid(row=0, column=0, sticky="nsew")
         cols = (
             "check",
             "code",
@@ -1246,6 +1282,7 @@ class ModernVoucherApp(
             columns=cols,
             show="headings",
             selectmode="extended",
+            style="Voucher.Treeview",
         )
         self.tree.heading("check", text="✓", command=self.toggle_all_visible)
         self.tree.column("check", width=42, anchor="center", stretch=False)
@@ -1282,15 +1319,15 @@ class ModernVoucherApp(
         self.tree.configure(yscrollcommand=sy.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sy.pack(side="right", fill="y")
+
         ttk.Label(
-            frame,
+            table_card,
             text=(
-                "Clicca una riga per selezionarla. La ristampa resta una "
-                "azione esplicita e richiede conferma quando esiste già una "
-                "stampa fisica registrata."
+                "Blu = voucher selezionato per la stampa. Dopo una stampa "
+                "fisica confermata la selezione viene rimossa automaticamente."
             ),
             style="Muted.TLabel",
-        ).grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ).grid(row=1, column=0, sticky="w", pady=(8, 0))
 
     def _build_report_workspace(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(0, weight=1)
@@ -1447,30 +1484,37 @@ class ModernVoucherApp(
         ttk.Label(
             controller,
             text=(
-                "Questa sezione contiene i dettagli tecnici della connessione. "
-                "Non sono necessari durante l'uso quotidiano."
+                "Assegna un nome riconoscibile al controller e gestisci qui "
+                "i dettagli tecnici della connessione."
             ),
             style="Muted.TLabel",
             wraplength=760,
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(3, 16))
-        ttk.Label(controller, text="Indirizzo controller").grid(
+        ttk.Label(controller, text="Nome controller").grid(
             row=2, column=0, sticky="w", padx=(0, 14), pady=7
+        )
+        ttk.Entry(
+            controller,
+            textvariable=self.controller_name_var,
+        ).grid(row=2, column=1, sticky="ew", pady=7)
+        ttk.Label(controller, text="Indirizzo controller").grid(
+            row=3, column=0, sticky="w", padx=(0, 14), pady=7
         )
         self.api_root_entry = ttk.Entry(
             controller,
             textvariable=self.api_root_var,
         )
-        self.api_root_entry.grid(row=2, column=1, sticky="ew", pady=7)
+        self.api_root_entry.grid(row=3, column=1, sticky="ew", pady=7)
         self.api_root_entry.bind("<Return>", lambda _event: self.connect())
         ttk.Label(controller, text="API key").grid(
-            row=3, column=0, sticky="w", padx=(0, 14), pady=7
+            row=4, column=0, sticky="w", padx=(0, 14), pady=7
         )
         self.api_key_entry = ttk.Entry(
             controller,
             textvariable=self.api_key_var,
             show="•",
         )
-        self.api_key_entry.grid(row=3, column=1, sticky="ew", pady=7)
+        self.api_key_entry.grid(row=4, column=1, sticky="ew", pady=7)
         self.api_key_entry.bind("<Return>", lambda _event: self.connect())
         self.connect_button = ttk.Button(
             controller,
@@ -1478,26 +1522,26 @@ class ModernVoucherApp(
             command=self.connect,
             style="Accent.TButton",
         )
-        self.connect_button.grid(row=2, column=2, rowspan=2, padx=(14, 0))
+        self.connect_button.grid(row=3, column=2, rowspan=2, padx=(14, 0))
         ttk.Separator(controller).grid(
-            row=4, column=0, columnspan=3, sticky="ew", pady=16
+            row=5, column=0, columnspan=3, sticky="ew", pady=16
         )
         ttk.Label(
             controller,
             text="Stato",
             style="Muted.TLabel",
-        ).grid(row=5, column=0, sticky="nw")
+        ).grid(row=6, column=0, sticky="nw")
         ttk.Label(
             controller,
             textvariable=self.controller_health_var,
             style="Status.TLabel",
-        ).grid(row=5, column=1, columnspan=2, sticky="w")
+        ).grid(row=6, column=1, columnspan=2, sticky="w")
         ttk.Label(
             controller,
             textvariable=self.controller_health_detail_var,
             style="Muted.TLabel",
             wraplength=650,
-        ).grid(row=6, column=1, columnspan=2, sticky="w", pady=(3, 12))
+        ).grid(row=7, column=1, columnspan=2, sticky="w", pady=(3, 12))
         ttk.Label(
             controller,
             text=(
@@ -1505,7 +1549,7 @@ class ModernVoucherApp(
                 "viene salvata."
             ),
             style="Muted.TLabel",
-        ).grid(row=7, column=0, columnspan=3, sticky="w")
+        ).grid(row=8, column=0, columnspan=3, sticky="w")
 
         pdf_print.columnconfigure(1, weight=1)
         ttk.Label(
@@ -1754,10 +1798,19 @@ class ModernVoucherApp(
 
         structure_name = self.settings_structure_name_var.get().strip()
         wifi_title = self.settings_wifi_title_var.get().strip()
+        controller_name = self.controller_name_var.get().strip()
         if not structure_name or not wifi_title:
             messagebox.showerror(
                 "Impostazioni",
                 "Inserire nome struttura e titolo Wi-Fi.",
+                parent=self,
+            )
+            return
+
+        if not controller_name:
+            messagebox.showerror(
+                "Impostazioni",
+                "Inserire un nome descrittivo per il controller.",
                 parent=self,
             )
             return
@@ -1797,12 +1850,26 @@ class ModernVoucherApp(
         self.installation_display_var.set(
             structure_name or self.installation_display_var.get()
         )
+        if self.active_controller_id is not None:
+            try:
+                self.database.rename_controller(
+                    self.active_controller_id,
+                    controller_name,
+                )
+            except (ValueError, RuntimeError) as exc:
+                messagebox.showerror(
+                    "Controller",
+                    str(exc),
+                    parent=self,
+                )
+                return
         if previous_theme != self.settings.get("ui_theme"):
             self.apply_theme()
             self._configure_style()
             self._refresh_sidebar_icons()
         if previous_pdf_retention != pdf_retention_days:
             self._cleanup_print_archive()
+        self._refresh_controller_workspace_status()
         self.settings_save_status_var.set("Modifiche salvate.")
         self.after(3500, lambda: self.settings_save_status_var.set(""))
 
@@ -2332,11 +2399,13 @@ class ModernVoucherApp(
             recent_rows.append(
                 (
                     -int(voucher.create_time or 0),
+                    voucher.id,
                     voucher.code_formatted,
                     voucher.recipient or "—",
                     state,
                     time_label(voucher.end_time),
                     time_label(voucher.create_time),
+                    expired,
                 )
             )
         self.home_to_print_var.set(str(to_print))
@@ -2347,22 +2416,77 @@ class ModernVoucherApp(
         if hasattr(self, "home_recent_tree"):
             for iid in self.home_recent_tree.get_children():
                 self.home_recent_tree.delete(iid)
+            self._home_voucher_by_iid = {}
+            selected_home_iids = []
+            voucher_by_id = {voucher.id: voucher for voucher in self.vouchers}
             for (
                 _order,
+                voucher_id,
                 code,
                 recipient,
                 state,
                 expires,
                 created,
+                expired,
             ) in sorted(recent_rows)[:7]:
+                iid = f"home-{voucher_id}"
                 self.home_recent_tree.insert(
                     "",
                     "end",
+                    iid=iid,
                     values=(code, recipient, state, expires, created),
+                    tags=("expired",) if expired else (),
                 )
+                voucher = voucher_by_id.get(voucher_id)
+                if voucher is not None:
+                    self._home_voucher_by_iid[iid] = voucher
+                    if voucher_id in self.checked_ids and not expired:
+                        selected_home_iids.append(iid)
+            if selected_home_iids:
+                self.home_recent_tree.selection_set(selected_home_iids)
         self._refresh_home_activity()
         self._refresh_report_summary()
         self._refresh_controller_workspace_status()
+
+    def _home_recent_selection_changed(self, _event=None) -> None:
+        """Mirror Home selection into the single audited print selection."""
+
+        mapping = getattr(self, "_home_voucher_by_iid", {})
+        selected_ids = {
+            mapping[iid].id
+            for iid in self.home_recent_tree.selection()
+            if iid in mapping and not self._is_expired(mapping[iid])
+        }
+        self.checked_ids = selected_ids
+        self._sync_selection_ui()
+
+    def _home_print_selected(self) -> None:
+        """Start the same print/reprint workflow directly from Home."""
+
+        if not self.checked_ids:
+            messagebox.showinfo(
+                "Stampa",
+                "Seleziona uno o più voucher dalla Home oppure crea nuovi "
+                "voucher: quelli appena creati restano già selezionati.",
+                parent=self,
+            )
+            return
+        self.print_selected()
+
+    def _sync_home_selection_ui(self) -> None:
+        if not hasattr(self, "home_recent_tree"):
+            return
+        mapping = getattr(self, "_home_voucher_by_iid", {})
+        selected = [
+            iid
+            for iid, voucher in mapping.items()
+            if voucher.id in self.checked_ids and not self._is_expired(voucher)
+        ]
+        self.home_recent_tree.selection_set(selected)
+        count = len(self.checked_ids)
+        self.home_print_action_var.set(
+            f"Stampa {count} voucher" if count else "Stampa voucher"
+        )
 
     def _refresh_home_activity(self) -> None:
         if not hasattr(self, "home_activity_tree"):
@@ -2402,6 +2526,7 @@ class ModernVoucherApp(
             if voucher.id in self.checked_ids
         ]
         self.tree.selection_set(selected_iids)
+        self._sync_home_selection_ui()
 
     def on_tree_click(self, event):
         """Treat clicking the row as the print selection, not a second concept."""
@@ -2438,8 +2563,8 @@ class ModernVoucherApp(
                     f"{exc}\n\n"
                     "Selezione, stampa ed eliminazione vengono sospese "
                     "per evitare decisioni basate su dati incompleti.\n\n"
-                    "Aprire Impostazioni > Aspetto e dati > "
-                    "Verifica / recupera identità per diagnosticare o "
+                    "Aprire Impostazioni > Backup > "
+                    "Verifica cronologia per diagnosticare o "
                     "recuperare la chiave della cronologia.",
                     parent=self,
                 )
