@@ -210,8 +210,10 @@ def _draw_label(
         )
     )
 
-    image_w = min(43 * mm, w * 0.48)
-    image_h = min(16 * mm, h * 0.30)
+    # Use more of the existing upper space while preserving the proven
+    # voucher/cut geometry and all lower content positions.
+    image_w = min(52 * mm, w * 0.60)
+    image_h = min(19 * mm, h * 0.36)
     _draw_header_image(
         c,
         settings,
@@ -226,8 +228,8 @@ def _draw_label(
         title,
         PDF_FONT_BOLD,
         w - 10 * mm,
-        min(12, h / 4.2),
-        8,
+        min(13.2, h / 3.9),
+        8.5,
     )
     title = _truncate_to_width(
         title,
@@ -242,8 +244,8 @@ def _draw_label(
         subtitle,
         PDF_FONT_BOLD,
         w - 10 * mm,
-        7.8,
-        6.0,
+        8.6,
+        6.4,
     )
     subtitle = _truncate_to_width(
         subtitle,

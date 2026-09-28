@@ -29,6 +29,15 @@
 - Make startup window mapping deterministic on Windows before maximizing or
   opening first-run/retention modals, preventing a live background process with
   no visible top-level window on affected sessions.
+- Add explicit green/red controller connection indicators in Home and sidebar.
+- Use a high-contrast Windows-blue voucher selection in both light and dark
+  themes and reorganize the Voucher workspace around the print workflow.
+- Preserve automatic selection of newly created vouchers and expose the same
+  audited print/reprint flow directly from Home.
+- Replace text-symbol navigation with theme-aware drawn sidebar icons and allow
+  operators to assign a persistent descriptive name to the controller.
+- Increase the voucher logo and immediate heading text while preserving the
+  established A4 and cutting geometry.
 
 ## 5.0.0 - 2026-09-27
 
