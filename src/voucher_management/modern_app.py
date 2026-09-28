@@ -1409,6 +1409,7 @@ class ModernVoucherApp(
         self.settings_backup_on_close_var = tk.BooleanVar()
         self.settings_save_status_var = tk.StringVar()
         self.settings_backup_summary_var = tk.StringVar()
+        self.settings_legacy_history_summary_var = tk.StringVar()
         self.settings_retention_summary_var = tk.StringVar()
 
         notebook = ttk.Notebook(frame)
@@ -1651,6 +1652,12 @@ class ModernVoucherApp(
             style="Body.TLabel",
             wraplength=760,
         ).pack(anchor="w", pady=(8, 12))
+        ttk.Label(
+            backup,
+            textvariable=self.settings_legacy_history_summary_var,
+            style="Muted.TLabel",
+            wraplength=760,
+        ).pack(anchor="w", pady=(0, 12))
         ttk.Checkbutton(
             backup,
             text="Crea un backup protetto prima della chiusura (consigliato)",
@@ -1715,7 +1722,7 @@ class ModernVoucherApp(
             ).pack(anchor="w", pady=(12, 0))
         ttk.Button(
             backup,
-            text="Analizza storico 4.x…",
+            text="Importa cronologia stampe precedente…",
             command=lambda: self.migrate_legacy_history(parent=self),
         ).pack(anchor="w", pady=(8, 0))
 
@@ -1736,6 +1743,7 @@ class ModernVoucherApp(
 
         self._load_settings_workspace_values()
         self._refresh_backup_summary()
+        self._refresh_legacy_history_summary()
         self._refresh_retention_summary()
 
     def _load_settings_workspace_values(self) -> None:
@@ -1894,6 +1902,52 @@ class ModernVoucherApp(
             f"Ultimo backup: {when}  •  {filename}"
         )
 
+    def _refresh_legacy_history_summary(self) -> None:
+        """Explain when restored pre-SQLite print history still needs migration."""
+
+        if not hasattr(self, "settings_legacy_history_summary_var"):
+            return
+        history_path = Path(self.paths.data) / "history.jsonl"
+        try:
+            has_history = history_path.is_file() and history_path.stat().st_size > 0
+        except OSError:
+            has_history = True
+
+        if not has_history:
+            self.settings_legacy_history_summary_var.set("")
+            return
+
+        row = self.database.connection.execute(
+            """SELECT status, total_rows, resolved_rows, ambiguous_rows,
+                      unresolved_rows
+               FROM migration_runs
+               WHERE source_kind='LEGACY_4X_HISTORY'
+               ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        if row is None:
+            self.settings_legacy_history_summary_var.set(
+                "Cronologia stampe di una versione precedente rilevata. "
+                "Dopo aver sincronizzato il controller, usa "
+                "'Importa cronologia stampe precedente…' per portare questi "
+                "dati nel database 5.x e nei report."
+            )
+            return
+
+        if str(row["status"] or "") == "COMPLETED":
+            self.settings_legacy_history_summary_var.set(
+                "Cronologia precedente importata nel database 5.x: "
+                f"{int(row['resolved_rows'])} eventi associati; "
+                f"{int(row['ambiguous_rows'])} ambigui; "
+                f"{int(row['unresolved_rows'])} non associati."
+            )
+            return
+
+        self.settings_legacy_history_summary_var.set(
+            "Importazione cronologia precedente non ancora completata. "
+            "Riapri 'Importa cronologia stampe precedente…' dopo aver "
+            "sincronizzato il controller."
+        )
+
     def _refresh_retention_summary(self) -> None:
         if not hasattr(self, "settings_retention_summary_var"):
             return
@@ -1941,6 +1995,7 @@ class ModernVoucherApp(
         elif key == "settings":
             self._load_settings_workspace_values()
             self._refresh_backup_summary()
+            self._refresh_legacy_history_summary()
             self._refresh_retention_summary()
         self._refresh_controller_workspace_status()
 

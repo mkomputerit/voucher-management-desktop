@@ -1130,11 +1130,23 @@ class DataMaintenanceMixin:
                 "created_utc",
                 "data sconosciuta",
             )
+            legacy_without_sqlite = manifest.get("sqlite_snapshot") is None
+            migration_note = (
+                "\n\nQuesto backup appartiene a una versione precedente e "
+                "non contiene ancora il database SQLite 5.x. Verranno "
+                "ripristinati configurazione, cronologia stampe, PDF, logo e "
+                "chiave della cronologia. Dopo il riavvio sarà necessario "
+                "sincronizzare il controller e importare la cronologia "
+                "precedente nel database 5.x."
+                if legacy_without_sqlite
+                else ""
+            )
             if not messagebox.askyesno(
                 "Ripristina backup",
                 f"Ripristinare il backup creato il {created}?\n\n"
                 "Prima della sostituzione verrà conservata automaticamente "
-                "una copia di rollback dei dati attuali.\n\n"
+                "una copia di rollback dei dati attuali."
+                f"{migration_note}\n\n"
                 "Dopo il ripristino il programma verrà chiuso.",
                 parent=parent,
             ):
@@ -1151,11 +1163,21 @@ class DataMaintenanceMixin:
                         + "\n\nSe necessario, selezionare nuovamente un logo "
                         "dalle impostazioni."
                     )
+                next_steps = (
+                    "\n\nPassi successivi:\n"
+                    "1. Riavviare Voucher Management.\n"
+                    "2. Ricollegare e sincronizzare il controller UniFi.\n"
+                    "3. Aprire Impostazioni > Backup e scegliere "
+                    "'Importa cronologia stampe precedente…'.\n\n"
+                    "Solo dopo questa importazione lo storico precedente sarà "
+                    "materializzato nel database 5.x e nei report."
+                    if legacy_without_sqlite
+                    else "\n\nRiavviare Voucher Management."
+                )
                 messagebox.showinfo(
                     "Ripristino completato",
                     f"Dati ripristinati.\n\nCopia di sicurezza precedente:\n"
-                    f"{rollback}{warning_text}\n\n"
-                    "Riavviare Voucher Management.",
+                    f"{rollback}{warning_text}{next_steps}",
                     parent=parent,
                 )
                 self.destroy()

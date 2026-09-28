@@ -38,6 +38,9 @@
   operators to assign a persistent descriptive name to the controller.
 - Increase the voucher logo and immediate heading text while preserving the
   established A4 and cutting geometry.
+- Guide restore of pre-SQLite backups through the required second phase:
+  reconnect/synchronize UniFi and migrate the verified legacy print history
+  into SQLite before relying on 5.x reports.
 
 ## 5.0.0 - 2026-09-27
 
