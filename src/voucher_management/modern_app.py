@@ -2238,11 +2238,11 @@ class ModernVoucherApp(
         titles = {
             "home": (
                 "Home",
-                "Panoramica generale e accesso rapido alle principali funzioni",
+                "Stato controller, voucher recenti e attività della postazione",
             ),
             "voucher": (
                 "Voucher",
-                "Crea, seleziona, stampa e gestisci i voucher",
+                "Crea, seleziona e stampa i voucher",
             ),
             "report": (
                 "Report",

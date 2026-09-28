@@ -64,7 +64,7 @@ PRESETS = {
 COLUMNS = 2
 ROWS = 5
 VOUCHERS_PER_PAGE = COLUMNS * ROWS
-RECIPIENT_STRIP = 4 * mm
+SHEET_BOTTOM_CLEARANCE = 4 * mm
 
 
 def _normalize_pdf_text(value: object) -> str:
@@ -408,7 +408,7 @@ def _render_pdf_file(
         - 2 * margin_y
         - (ROWS - 1) * row_gap
     ) / ROWS
-    label_h = slot_h - RECIPIENT_STRIP
+    label_h = slot_h - SHEET_BOTTOM_CLEARANCE
 
     # Copy count is deliberately not capped here. The caller may replicate a
     # single unlimited-use voucher as many times as requested.
