@@ -40,7 +40,10 @@ from .print_archive import (
 )
 from .settings import SettingsStore
 from .single_instance import InstanceAlreadyRunning, SingleInstanceGuard
-from .sync_store import load_local_vouchers, persist_successful_snapshot
+from .sync_store import (
+    load_local_vouchers,
+    persist_refresh_snapshot_to_path,
+)
 from .voucher_creation_ui import VoucherCreationMixin
 from .security.history_key import HistoryKeyStore
 from .unifi_api import ApiVoucher, UniFiApiError
@@ -570,17 +573,22 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             return
 
         client = self.client
+        controller_id = getattr(self, "active_controller_id", None)
+        database_path = Path(self.paths.database)
 
-        def completed(vouchers) -> None:
-            snapshot = list(vouchers)
-            controller_id = getattr(self, "active_controller_id", None)
+        def worker():
+            snapshot = list(refresh_vouchers(client))
             if controller_id is not None:
-                persist_successful_snapshot(
-                    self.database,
+                persist_refresh_snapshot_to_path(
+                    database_path,
                     controller_id=controller_id,
                     vouchers=snapshot,
                     observed_at=datetime.now(timezone.utc).isoformat(),
                 )
+            return snapshot
+
+        def completed(vouchers) -> None:
+            snapshot = list(vouchers)
             self.vouchers = snapshot
             callback = getattr(self, "_controller_operation_succeeded", None)
             if callback is not None:
@@ -612,7 +620,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         self._run_network_task(
             "Aggiornamento voucher…",
-            lambda: refresh_vouchers(client),
+            worker,
             completed,
             failed,
         )
