@@ -6,6 +6,20 @@ The current development line is field-tested with Ubiquiti UniFi Network. **Vouc
 
 ## Current development state
 
+This branch contains the **5.1.0 release candidate**, identified as 5.1.0 in
+the application and executable metadata for field testing. It is not yet a
+published stable release; `CHANGELOG.md` deliberately remains `Unreleased`
+until the release gate is completed. The last stable release is 5.0.0.
+
+Before tagging 5.1.0, complete visual checks on Windows at 125% and 150% scaling,
+including moving the window between monitors with different scaling. Inspect
+Home/Voucher/Report/Settings, sidebar icons and connection colours in both
+themes. Icon regeneration currently follows changes reported by `tk scaling`;
+automatic per-monitor DPI adaptation has not been established by the tests.
+Verify a physical voucher with a configured logo and recipient inside the cut
+area. Automated keyboard coverage exercises real Tk navigation and Space on
+Windows in addition to the selection-model tests.
+
 The application currently provides:
 
 - direct voucher listing and creation, with a durable anti-repeat barrier for

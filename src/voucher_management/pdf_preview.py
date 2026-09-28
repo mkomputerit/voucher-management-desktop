@@ -147,6 +147,14 @@ class PdfPreview(tk.Toplevel):
             padx=(8, 0),
         )
         self.register_print_button.grid_remove()
+        ttk.Label(
+            bottom,
+            text=(
+                "Nei nuovi PDF, il destinatario resta sul voucher dopo il ritaglio "
+                "ed è visibile all'ospite. Controlla l'anteprima prima di stampare."
+            ),
+            wraplength=680,
+        ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(8, 0))
 
     def _maximize_window(self):
         """Maximise on Windows without entering borderless/full-screen mode."""

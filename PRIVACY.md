@@ -26,6 +26,14 @@ was prepared for. Voucher codes themselves are not stored in clear text in
 labels should therefore be treated as local operational data and are included
 when application data is backed up.
 
+Starting with 5.1, each generated voucher label includes its recipient inside
+the cutting border, next to the access code. The recipient therefore remains
+on the physical voucher handed to the guest, as well as in the archived PDF.
+This includes any name or room reference entered as the recipient. The print
+preview explains this before physical printing. Operators should use only the
+recipient information they intend to hand to the guest. Existing archived PDFs
+retain their original layout; this change does not rewrite them.
+
 If a physical print was submitted but its audit write has not completed, a
 local `pending_print_audit.json` file temporarily stores only HMAC voucher
 identifiers plus print metadata needed for idempotent recovery. It does not

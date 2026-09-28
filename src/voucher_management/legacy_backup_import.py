@@ -447,8 +447,10 @@ def _retention_minimized_legacy_candidate(
             "Identità legacy minimizzata ambigua: più voucher locali "
             "corrispondono allo stesso digest storico. Nessun voucher viene "
             "saltato automaticamente per evitare associazioni errate. "
-            "Conservare lo ZIP e il backup di sicurezza .vmbk, risolvere il "
-            "conflitto nell'archivio locale e ripetere l'importazione."
+            "L'app non dispone di una procedura per risolvere questo conflitto. "
+            "Interrompere l'importazione, conservare lo ZIP e il backup di "
+            "sicurezza .vmbk e richiedere assistenza tecnica. "
+            "Non modificare manualmente il database."
         )
     if not rows:
         return None
@@ -508,8 +510,10 @@ def _ensure_import_candidates(
                     "Un codice presente nello ZIP appartiene già a un voucher "
                     "minimizzato ma compare anche su un'altra identità locale. "
                     "L'importazione viene fermata per non associare evidenze "
-                    "alla credenziale sbagliata. Conservare ZIP e backup .vmbk, "
-                    "verificare il conflitto nell'archivio e poi riprovare."
+                    "alla credenziale sbagliata. L'app non dispone di una "
+                    "procedura per risolvere questo conflitto. Conservare ZIP "
+                    "e backup .vmbk e richiedere assistenza tecnica. "
+                    "Non modificare manualmente il database."
                 )
             chosen.append(minimized_candidate)
             minimized_ids.add(minimized_id)
