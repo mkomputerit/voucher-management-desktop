@@ -108,6 +108,10 @@
   destructive delete action, let search expand naturally, and add horizontal
   scrolling so the full operational table remains reachable at higher DPI or
   narrower window sizes without changing print-selection behavior.
+- Refine Report and General settings without changing their data paths: make
+  report/export scope and privacy explicit, and show theme choices as
+  operator-facing Italian labels while persisting the existing system/light/
+  dark values for backward compatibility.
 
 ## 5.0.0 - 2026-09-27
 

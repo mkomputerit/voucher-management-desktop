@@ -11,6 +11,8 @@ from voucher_management.modern_app import (
     _main_window_minimum,
     _sidebar_icon_bitmap,
     _sidebar_icon_pixel_size,
+    _theme_display_label,
+    _theme_setting_value,
 )
 from voucher_management.retention_ui import RetentionMixin
 from voucher_management.voucher_creation_ui import VoucherCreationMixin
@@ -149,3 +151,13 @@ def test_sidebar_icon_bitmap_is_rendered_at_requested_dpi_size():
     assert _sidebar_icon_bitmap("home", "#ffffff", 20).size == (20, 20)
     assert _sidebar_icon_bitmap("voucher", "#ffffff", 30).size == (30, 30)
     assert _sidebar_icon_bitmap("report", "#ffffff", 32).size == (32, 32)
+
+
+def test_theme_labels_keep_operator_text_separate_from_persisted_values():
+    assert _theme_display_label("system") == "Segui Windows"
+    assert _theme_display_label("light") == "Chiaro"
+    assert _theme_display_label("dark") == "Scuro"
+    assert _theme_setting_value("Segui Windows") == "system"
+    assert _theme_setting_value("Chiaro") == "light"
+    assert _theme_setting_value("Scuro") == "dark"
+    assert _theme_setting_value("unknown") == "system"

@@ -152,6 +152,30 @@ def _main_window_minimum(
     return width, height
 
 
+_THEME_DISPLAY_LABELS = {
+    "system": "Segui Windows",
+    "light": "Chiaro",
+    "dark": "Scuro",
+}
+
+
+def _theme_display_label(value: object) -> str:
+    return _THEME_DISPLAY_LABELS.get(
+        str(value or "system").strip().lower(),
+        _THEME_DISPLAY_LABELS["system"],
+    )
+
+
+def _theme_setting_value(label: object) -> str:
+    text = str(label or "").strip()
+    for value, display in _THEME_DISPLAY_LABELS.items():
+        if text == display:
+            return value
+    if text in _THEME_DISPLAY_LABELS:
+        return text
+    return "system"
+
+
 def _controller_status_style_names(
     status_key: str,
 ) -> tuple[str, str, str, str]:
@@ -1516,26 +1540,50 @@ class ModernVoucherApp(
 
         actions = ttk.Labelframe(
             frame,
-            text="Esporta report",
+            text="Esportazione",
+            style="Card.TLabelframe",
             padding=(18, 14),
         )
-        actions.grid(row=3, column=0, sticky="ew", pady=(20, 0))
+        actions.grid(row=3, column=0, sticky="ew", pady=(16, 0))
+        actions.columnconfigure(0, weight=1)
+        ttk.Label(
+            actions,
+            text="Report disponibili",
+            style="SectionTitle.TLabel",
+        ).grid(row=0, column=0, sticky="w")
         ttk.Label(
             actions,
             text=(
-                "Scegli riepilogo, utilizzati, scaduti, stampati mai "
-                "utilizzati, nominali o storico completo."
+                "Riepilogo, utilizzati, scaduti, stampati mai utilizzati, "
+                "mai stampati, nominali e storico completo."
             ),
             style="Muted.TLabel",
-            wraplength=680,
-        ).pack(anchor="w", pady=(0, 12))
+            wraplength=720,
+        ).grid(row=1, column=0, sticky="w", pady=(3, 12))
         self.report_button = ttk.Button(
             actions,
             text="Crea / esporta report…",
             command=lambda: ReportDialog(self),
             style="Accent.TButton",
         )
-        self.report_button.pack(anchor="w")
+        self.report_button.grid(row=2, column=0, sticky="w")
+
+        privacy = ttk.Labelframe(
+            frame,
+            text="Privacy",
+            style="Card.TLabelframe",
+            padding=(18, 12),
+        )
+        privacy.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        ttk.Label(
+            privacy,
+            text=(
+                "I report ordinari leggono i dati amministrativi dall'archivio "
+                "locale e non espongono i codici voucher in chiaro."
+            ),
+            style="Muted.TLabel",
+            wraplength=760,
+        ).pack(anchor="w")
 
     def _build_settings_workspace(self, frame: ttk.Frame) -> None:
         """Build separated, operator-facing settings categories."""
@@ -1614,12 +1662,12 @@ class ModernVoucherApp(
             general,
             textvariable=self.settings_theme_var,
             state="readonly",
-            values=("system", "light", "dark"),
+            values=tuple(_THEME_DISPLAY_LABELS.values()),
             width=18,
         ).grid(row=5, column=1, sticky="w", pady=7)
         ttk.Label(
             general,
-            text="“system” segue automaticamente il tema chiaro/scuro di Windows.",
+            text="“Segui Windows” usa automaticamente il tema chiaro/scuro del sistema.",
             style="Muted.TLabel",
         ).grid(row=6, column=1, sticky="w", pady=(2, 0))
 
@@ -1942,7 +1990,7 @@ class ModernVoucherApp(
             str(settings.get("wifi_title", DEFAULT_WIFI_TITLE) or DEFAULT_WIFI_TITLE)
         )
         self.settings_theme_var.set(
-            str(settings.get("ui_theme", "system") or "system")
+            _theme_display_label(settings.get("ui_theme", "system"))
         )
         self.settings_preset_var.set(
             str(settings.get("preset", "Classico") or "Classico")
@@ -2032,7 +2080,7 @@ class ModernVoucherApp(
             wifi_title=wifi_title,
             preset=self.settings_preset_var.get().strip() or "Classico",
             logo_path=logo_value,
-            ui_theme=self.settings_theme_var.get().strip() or "system",
+            ui_theme=_theme_setting_value(self.settings_theme_var.get()),
             print_retention_days=pdf_retention_days,
             backup_on_close=bool(self.settings_backup_on_close_var.get()),
         )
