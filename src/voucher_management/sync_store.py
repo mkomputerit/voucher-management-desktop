@@ -8,11 +8,22 @@ snapshot; network failures must never call this function with partial data.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 from .database import Database
 from .unifi_api import ApiVoucher
+
+
+@dataclass(frozen=True)
+class PersistedControllerSnapshot:
+    """Controller identity plus one fully committed voucher snapshot."""
+
+    controller_id: int
+    controller_name: str
+    observed_at: str
 
 
 OBSERVED_FIELDS = (
@@ -151,6 +162,71 @@ def persist_successful_snapshot(
         )
 
     return run_uuid
+
+
+def persist_connection_snapshot_to_path(
+    database_path: Path,
+    *,
+    api_root: str,
+    cert_sha256: str,
+    requested_name: str,
+    site_name: str,
+    vouchers: list[ApiVoucher],
+    observed_at: str,
+) -> PersistedControllerSnapshot:
+    """Persist connection identity/snapshot on a worker-owned SQLite handle."""
+
+    database = Database(Path(database_path))
+    try:
+        database.initialize()
+        existing_id = database.find_controller_by_api_root(api_root)
+        persisted_name = str(requested_name or "").strip()
+        if not persisted_name and existing_id is not None:
+            persisted_name = database.controller_name(existing_id) or ""
+        if not persisted_name:
+            persisted_name = str(site_name or "").strip() or "Controller UniFi"
+
+        controller_id = database.get_or_create_controller(
+            name=persisted_name,
+            api_root=api_root,
+            observed_at=observed_at,
+            cert_sha256=cert_sha256,
+        )
+        persist_successful_snapshot(
+            database,
+            controller_id=controller_id,
+            vouchers=list(vouchers),
+            observed_at=observed_at,
+        )
+        return PersistedControllerSnapshot(
+            controller_id=controller_id,
+            controller_name=persisted_name,
+            observed_at=observed_at,
+        )
+    finally:
+        database.close()
+
+
+def persist_refresh_snapshot_to_path(
+    database_path: Path,
+    *,
+    controller_id: int,
+    vouchers: list[ApiVoucher],
+    observed_at: str,
+) -> str:
+    """Persist one refresh using a worker-owned SQLite connection."""
+
+    database = Database(Path(database_path))
+    try:
+        database.initialize()
+        return persist_successful_snapshot(
+            database,
+            controller_id=int(controller_id),
+            vouchers=list(vouchers),
+            observed_at=observed_at,
+        )
+    finally:
+        database.close()
 
 
 def _epoch_from_iso(value: str | None) -> int:
