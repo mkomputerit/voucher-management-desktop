@@ -49,6 +49,11 @@
   large UniFi responses cannot block the operator window after connection.
 - Refresh report aggregates only when the Report workspace is opened instead
   of rebuilding them during every voucher-table population.
+- Prevent Home/Voucher selection feedback from recursively generating Tk
+  Treeview selection events after controller refreshes; Home selection now
+  changes only from real operator row clicks.
+- Add a post-connection event-loop heartbeat to field diagnostics so a future
+  UI stall can be distinguished from network/database completion.
 
 ## 5.0.0 - 2026-09-27
 

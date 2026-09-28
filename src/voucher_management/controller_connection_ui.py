@@ -326,3 +326,11 @@ class ControllerConnectionMixin:
             bool(client.trusted_cert_sha256),
             persisted is not None,
         )
+        after = getattr(self, "after", None)
+        if callable(after):
+            after(
+                300,
+                lambda: self.logger.info(
+                    "controller_ui_event_loop_ready"
+                ),
+            )

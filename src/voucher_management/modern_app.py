@@ -762,7 +762,6 @@ class ModernVoucherApp(
 
         self._controller_status_failed = False
         self._controller_busy_label = ""
-        self._home_selection_syncing = False
         self.workspace_title_var = tk.StringVar(value="Home")
         self.workspace_subtitle_var = tk.StringVar(
             value="Panoramica generale e accesso rapido alle funzioni principali"
@@ -1066,9 +1065,13 @@ class ModernVoucherApp(
                 stretch=(key == "recipient"),
             )
         self.home_recent_tree.grid(row=1, column=0, sticky="nsew")
+        # Only real pointer clicks change the print selection.  Binding to
+        # <<TreeviewSelect>> is unsafe here because programmatic selection_set()
+        # calls used to mirror the Voucher workspace can enqueue the same
+        # virtual event again and create an event-loop storm after a refresh.
         self.home_recent_tree.bind(
-            "<<TreeviewSelect>>",
-            self._home_recent_selection_changed,
+            "<Button-1>",
+            self._on_home_recent_click,
         )
 
         controller = ttk.Labelframe(
@@ -2508,19 +2511,32 @@ class ModernVoucherApp(
         self._refresh_home_activity()
         self._refresh_controller_workspace_status()
 
-    def _home_recent_selection_changed(self, _event=None) -> None:
-        """Mirror an operator Home selection into the audited print selection."""
+    def _on_home_recent_click(self, event):
+        """Toggle one Home voucher only for a real operator row click.
 
-        if getattr(self, "_home_selection_syncing", False):
+        Programmatic row highlighting must never feed back into the print
+        selection model.  This keeps Home and Voucher synchronized without
+        generating recursive <<TreeviewSelect>> callbacks.
+        """
+
+        tree = self.home_recent_tree
+        if tree.identify_region(event.x, event.y) not in {"cell", "tree"}:
             return
+        iid = tree.identify_row(event.y)
         mapping = getattr(self, "_home_voucher_by_iid", {})
-        selected_ids = {
-            mapping[iid].id
-            for iid in self.home_recent_tree.selection()
-            if iid in mapping and not self._is_expired(mapping[iid])
-        }
-        self.checked_ids = selected_ids
+        voucher = mapping.get(iid)
+        if voucher is None:
+            return "break"
+        if self._is_expired(voucher):
+            self.bell()
+            return "break"
+
+        if voucher.id in self.checked_ids:
+            self.checked_ids.remove(voucher.id)
+        else:
+            self.checked_ids.add(voucher.id)
         self._sync_selection_ui()
+        return "break"
 
     def _home_print_selected(self) -> None:
         """Start the same print/reprint workflow directly from Home."""
@@ -2544,11 +2560,9 @@ class ModernVoucherApp(
             for iid, voucher in mapping.items()
             if voucher.id in self.checked_ids and not self._is_expired(voucher)
         ]
-        self._home_selection_syncing = True
-        try:
-            self.home_recent_tree.selection_set(selected)
-        finally:
-            self._home_selection_syncing = False
+        # No <<TreeviewSelect>> handler is bound to this Treeview: highlighting
+        # is one-way presentation state and cannot recursively mutate selection.
+        self.home_recent_tree.selection_set(selected)
         count = len(self.checked_ids)
         self.home_print_action_var.set(
             f"Stampa {count} voucher" if count else "Stampa voucher"

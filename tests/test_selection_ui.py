@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from voucher_management.app import VoucherApp
+from voucher_management.modern_app import ModernVoucherApp
 
 
 class FakeVar:
@@ -117,3 +118,70 @@ def test_toggle_all_visible_updates_marks_in_place_and_skips_expired():
     assert tree.rows["row-2"][0] == "—"
     assert fake.count_var.value == "2 visualizzati  •  0 selezionati"
     assert fake.action_var.value == "PREPARA STAMPA"
+
+
+class HomeTree:
+    def __init__(self):
+        self.highlighted = []
+        self.selection_set_calls = 0
+
+    def identify_region(self, _x, _y):
+        return "cell"
+
+    def identify_row(self, _y):
+        return "home-1"
+
+    def selection_set(self, iids):
+        self.selection_set_calls += 1
+        self.highlighted = list(iids)
+
+
+def test_home_click_toggles_one_voucher_without_dropping_hidden_selection():
+    visible = SimpleNamespace(id="visible", status="VALID_MULTI")
+    hidden = SimpleNamespace(id="hidden", status="VALID_MULTI")
+    tree = HomeTree()
+    fake = SimpleNamespace(
+        home_recent_tree=tree,
+        _home_voucher_by_iid={"home-1": visible},
+        checked_ids={"hidden"},
+        by_iid={},
+        tree=SimpleNamespace(selection_set=lambda _iids: None),
+        home_print_action_var=FakeVar(),
+        bell=lambda: None,
+        _is_expired=VoucherApp._is_expired,
+    )
+    fake._sync_home_selection_ui = (
+        lambda: ModernVoucherApp._sync_home_selection_ui(fake)
+    )
+    fake._sync_selection_ui = (
+        lambda iids=None: ModernVoucherApp._sync_selection_ui(fake, iids)
+    )
+
+    result = ModernVoucherApp._on_home_recent_click(
+        fake,
+        SimpleNamespace(x=4, y=8),
+    )
+
+    assert result == "break"
+    assert fake.checked_ids == {"hidden", "visible"}
+    assert tree.highlighted == ["home-1"]
+    assert tree.selection_set_calls == 1
+    assert fake.home_print_action_var.value == "Stampa 2 voucher"
+
+
+def test_programmatic_home_highlight_is_one_way_and_does_not_call_click_handler():
+    visible = SimpleNamespace(id="visible", status="VALID_MULTI")
+    tree = HomeTree()
+    fake = SimpleNamespace(
+        home_recent_tree=tree,
+        _home_voucher_by_iid={"home-1": visible},
+        checked_ids={"visible"},
+        home_print_action_var=FakeVar(),
+        _is_expired=VoucherApp._is_expired,
+    )
+
+    ModernVoucherApp._sync_home_selection_ui(fake)
+
+    assert tree.highlighted == ["home-1"]
+    assert tree.selection_set_calls == 1
+    assert fake.checked_ids == {"visible"}
