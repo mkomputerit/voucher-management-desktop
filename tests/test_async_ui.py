@@ -108,6 +108,7 @@ def test_connect_worker_contains_network_persistence_and_tls_prompt_is_callback_
 
     class FakeClient:
         base_url = "https://controller.invalid/v1"
+        trusted_cert_sha256 = ""
 
         def connect(self, key):
             calls.append(("connect", key))
@@ -276,6 +277,58 @@ def test_unexpected_background_error_is_redacted(monkeypatch):
     assert shown
     assert "sensitive synthetic detail" not in shown[0][0][1]
     assert "Errore imprevisto" in shown[0][0][1]
+
+
+def test_persisted_connection_completion_does_not_write_sqlite_on_tk_thread():
+    calls = []
+
+    class NoTkWritesDatabase:
+        def find_controller_by_api_root(self, _root):
+            raise AssertionError("Tk callback must not resolve controller in SQLite")
+
+        def get_or_create_controller(self, **_kwargs):
+            raise AssertionError("Tk callback must not write controller in SQLite")
+
+    fake = SimpleNamespace(
+        database=NoTkWritesDatabase(),
+        active_controller_id=None,
+        client=None,
+        vouchers=[],
+        api_root_var=_Var(),
+        controller_name_var=_Var(),
+        settings={},
+        settings_store=SimpleNamespace(
+            update=lambda **kwargs: kwargs
+        ),
+        connection_var=_Var(),
+        checked_ids=set(),
+        populate=lambda: calls.append("populate"),
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+    )
+    client = SimpleNamespace(
+        base_url="https://controller.example/proxy/network/integration/v1",
+        trusted_cert_sha256="",
+    )
+    persisted = connection_ui.PersistedControllerSnapshot(
+        controller_id=7,
+        controller_name="Reception",
+        observed_at="2026-09-28T07:30:00+00:00",
+    )
+
+    modern_app.ModernVoucherApp._finish_connection(
+        fake,
+        client,
+        {
+            "applicationVersion": "10.6.106",
+            "siteName": "Default Site",
+        },
+        [],
+        persisted=persisted,
+    )
+
+    assert fake.active_controller_id == 7
+    assert fake.controller_name_var.get() == "Reception"
+    assert calls == ["populate"]
 
 
 def test_onboarding_profile_name_does_not_replace_real_site_label(monkeypatch):
