@@ -649,7 +649,11 @@ def _ensure_import_candidates(
 
     dedup: dict[tuple[int, str], LegacyVoucherCandidate] = {}
     for item in chosen:
-        dedup[item.key] = item
+        # Preserve the first candidate for an identity. A retention-minimized
+        # voucher may intentionally carry its old clear code only in memory for
+        # HMAC planning; the later SQLite snapshot of the same identity contains
+        # ARCHIVED-<id> and must not replace that transient proof candidate.
+        dedup.setdefault(item.key, item)
     return tuple(dedup.values()), reused, created, minimized
 
 
