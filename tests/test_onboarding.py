@@ -357,7 +357,12 @@ def test_scheduler_runs_wizard_only_for_required_first_run(tmp_path):
                     "per_user_root": tmp_path / "profile",
                 },
             )(),
-            "after_idle": lambda self, callback: scheduled.append(callback),
+            "after": lambda self, delay, callback: scheduled.append(
+                (delay, callback)
+            ),
+            "winfo_exists": lambda self: True,
+            "deiconify": lambda self: None,
+            "lift": lambda self: None,
         },
     )()
     try:
@@ -367,9 +372,10 @@ def test_scheduler_runs_wizard_only_for_required_first_run(tmp_path):
         )
         assert state is OnboardingState.REQUIRED
         assert len(scheduled) == 1
+        assert scheduled[0][0] == 320
         assert launched == []
 
-        scheduled[0]()
+        scheduled[0][1]()
         assert launched == [app]
     finally:
         database.close()

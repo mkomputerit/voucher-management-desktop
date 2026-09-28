@@ -281,7 +281,9 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         if retention_intro is not None and (
             retention_intro_allowed is None or retention_intro_allowed()
         ):
-            self.after_idle(retention_intro)
+            # Avoid racing the first Windows mapping with a transient/grabbed
+            # retention dialog in a console-less packaged build.
+            self.after(380, retention_intro)
         if logo_warning:
             messagebox.showwarning(
                 "Logo rimosso",

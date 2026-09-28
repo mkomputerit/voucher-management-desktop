@@ -719,7 +719,10 @@ class ModernVoucherApp(
 
         self.apply_theme()
         self._configure_style()
-        self.after_idle(self._maximize_window)
+        # Let Windows map the root before zooming or opening startup modals.
+        # Scheduling all three through after_idle can leave a console-less
+        # PyInstaller process alive with no mapped top-level on some sessions.
+        self.after(80, self._show_initial_window)
 
         self._controller_status_failed = False
         self._controller_busy_label = ""
@@ -1963,14 +1966,56 @@ class ModernVoucherApp(
 
         self._set_background_busy(busy, label)
 
+    def _show_initial_window(self) -> None:
+        """Map the root deterministically before any startup modal is opened."""
+
+        try:
+            if not self.winfo_exists():
+                return
+            self.deiconify()
+            self.update_idletasks()
+            self.lift()
+            self.logger.info(
+                "startup_ui_root state=%s mapped=%s viewable=%s geometry=%s",
+                self.state(),
+                int(self.winfo_ismapped()),
+                int(self.winfo_viewable()),
+                self.winfo_geometry(),
+            )
+            self.after(80, self._maximize_window)
+        except tk.TclError:
+            self.logger.warning("startup_ui_root_map_failed")
+
     def _maximize_window(self) -> None:
         try:
+            if not self.winfo_exists():
+                return
+            self.deiconify()
             self.state("zoomed")
+            self.lift()
+            self.after(120, self._log_initial_window_state)
         except tk.TclError:
             self.geometry(
                 f"{self.winfo_screenwidth()}x"
                 f"{self.winfo_screenheight()}+0+0"
             )
+            self.deiconify()
+            self.lift()
+            self.after(120, self._log_initial_window_state)
+
+    def _log_initial_window_state(self) -> None:
+        try:
+            if not self.winfo_exists():
+                return
+            self.logger.info(
+                "startup_ui_visible state=%s mapped=%s viewable=%s geometry=%s",
+                self.state(),
+                int(self.winfo_ismapped()),
+                int(self.winfo_viewable()),
+                self.winfo_geometry(),
+            )
+        except tk.TclError:
+            self.logger.warning("startup_ui_visibility_check_failed")
 
     def apply_theme(self) -> None:
         """Apply Sun Valley light/dark appearance, following Windows by default."""

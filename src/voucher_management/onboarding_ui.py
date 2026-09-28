@@ -84,7 +84,20 @@ def schedule_first_run_onboarding(
     state = startup_onboarding_state(app)
     if state is OnboardingState.REQUIRED:
         factory = wizard_factory or FirstRunWizard
-        app.after_idle(lambda: factory(app))
+
+        def launch() -> None:
+            try:
+                if not app.winfo_exists():
+                    return
+                app.deiconify()
+                app.lift()
+            except (AttributeError, tk.TclError):
+                pass
+            factory(app)
+
+        # Give the root one event-loop turn to become a real Windows top-level
+        # before creating the transient/grabbed wizard.
+        app.after(320, launch)
     return state
 
 

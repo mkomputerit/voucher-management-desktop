@@ -26,6 +26,9 @@
 - Surface backup recency and current retention policy in plain operator
   language while keeping recovery/migration tools in a separate maintenance
   area.
+- Make startup window mapping deterministic on Windows before maximizing or
+  opening first-run/retention modals, preventing a live background process with
+  no visible top-level window on affected sessions.
 
 ## 5.0.0 - 2026-09-27
 
