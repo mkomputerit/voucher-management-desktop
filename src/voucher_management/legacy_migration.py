@@ -519,6 +519,12 @@ def apply_legacy_migration_plan(
                     raise LegacyMigrationError(
                         "Una risoluzione legacy esistente non può regredire"
                     )
+                db.execute(
+                    """UPDATE legacy_audit_events
+                       SET last_migration_uuid=?
+                       WHERE legacy_event_key=?""",
+                    (migration_uuid, row.event_key),
+                )
             elif status == "RESOLVED":
                 db.execute(
                     """UPDATE legacy_audit_events
