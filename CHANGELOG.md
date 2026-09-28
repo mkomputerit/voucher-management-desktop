@@ -45,6 +45,10 @@
   from the archived PDFs, verified against HMAC print history, materialized
   into SQLite, and the archived PDFs are copied into the current print archive
   without overwriting current application settings.
+- Move initial and manual controller snapshot persistence off the Tk thread so
+  large UniFi responses cannot block the operator window after connection.
+- Refresh report aggregates only when the Report workspace is opened instead
+  of rebuilding them during every voucher-table population.
 
 ## 5.0.0 - 2026-09-27
 

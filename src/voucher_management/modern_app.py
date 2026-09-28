@@ -2506,7 +2506,6 @@ class ModernVoucherApp(
             # Selection is synchronized after the table rebuild by
             # _sync_selection_ui(), with Home events temporarily suppressed.
         self._refresh_home_activity()
-        self._refresh_report_summary()
         self._refresh_controller_workspace_status()
 
     def _home_recent_selection_changed(self, _event=None) -> None:
