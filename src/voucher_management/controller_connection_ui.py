@@ -36,6 +36,12 @@ class ControllerConnectionMixin:
 
         api_root = self.api_root_var.get().strip()
         api_key = self.api_key_var.get()
+        name_var = getattr(self, "controller_name_var", None)
+        self._requested_controller_name = (
+            str(name_var.get()).strip()
+            if name_var is not None
+            else ""
+        )
         # Clear the visible secret before any network operation starts. The
         # captured value exists only in memory for the active worker chain.
         self.api_key_var.set("")
@@ -220,7 +226,9 @@ class ControllerConnectionMixin:
         requested_name = (
             str(profile_name).strip()
             if profile_name and str(profile_name).strip()
-            else ""
+            else str(
+                getattr(self, "_requested_controller_name", "")
+            ).strip()
         )
         existing_id = self.database.find_controller_by_api_root(client.base_url)
         persisted_name = requested_name
@@ -247,6 +255,9 @@ class ControllerConnectionMixin:
         self.client = client
         self.vouchers = snapshot
         self.api_root_var.set(client.base_url)
+        name_var = getattr(self, "controller_name_var", None)
+        if name_var is not None:
+            name_var.set(persisted_name)
         self.settings = self.settings_store.update(
             controller_api_root=client.base_url,
             controller_cert_sha256=client.trusted_cert_sha256,

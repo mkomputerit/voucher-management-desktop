@@ -204,6 +204,29 @@ def test_get_or_create_controller_reuses_api_root_without_credentials(tmp_path):
         db.close()
 
 
+def test_controller_can_be_renamed_without_touching_connection_identity(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="Controller UniFi",
+            api_root="https://controller.example",
+            created_at="2026-09-28T06:00:00+00:00",
+            cert_sha256="AA",
+        )
+
+        db.rename_controller(controller, "Reception")
+
+        row = db.connection.execute(
+            "SELECT name, api_root, cert_sha256 FROM controllers WHERE id=?",
+            (controller,),
+        ).fetchone()
+        assert row["name"] == "Reception"
+        assert row["api_root"] == "https://controller.example"
+        assert row["cert_sha256"] == "AA"
+    finally:
+        db.close()
+
+
 def test_record_print_audit_is_idempotent_and_sequences_reprints(tmp_path):
     db = _db(tmp_path)
     try:

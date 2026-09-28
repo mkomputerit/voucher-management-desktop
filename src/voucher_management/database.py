@@ -994,6 +994,21 @@ COMMIT;
             return None
         return str(row["name"] or "").strip() or None
 
+    def rename_controller(self, controller_id: int, name: str) -> None:
+        """Change only the non-secret operator-facing controller name."""
+
+        normalized = str(name or "").strip()
+        if not normalized:
+            raise ValueError("Il nome del controller non può essere vuoto.")
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """UPDATE controllers SET name=?
+                   WHERE id=? AND is_active=1""",
+                (normalized, int(controller_id)),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("Controller locale non trovato.")
+
     def report_voucher_rows(
         self,
         *,
