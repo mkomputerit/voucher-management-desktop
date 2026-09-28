@@ -74,6 +74,7 @@ class LegacyBackupImportResult:
     materialization: LegacyMaterializationResult
     reused_vouchers: int
     historical_vouchers_created: int
+    minimized_vouchers_preserved: int
     pdfs_copied: int
     pdfs_already_present: int
 
@@ -416,7 +417,7 @@ def _ensure_import_candidates(
     *,
     imported_at: str,
     preferred_controller_id: int | None,
-) -> tuple[tuple[LegacyVoucherCandidate, ...], int, int]:
+) -> tuple[tuple[LegacyVoucherCandidate, ...], int, int, int]:
     """Resolve PDF codes to existing vouchers or deterministic archive rows."""
 
     metadata = _metadata_by_code(material)
@@ -424,10 +425,11 @@ def _ensure_import_candidates(
     chosen: list[LegacyVoucherCandidate] = []
     missing: list[str] = []
     reused = 0
+    minimized = 0
 
     for canonical in resolved_pdf_codes:
         rows = database.connection.execute(
-            """SELECT id, controller_id, unifi_id, code
+            """SELECT id, controller_id, unifi_id, code, archived_at
                FROM vouchers
                WHERE REPLACE(code, '-', '')=?
                ORDER BY id""",
@@ -445,6 +447,24 @@ def _ensure_import_candidates(
             selected = rows[0]
 
         if selected is not None:
+            selected_id = int(selected["id"])
+            retention_event = database.connection.execute(
+                """SELECT 1 FROM voucher_events
+                   WHERE voucher_id=? AND event_type='RETENTION_ARCHIVED'
+                   LIMIT 1""",
+                (selected_id,),
+            ).fetchone()
+            if selected["archived_at"] is not None and retention_event is not None:
+                minimized += 1
+                continue
+            if selected["archived_at"] is not None and retention_event is None:
+                # Repair the early 5.1 import bug where archived_at was used as
+                # an import marker rather than a true retention marker.
+                with database.transaction() as db:
+                    db.execute(
+                        "UPDATE vouchers SET archived_at=NULL WHERE id=?",
+                        (selected_id,),
+                    )
             chosen.append(
                 LegacyVoucherCandidate(
                     controller_id=int(selected["controller_id"]),
@@ -493,7 +513,7 @@ def _ensure_import_candidates(
                     + hashlib.sha256(canonical.encode("ascii")).hexdigest()[:20]
                 )
                 existing = db.execute(
-                    """SELECT id FROM vouchers
+                    """SELECT id, code, archived_at FROM vouchers
                        WHERE controller_id=? AND unifi_id=?""",
                     (archive_controller_id, unifi_id),
                 ).fetchone()
@@ -521,23 +541,33 @@ def _ensure_import_candidates(
                     )
                     created += 1
                 else:
+                    existing_id = int(existing["id"])
+                    retention_event = db.execute(
+                        """SELECT 1 FROM voucher_events
+                           WHERE voucher_id=?
+                             AND event_type='RETENTION_ARCHIVED'
+                           LIMIT 1""",
+                        (existing_id,),
+                    ).fetchone()
+                    if (
+                        existing["archived_at"] is not None
+                        and retention_event is not None
+                    ):
+                        minimized += 1
+                        continue
                     db.execute(
                         """UPDATE vouchers
                            SET code=?, name=CASE
                                    WHEN TRIM(name)='' THEN ? ELSE name END,
                                duration_minutes=COALESCE(duration_minutes, ?),
                                expired=1, present_on_controller=0,
-                               archived_at=CASE
-                                   WHEN code LIKE 'ARCHIVED-%'
-                                   THEN archived_at
-                                   ELSE NULL
-                               END
+                               archived_at=NULL
                            WHERE id=?""",
                         (
                             display_code,
                             meta.recipient,
                             meta.duration_minutes,
-                            int(existing["id"]),
+                            existing_id,
                         ),
                     )
                 chosen.append(
@@ -557,7 +587,69 @@ def _ensure_import_candidates(
     dedup: dict[tuple[int, str], LegacyVoucherCandidate] = {}
     for item in chosen:
         dedup[item.key] = item
-    return tuple(dedup.values()), reused, created
+    return tuple(dedup.values()), reused, created, minimized
+
+
+def _source_history_sha256(material: _LegacyBackupMaterial) -> str:
+    return hashlib.sha256(material.history_bytes).hexdigest()
+
+
+def _fully_resolved_prior_run(
+    database: Database,
+    material: _LegacyBackupMaterial,
+):
+    """Return a prior complete evidence run for this exact history, if any."""
+
+    return database.connection.execute(
+        """SELECT migration_uuid, status, total_rows, resolved_rows,
+                  ambiguous_rows, unresolved_rows
+           FROM migration_runs
+           WHERE source_history_sha256=?
+             AND status IN ('EVIDENCE_READY', 'COMPLETED')
+             AND total_rows=resolved_rows
+             AND ambiguous_rows=0
+             AND unresolved_rows=0
+           ORDER BY id DESC
+           LIMIT 1""",
+        (_source_history_sha256(material),),
+    ).fetchone()
+
+
+def _repair_minimized_legacy_vouchers(
+    database: Database,
+    material: _LegacyBackupMaterial,
+) -> int:
+    """Keep true retention minimization irreversible across legacy reimports."""
+
+    source_hash = _source_history_sha256(material)
+    rows = database.connection.execute(
+        """SELECT DISTINCT v.id
+           FROM vouchers AS v
+           JOIN legacy_audit_events AS lae ON lae.voucher_id=v.id
+           JOIN migration_runs AS mr
+             ON mr.migration_uuid=lae.first_migration_uuid
+           WHERE mr.source_history_sha256=?
+             AND v.archived_at IS NOT NULL
+             AND EXISTS (
+                 SELECT 1 FROM voucher_events AS ve
+                 WHERE ve.voucher_id=v.id
+                   AND ve.event_type='RETENTION_ARCHIVED'
+             )""",
+        (source_hash,),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    with database.transaction() as db:
+        for row in rows:
+            voucher_id = int(row["id"])
+            db.execute(
+                """UPDATE vouchers
+                   SET code=?, name='', assigned_to='', notes=''
+                   WHERE id=?""",
+                (f"ARCHIVED-{voucher_id}", voucher_id),
+            )
+    return len(rows)
 
 
 def _copy_pdf_archive(
@@ -659,40 +751,70 @@ def execute_legacy_backup_import(
         ) from exc
 
     try:
-        candidates, reused, created = _ensure_import_candidates(
+        minimized_preserved = _repair_minimized_legacy_vouchers(
             database,
             material,
-            imported_at=imported_at,
-            preferred_controller_id=preferred_controller_id,
         )
-
-        with tempfile.TemporaryDirectory(
-            prefix="voucher-legacy-import-"
-        ) as temp:
-            history_path = _history_path(material.history_bytes, Path(temp))
-            plan = build_legacy_migration_plan(
-                history_path=history_path,
-                expected_fingerprint=material.fingerprint,
-                secret=material.secret,
-                candidates=candidates,
-            )
-            evidence = apply_legacy_migration_plan(
-                database=database,
-                plan=plan,
-                migration_uuid=migration_uuid,
-                applied_at=imported_at,
+        prior_run = _fully_resolved_prior_run(database, material)
+        if prior_run is not None:
+            reused = 0
+            created = 0
+            evidence = LegacyMigrationApplyResult(
+                migration_uuid=str(prior_run["migration_uuid"]),
+                total_rows=int(prior_run["total_rows"]),
+                resolved_rows=int(prior_run["resolved_rows"]),
+                ambiguous_rows=int(prior_run["ambiguous_rows"]),
+                unresolved_rows=int(prior_run["unresolved_rows"]),
+                already_applied=True,
             )
             materialization = materialize_resolved_legacy_events(
                 database=database,
                 materialized_at=imported_at,
-                migration_uuid=migration_uuid,
+                migration_uuid=str(prior_run["migration_uuid"]),
             )
+        else:
+            candidates, reused, created, minimized_during_resolution = (
+                _ensure_import_candidates(
+                    database,
+                    material,
+                    imported_at=imported_at,
+                    preferred_controller_id=preferred_controller_id,
+                )
+            )
+            minimized_preserved += minimized_during_resolution
+
+            with tempfile.TemporaryDirectory(
+                prefix="voucher-legacy-import-"
+            ) as temp:
+                history_path = _history_path(
+                    material.history_bytes,
+                    Path(temp),
+                )
+                plan = build_legacy_migration_plan(
+                    history_path=history_path,
+                    expected_fingerprint=material.fingerprint,
+                    secret=material.secret,
+                    candidates=candidates,
+                )
+                evidence = apply_legacy_migration_plan(
+                    database=database,
+                    plan=plan,
+                    migration_uuid=migration_uuid,
+                    applied_at=imported_at,
+                )
+                materialization = materialize_resolved_legacy_events(
+                    database=database,
+                    materialized_at=imported_at,
+                    migration_uuid=migration_uuid,
+                )
 
         database.integrity_check()
         copied, present = _copy_pdf_archive(
             material,
             prints_root=live_backup_service.paths.prints,
         )
+    except LegacyMigrationError:
+        raise
     except Exception as exc:
         _LOGGER.warning(
             "legacy_backup_import_incomplete type=%s source_sha256_prefix=%s",
@@ -712,6 +834,7 @@ def execute_legacy_backup_import(
         materialization=materialization,
         reused_vouchers=reused,
         historical_vouchers_created=created,
+        minimized_vouchers_preserved=minimized_preserved,
         pdfs_copied=copied,
         pdfs_already_present=present,
     )
