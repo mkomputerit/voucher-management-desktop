@@ -161,3 +161,29 @@ def test_theme_labels_keep_operator_text_separate_from_persisted_values():
     assert _theme_setting_value("Chiaro") == "light"
     assert _theme_setting_value("Scuro") == "dark"
     assert _theme_setting_value("unknown") == "system"
+
+
+def test_sidebar_icons_refresh_only_when_tk_scaling_changes():
+    calls = []
+
+    class TkProxy:
+        def __init__(self, scaling):
+            self.scaling = scaling
+
+        def call(self, *_args):
+            return self.scaling
+
+    fake = SimpleNamespace(
+        _display_scale_after="pending",
+        _last_sidebar_icon_size=20,
+        tk=TkProxy((96 / 72) * 1.5),
+        _refresh_sidebar_icons=lambda: calls.append("refresh"),
+    )
+    ModernVoucherApp._refresh_sidebar_icons_if_scale_changed(fake)
+    assert fake._display_scale_after is None
+    assert calls == ["refresh"]
+
+    calls.clear()
+    fake._last_sidebar_icon_size = 30
+    ModernVoucherApp._refresh_sidebar_icons_if_scale_changed(fake)
+    assert calls == []

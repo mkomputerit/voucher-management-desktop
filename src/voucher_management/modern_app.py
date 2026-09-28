@@ -996,6 +996,12 @@ class ModernVoucherApp(
             button.pack(fill="x", pady=2)
             self._nav_buttons[key] = button
         self._refresh_sidebar_icons()
+        self._display_scale_after = None
+        self.bind(
+            "<Configure>",
+            self._schedule_display_scale_refresh,
+            add="+",
+        )
 
         status_box = ttk.Frame(sidebar, style="Sidebar.TFrame")
         status_box.grid(row=3, column=0, sticky="sew")
@@ -2630,6 +2636,33 @@ class ModernVoucherApp(
         )
         self.minsize(*minimum)
 
+    def _schedule_display_scale_refresh(self, event=None) -> None:
+        """Debounce root resize/move events that can accompany DPI changes."""
+
+        if event is not None and getattr(event, "widget", self) is not self:
+            return
+        pending = getattr(self, "_display_scale_after", None)
+        if pending is not None:
+            try:
+                self.after_cancel(pending)
+            except tk.TclError:
+                pass
+        self._display_scale_after = self.after(
+            180,
+            self._refresh_sidebar_icons_if_scale_changed,
+        )
+
+    def _refresh_sidebar_icons_if_scale_changed(self) -> None:
+        self._display_scale_after = None
+        try:
+            current_size = _sidebar_icon_pixel_size(
+                self.tk.call("tk", "scaling")
+            )
+        except tk.TclError:
+            return
+        if current_size != getattr(self, "_last_sidebar_icon_size", None):
+            self._refresh_sidebar_icons()
+
     def _refresh_sidebar_icons(self) -> None:
         """Regenerate theme-aware navigation icons for the sidebar."""
 
@@ -2643,6 +2676,7 @@ class ModernVoucherApp(
         except tk.TclError:
             tk_scaling = 96.0 / 72.0
         icon_size = _sidebar_icon_pixel_size(tk_scaling)
+        self._last_sidebar_icon_size = icon_size
         images = {}
         for key in ("home", "voucher", "report", "settings"):
             images[key] = ImageTk.PhotoImage(

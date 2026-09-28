@@ -112,6 +112,9 @@
   report/export scope and privacy explicit, and show theme choices as
   operator-facing Italian labels while persisting the existing system/light/
   dark values for backward compatibility.
+- Regenerate sidebar icons when Tk exposes a changed display scaling value
+  after root-window move/resize events, so per-monitor DPI changes do not leave
+  raster navigation icons at the previous monitor's size.
 
 ## 5.0.0 - 2026-09-27
 
