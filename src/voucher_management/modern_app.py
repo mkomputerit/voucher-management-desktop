@@ -1676,6 +1676,11 @@ class ModernVoucherApp(
             text="Ripristina backup…",
             command=lambda: self.restore_backup(parent=self),
         ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            backup_actions,
+            text="Importa backup precedente…",
+            command=lambda: self.import_legacy_backup(parent=self),
+        ).pack(side="left", padx=(8, 0))
 
         ttk.Separator(backup).pack(fill="x", pady=18)
         ttk.Label(
@@ -1722,7 +1727,7 @@ class ModernVoucherApp(
             ).pack(anchor="w", pady=(12, 0))
         ttk.Button(
             backup,
-            text="Importa cronologia stampe precedente…",
+            text="Importa cronologia già ripristinata…",
             command=lambda: self.migrate_legacy_history(parent=self),
         ).pack(anchor="w", pady=(8, 0))
 

@@ -18,6 +18,10 @@ from .database import Database
 from .dialogs import ask_password
 from .history import HistoryError
 from .history_exchange import HistoryExchangeError, HistoryExchangeService
+from .legacy_backup_import import (
+    execute_legacy_backup_import,
+    inspect_legacy_backup,
+)
 from .legacy_migration import (
     LegacyMigrationError,
     build_legacy_migration_plan,
@@ -641,6 +645,208 @@ class DataMaintenanceMixin:
             lambda: service.prepare_import(source_path, password),
             prepared,
             prepare_failed,
+            busy_scope=self._dialog_busy_scope(parent),
+        )
+
+    def import_legacy_backup(self, *, parent=None) -> None:
+        """Import verified print history directly from a pre-SQLite ZIP backup."""
+
+        parent = parent or self
+        source = filedialog.askopenfilename(
+            parent=parent,
+            title="Importa backup precedente",
+            filetypes=[
+                ("Backup ZIP Voucher Management", "*.zip"),
+                ("File ZIP", "*.zip"),
+            ],
+        )
+        if not source:
+            return
+
+        source_path = Path(source)
+        validator = self._backup_service()
+
+        def inspected(info) -> None:
+            summary = (
+                f"Backup: {source_path.name}\n"
+                f"Creato: {info.created_utc or 'data sconosciuta'}\n\n"
+                f"Eventi cronologia: {info.history_rows}\n"
+                f"Generazioni PDF: {info.generated_rows}\n"
+                f"Stampe fisiche: {info.print_rows}\n"
+                f"Voucher storici: {info.unique_history_vouchers}\n"
+                f"PDF presenti: {info.pdf_files}\n"
+                f"Codici recuperati dai PDF: {info.recovered_codes}\n"
+                f"Voucher correlati con HMAC: "
+                f"{info.matched_history_vouchers}\n"
+                f"Non correlati: {info.unmatched_history_vouchers}\n\n"
+                "L'importazione non sovrascrive la configurazione corrente. "
+                "Prima di modificare il database verrà creato un backup "
+                "cifrato di sicurezza della 5.x corrente.\n\n"
+                "Procedere?"
+            )
+            if not messagebox.askyesno(
+                "Importa backup precedente",
+                summary,
+                parent=parent,
+            ):
+                return
+
+            password = ask_password(
+                parent,
+                title="Backup di sicurezza pre-importazione",
+                prompt=(
+                    "Inserire una password di almeno 12 caratteri per il "
+                    "backup cifrato della situazione corrente."
+                ),
+                confirm=True,
+            )
+            if password is None:
+                return
+
+            default = (
+                "VoucherManagement-pre-import-"
+                f"{datetime.now().strftime('%Y%m%d-%H%M')}.vmbk"
+            )
+            target = filedialog.asksaveasfilename(
+                parent=parent,
+                title="Backup di sicurezza pre-importazione",
+                defaultextension=".vmbk",
+                initialfile=default,
+                filetypes=[
+                    (
+                        "Backup cifrato Voucher Management",
+                        "*.vmbk",
+                    )
+                ],
+            )
+            if not target:
+                return
+
+            imported_at = datetime.now(timezone.utc).isoformat(
+                timespec="seconds"
+            )
+            migration_uuid = secrets.token_hex(16)
+            database_path = Path(self.paths.database)
+            app_paths = self.paths
+            preferred_controller_id = getattr(
+                self,
+                "active_controller_id",
+                None,
+            )
+
+            def worker():
+                import_db = Database(database_path)
+                try:
+                    import_db.initialize()
+                    import_db.integrity_check()
+                    return execute_legacy_backup_import(
+                        database=import_db,
+                        live_backup_service=BackupService(app_paths),
+                        source=source_path,
+                        safety_backup_destination=Path(target),
+                        safety_backup_password=password,
+                        imported_at=imported_at,
+                        migration_uuid=migration_uuid,
+                        preferred_controller_id=preferred_controller_id,
+                    )
+                finally:
+                    import_db.close()
+
+            def completed(result) -> None:
+                self.populate()
+                refresh_report = getattr(
+                    self,
+                    "_refresh_report_summary",
+                    None,
+                )
+                if refresh_report is not None:
+                    refresh_report()
+                refresh_backup = getattr(
+                    self,
+                    "_refresh_backup_summary",
+                    None,
+                )
+                if refresh_backup is not None:
+                    refresh_backup()
+                refresh_legacy = getattr(
+                    self,
+                    "_refresh_legacy_history_summary",
+                    None,
+                )
+                if refresh_legacy is not None:
+                    refresh_legacy()
+
+                messagebox.showinfo(
+                    "Importazione completata",
+                    "Backup precedente importato nel database 5.x.\n\n"
+                    f"Eventi analizzati: "
+                    f"{result.evidence.total_rows}\n"
+                    f"Associati con certezza: "
+                    f"{result.evidence.resolved_rows}\n"
+                    f"Ambigui conservati: "
+                    f"{result.evidence.ambiguous_rows}\n"
+                    f"Non associati conservati: "
+                    f"{result.evidence.unresolved_rows}\n"
+                    f"Stampe materializzate/verificate: "
+                    f"{result.materialization.print_rows}\n"
+                    f"Voucher esistenti riutilizzati: "
+                    f"{result.reused_vouchers}\n"
+                    f"Voucher storici creati: "
+                    f"{result.historical_vouchers_created}\n"
+                    f"PDF importati: {result.pdfs_copied}\n"
+                    f"PDF già presenti: "
+                    f"{result.pdfs_already_present}\n\n"
+                    f"Backup di sicurezza della 5.x:\n"
+                    f"{result.safety_backup_path}",
+                    parent=parent,
+                )
+
+            def failed(exc: Exception) -> None:
+                detail = (
+                    str(exc)
+                    if isinstance(
+                        exc,
+                        (LegacyMigrationError, BackupError),
+                    )
+                    else "Importazione del backup precedente non riuscita."
+                )
+                messagebox.showerror(
+                    "Importa backup precedente",
+                    detail,
+                    parent=parent,
+                )
+
+            self._run_background_task(
+                "Importazione backup precedente…",
+                worker,
+                completed,
+                failed,
+                busy_scope=self._dialog_busy_scope(parent),
+            )
+
+        def inspection_failed(exc: Exception) -> None:
+            detail = (
+                str(exc)
+                if isinstance(
+                    exc,
+                    (LegacyMigrationError, BackupError),
+                )
+                else "Impossibile analizzare il backup precedente."
+            )
+            messagebox.showerror(
+                "Importa backup precedente",
+                detail,
+                parent=parent,
+            )
+
+        self._run_background_task(
+            "Analisi backup precedente…",
+            lambda: inspect_legacy_backup(
+                source_path,
+                validator=validator,
+            ),
+            inspected,
+            inspection_failed,
             busy_scope=self._dialog_busy_scope(parent),
         )
 

@@ -41,6 +41,10 @@
 - Guide restore of pre-SQLite backups through the required second phase:
   reconnect/synchronize UniFi and migrate the verified legacy print history
   into SQLite before relying on 5.x reports.
+- Add direct import of pre-SQLite ZIP backups: voucher codes are recovered
+  from the archived PDFs, verified against HMAC print history, materialized
+  into SQLite, and the archived PDFs are copied into the current print archive
+  without overwriting current application settings.
 
 ## 5.0.0 - 2026-09-27
 
