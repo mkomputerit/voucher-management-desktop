@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import darkdetect
 import sv_ttk
+from PIL import Image, ImageDraw, ImageTk
 
 from .app import VoucherApp, duration_label, time_label
 from .history import HistoryError
@@ -44,6 +45,41 @@ def audit_time_label(value: str) -> str:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().strftime("%d/%m/%Y %H:%M")
     except (ValueError, TypeError):
         return "—"
+
+
+def _sidebar_icon_bitmap(kind: str, foreground: str) -> Image.Image:
+    """Draw a crisp monochrome navigation icon without external icon files."""
+
+    image = Image.new("RGBA", (20, 20), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    stroke = foreground
+    width = 2
+
+    if kind == "home":
+        draw.line((3, 9, 10, 3, 17, 9), fill=stroke, width=width)
+        draw.rounded_rectangle((5, 8, 15, 17), radius=1, outline=stroke, width=width)
+        draw.rectangle((9, 12, 11, 17), outline=stroke, width=1)
+    elif kind == "voucher":
+        draw.rounded_rectangle((3, 5, 17, 15), radius=2, outline=stroke, width=width)
+        draw.line((7, 6, 7, 14), fill=stroke, width=1)
+        draw.line((10, 8, 15, 8), fill=stroke, width=1)
+        draw.line((10, 11, 14, 11), fill=stroke, width=1)
+    elif kind == "report":
+        draw.rounded_rectangle((4, 3, 16, 17), radius=1, outline=stroke, width=width)
+        draw.line((7, 13, 7, 9), fill=stroke, width=2)
+        draw.line((10, 13, 10, 6), fill=stroke, width=2)
+        draw.line((13, 13, 13, 8), fill=stroke, width=2)
+    else:
+        draw.ellipse((6, 6, 14, 14), outline=stroke, width=width)
+        draw.ellipse((9, 9, 11, 11), fill=stroke)
+        for x1, y1, x2, y2 in (
+            (10, 2, 10, 5), (10, 15, 10, 18),
+            (2, 10, 5, 10), (15, 10, 18, 10),
+            (4, 4, 6, 6), (14, 14, 16, 16),
+            (14, 6, 16, 4), (4, 16, 6, 14),
+        ):
+            draw.line((x1, y1, x2, y2), fill=stroke, width=width)
+    return image
 
 
 def fit_dialog(window: tk.Toplevel, parent: tk.Misc, *, min_width: int = 0, min_height: int = 0) -> None:
@@ -743,6 +779,14 @@ class ModernVoucherApp(
                 or PRODUCT_NAME
             )
         )
+        current_controller_name = (
+            self.database.controller_name(self.active_controller_id)
+            if self.active_controller_id is not None
+            else None
+        )
+        self.controller_name_var = tk.StringVar(
+            value=current_controller_name or "Controller UniFi"
+        )
         self.controller_health_var = tk.StringVar()
         self.controller_health_detail_var = tk.StringVar()
         self.sidebar_sync_var = tk.StringVar(value="Ultimo aggiornamento\n—")
@@ -751,6 +795,7 @@ class ModernVoucherApp(
         self.home_sync_detail_var = tk.StringVar()
         self.home_ready_var = tk.StringVar(value="Controller da configurare")
         self.home_sync_action_var = tk.StringVar(value="Configura controller")
+        self.home_print_action_var = tk.StringVar(value="Stampa voucher")
         self.home_to_print_var = tk.StringVar(value="0")
         self.home_active_var = tk.StringVar(value="0")
         self.home_used_var = tk.StringVar(value="0")
@@ -792,11 +837,12 @@ class ModernVoucherApp(
         nav = ttk.Frame(sidebar, style="Sidebar.TFrame")
         nav.grid(row=1, column=0, sticky="new")
         self._nav_buttons = {}
+        self._nav_icon_images = {}
         for key, label in (
-            ("home", "⌂   Home"),
-            ("voucher", "▣   Voucher"),
-            ("report", "▤   Report"),
-            ("settings", "⚙   Impostazioni"),
+            ("home", "Home"),
+            ("voucher", "Voucher"),
+            ("report", "Report"),
+            ("settings", "Impostazioni"),
         ):
             button = ttk.Button(
                 nav,
@@ -804,9 +850,11 @@ class ModernVoucherApp(
                 style="Nav.TButton",
                 command=lambda target=key: self._show_workspace(target),
                 width=22,
+                compound="left",
             )
             button.pack(fill="x", pady=3)
             self._nav_buttons[key] = button
+        self._refresh_sidebar_icons()
 
         status_box = ttk.Frame(sidebar, style="Sidebar.TFrame")
         status_box.grid(row=3, column=0, sticky="sew")
@@ -816,13 +864,21 @@ class ModernVoucherApp(
             text="Stato applicazione",
             style="SidebarMuted.TLabel",
         ).pack(anchor="w")
+        status_line = ttk.Frame(status_box, style="Sidebar.TFrame")
+        status_line.pack(fill="x", pady=(6, 2))
+        self.sidebar_status_dot = ttk.Label(
+            status_line,
+            text="●",
+            style="SidebarDisconnectedDot.TLabel",
+        )
+        self.sidebar_status_dot.pack(side="left", padx=(0, 7))
         self.sidebar_status_label = ttk.Label(
-            status_box,
+            status_line,
             textvariable=self.controller_health_var,
             style="SidebarStatus.TLabel",
-            wraplength=190,
+            wraplength=160,
         )
-        self.sidebar_status_label.pack(anchor="w", pady=(6, 2))
+        self.sidebar_status_label.pack(side="left", anchor="w")
         ttk.Label(
             status_box,
             textvariable=self.sidebar_sync_var,
@@ -1744,6 +1800,7 @@ class ModernVoucherApp(
         if previous_theme != self.settings.get("ui_theme"):
             self.apply_theme()
             self._configure_style()
+            self._refresh_sidebar_icons()
         if previous_pdf_retention != pdf_retention_days:
             self._cleanup_print_archive()
         self.settings_save_status_var.set("Modifiche salvate.")
@@ -1840,7 +1897,7 @@ class ModernVoucherApp(
         name = (
             str(row["name"] or "").strip()
             if row is not None
-            else ""
+            else self.controller_name_var.get().strip()
         )
         last_sync = (
             str(row["last_successful_sync_at"] or "").strip()
@@ -1889,6 +1946,21 @@ class ModernVoucherApp(
         sidebar_label = getattr(self, "sidebar_status_label", None)
         if sidebar_label is not None:
             sidebar_label.configure(style=sidebar_style)
+
+        dot_style = {
+            "connected": "ConnectedDot.TLabel",
+            "syncing": "BusyDot.TLabel",
+        }.get(status.key, "DisconnectedDot.TLabel")
+        sidebar_dot_style = {
+            "connected": "SidebarConnectedDot.TLabel",
+            "syncing": "SidebarBusyDot.TLabel",
+        }.get(status.key, "SidebarDisconnectedDot.TLabel")
+        home_dot = getattr(self, "home_status_dot", None)
+        if home_dot is not None:
+            home_dot.configure(style=dot_style)
+        sidebar_dot = getattr(self, "sidebar_status_dot", None)
+        if sidebar_dot is not None:
+            sidebar_dot.configure(style=sidebar_dot_style)
 
         if status.key == "connected":
             self.home_sync_action_var.set("Sincronizza")
@@ -2035,6 +2107,10 @@ class ModernVoucherApp(
         sidebar_bg = "#20242a" if dark else "#eef2f7"
         sidebar_fg = "#f5f7fa" if dark else "#172033"
         sidebar_muted = "#c3cad4" if dark else "#5f6b7a"
+        selection_blue = "#3B82F6" if dark else "#0F6CBD"
+        connected_green = "#55D17A" if dark else "#107C10"
+        disconnected_red = "#FF6B6B" if dark else "#C42B1C"
+        busy_blue = "#62A9FF" if dark else "#0067C0"
 
         style.configure("Sidebar.TFrame", background=sidebar_bg)
         style.configure(
@@ -2056,10 +2132,10 @@ class ModernVoucherApp(
             font=("Segoe UI Variable Text", 10, "bold"),
         )
         for name, foreground in (
-            ("SidebarSuccess.TLabel", "#22a447"),
-            ("SidebarBusy.TLabel", "#2585d8"),
-            ("SidebarWarning.TLabel", "#c47a00"),
-            ("SidebarError.TLabel", "#d13438"),
+            ("SidebarSuccess.TLabel", connected_green),
+            ("SidebarBusy.TLabel", busy_blue),
+            ("SidebarWarning.TLabel", disconnected_red),
+            ("SidebarError.TLabel", disconnected_red),
         ):
             style.configure(
                 name,
@@ -2068,6 +2144,39 @@ class ModernVoucherApp(
                 font=("Segoe UI Variable Text", 10, "bold"),
             )
 
+        style.configure(
+            "SidebarConnectedDot.TLabel",
+            background=sidebar_bg,
+            foreground=connected_green,
+            font=("Segoe UI Variable Text", 12, "bold"),
+        )
+        style.configure(
+            "SidebarDisconnectedDot.TLabel",
+            background=sidebar_bg,
+            foreground=disconnected_red,
+            font=("Segoe UI Variable Text", 12, "bold"),
+        )
+        style.configure(
+            "SidebarBusyDot.TLabel",
+            background=sidebar_bg,
+            foreground=busy_blue,
+            font=("Segoe UI Variable Text", 12, "bold"),
+        )
+        style.configure(
+            "ConnectedDot.TLabel",
+            foreground=connected_green,
+            font=("Segoe UI Variable Text", 12, "bold"),
+        )
+        style.configure(
+            "DisconnectedDot.TLabel",
+            foreground=disconnected_red,
+            font=("Segoe UI Variable Text", 12, "bold"),
+        )
+        style.configure(
+            "BusyDot.TLabel",
+            foreground=busy_blue,
+            font=("Segoe UI Variable Text", 12, "bold"),
+        )
         style.configure(
             "PageTitle.TLabel",
             font=("Segoe UI Variable Display", 24, "bold"),
@@ -2141,12 +2250,42 @@ class ModernVoucherApp(
             rowheight=38,
             font=("Segoe UI Variable Text", 10),
         )
+        for tree_style in ("Voucher.Treeview", "HomeVoucher.Treeview"):
+            style.configure(
+                tree_style,
+                rowheight=38,
+                font=("Segoe UI Variable Text", 10),
+            )
+            style.map(
+                tree_style,
+                background=[("selected", selection_blue)],
+                foreground=[("selected", "#FFFFFF")],
+            )
         style.configure(
             "Treeview.Heading",
             font=("Segoe UI Variable Text", 9, "bold"),
             padding=(7, 9),
         )
         self.minsize(1220, 740)
+
+    def _refresh_sidebar_icons(self) -> None:
+        """Regenerate theme-aware navigation icons for the sidebar."""
+
+        if not hasattr(self, "_nav_buttons"):
+            return
+        preference = str(self.settings.get("ui_theme", "system") or "system")
+        dark = darkdetect.isDark() if preference == "system" else preference == "dark"
+        foreground = "#F5F7FA" if dark else "#243247"
+        images = {}
+        for key in ("home", "voucher", "report", "settings"):
+            images[key] = ImageTk.PhotoImage(
+                _sidebar_icon_bitmap(key, foreground),
+                master=self,
+            )
+            button = self._nav_buttons.get(key)
+            if button is not None:
+                button.configure(image=images[key], compound="left")
+        self._nav_icon_images = images
 
     def _refresh_report_summary(self) -> None:
         if not hasattr(self, "report_total_var"):
