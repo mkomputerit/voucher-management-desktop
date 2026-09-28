@@ -574,7 +574,11 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         client = self.client
         controller_id = getattr(self, "active_controller_id", None)
-        database_path = Path(self.paths.database)
+        database_path = (
+            Path(self.paths.database)
+            if controller_id is not None
+            else None
+        )
 
         def worker():
             snapshot = list(refresh_vouchers(client))
