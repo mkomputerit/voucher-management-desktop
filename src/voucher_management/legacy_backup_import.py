@@ -16,6 +16,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -45,6 +46,8 @@ from .settings import SettingsStore
 
 
 _CODE_PATTERN = re.compile(r"(?<!\d)(\d{5})\s*-?\s*(\d{5})(?!\d)")
+MAX_LEGACY_PDF_BYTES = 64 * 1024 * 1024
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,7 @@ class LegacyBackupInspection:
     recovered_codes: int
     matched_history_vouchers: int
     unmatched_history_vouchers: int
+    unmatched_pdf_codes: int
 
 
 @dataclass(frozen=True)
@@ -220,6 +224,12 @@ def _load_material(
             )
             codes: set[str] = set()
             for member in pdf_members:
+                info = archive.getinfo(member)
+                if int(info.file_size) > MAX_LEGACY_PDF_BYTES:
+                    raise LegacyMigrationError(
+                        "Uno dei PDF del backup supera il limite di sicurezza "
+                        f"di {MAX_LEGACY_PDF_BYTES // (1024 * 1024)} MiB"
+                    )
                 codes.update(_extract_pdf_codes(archive.read(member)))
     except LegacyMigrationError:
         raise
@@ -290,7 +300,15 @@ def _inspect_material(material: _LegacyBackupMaterial) -> LegacyBackupInspection
     rows = tuple(_all_plan_rows(plan))
     unique_history = {row.voucher_digest for row in rows}
     matched = {item.row.voucher_digest for item in plan.resolved}
+    matched_codes = {
+        item.candidate.code.replace("-", "")
+        for item in plan.resolved
+    }
     unmatched = unique_history - matched
+    unmatched_pdf_codes = (
+        len({code.replace("-", "") for code in material.pdf_codes})
+        - len(matched_codes)
+    )
     return LegacyBackupInspection(
         source_sha256=material.source_sha256,
         created_utc=material.created_utc,
@@ -303,6 +321,7 @@ def _inspect_material(material: _LegacyBackupMaterial) -> LegacyBackupInspection
         recovered_codes=len(material.pdf_codes),
         matched_history_vouchers=len(matched),
         unmatched_history_vouchers=len(unmatched),
+        unmatched_pdf_codes=max(0, unmatched_pdf_codes),
     )
 
 
@@ -326,6 +345,34 @@ def _digest_spellings(code: str, secret: str) -> set[str]:
         hmac.new(key, spelling.encode("ascii"), hashlib.sha256).hexdigest()
         for spelling in spellings
     }
+
+
+def _resolved_pdf_codes(
+    material: _LegacyBackupMaterial,
+) -> tuple[str, ...]:
+    """Return only PDF candidates cryptographically linked to legacy history.
+
+    PDF text can contain unrelated ten-digit strings such as telephone numbers.
+    A clear code is eligible for voucher creation only when at least one HMAC
+    history row resolves to it with the backup's verified history key.
+    """
+
+    with tempfile.TemporaryDirectory(prefix="voucher-legacy-resolved-") as temp:
+        path = _history_path(material.history_bytes, Path(temp))
+        plan = build_legacy_migration_plan(
+            history_path=path,
+            expected_fingerprint=material.fingerprint,
+            secret=material.secret,
+            candidates=_pdf_candidates(material.pdf_codes),
+        )
+    return tuple(
+        sorted(
+            {
+                item.candidate.code.replace("-", "")
+                for item in plan.resolved
+            }
+        )
+    )
 
 
 def _metadata_by_code(
@@ -373,12 +420,12 @@ def _ensure_import_candidates(
     """Resolve PDF codes to existing vouchers or deterministic archive rows."""
 
     metadata = _metadata_by_code(material)
+    resolved_pdf_codes = _resolved_pdf_codes(material)
     chosen: list[LegacyVoucherCandidate] = []
     missing: list[str] = []
     reused = 0
 
-    for code in material.pdf_codes:
-        canonical = code.replace("-", "")
+    for canonical in resolved_pdf_codes:
         rows = database.connection.execute(
             """SELECT id, controller_id, unifi_id, code
                FROM vouchers
@@ -460,7 +507,7 @@ def _ensure_import_candidates(
                             authorized_guest_count, expired,
                             present_on_controller, last_seen_at,
                             last_synced_at, archived_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, NULL, ?, ?)""",
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, NULL, ?, NULL)""",
                         (
                             archive_controller_id,
                             unifi_id,
@@ -469,7 +516,6 @@ def _ensure_import_candidates(
                             meta.created_at,
                             imported_at,
                             meta.duration_minutes,
-                            imported_at,
                             imported_at,
                         ),
                     )
@@ -481,13 +527,16 @@ def _ensure_import_candidates(
                                    WHEN TRIM(name)='' THEN ? ELSE name END,
                                duration_minutes=COALESCE(duration_minutes, ?),
                                expired=1, present_on_controller=0,
-                               archived_at=COALESCE(archived_at, ?)
+                               archived_at=CASE
+                                   WHEN code LIKE 'ARCHIVED-%'
+                                   THEN archived_at
+                                   ELSE NULL
+                               END
                            WHERE id=?""",
                         (
                             display_code,
                             meta.recipient,
                             meta.duration_minutes,
-                            imported_at,
                             int(existing["id"]),
                         ),
                     )
@@ -518,12 +567,26 @@ def _copy_pdf_archive(
 ) -> tuple[int, int]:
     copied = 0
     present = 0
-    root = Path(prints_root) / "Imported" / material.source_sha256[:12]
+    root = (
+        Path(prints_root) / "Imported" / material.source_sha256[:12]
+    ).resolve()
 
     with zipfile.ZipFile(material.source, "r") as archive:
         for member in material.pdf_members:
             relative = Path(*Path(member).parts[1:])
-            target = root / relative
+            target = (root / relative).resolve()
+            try:
+                target.relative_to(root)
+            except ValueError as exc:
+                raise LegacyMigrationError(
+                    "Percorso PDF del backup non sicuro"
+                ) from exc
+            info = archive.getinfo(member)
+            if int(info.file_size) > MAX_LEGACY_PDF_BYTES:
+                raise LegacyMigrationError(
+                    "Uno dei PDF del backup supera il limite di sicurezza "
+                    f"di {MAX_LEGACY_PDF_BYTES // (1024 * 1024)} MiB"
+                )
             payload = archive.read(member)
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.is_file() and target.read_bytes() == payload:
@@ -586,44 +649,62 @@ def execute_legacy_backup_import(
                 status="FAILED",
                 error_summary=type(exc).__name__,
             )
-        except Exception:
-            pass
+        except Exception as audit_exc:
+            _LOGGER.warning(
+                "legacy_backup_preimport_audit_failed type=%s",
+                type(audit_exc).__name__,
+            )
         raise LegacyMigrationError(
             "Backup di sicurezza pre-importazione non riuscito"
         ) from exc
 
-    candidates, reused, created = _ensure_import_candidates(
-        database,
-        material,
-        imported_at=imported_at,
-        preferred_controller_id=preferred_controller_id,
-    )
-
-    with tempfile.TemporaryDirectory(prefix="voucher-legacy-import-") as temp:
-        history_path = _history_path(material.history_bytes, Path(temp))
-        plan = build_legacy_migration_plan(
-            history_path=history_path,
-            expected_fingerprint=material.fingerprint,
-            secret=material.secret,
-            candidates=candidates,
-        )
-        evidence = apply_legacy_migration_plan(
-            database=database,
-            plan=plan,
-            migration_uuid=migration_uuid,
-            applied_at=imported_at,
-        )
-        materialization = materialize_resolved_legacy_events(
-            database=database,
-            materialized_at=imported_at,
-            migration_uuid=migration_uuid,
+    try:
+        candidates, reused, created = _ensure_import_candidates(
+            database,
+            material,
+            imported_at=imported_at,
+            preferred_controller_id=preferred_controller_id,
         )
 
-    database.integrity_check()
-    copied, present = _copy_pdf_archive(
-        material,
-        prints_root=live_backup_service.paths.prints,
-    )
+        with tempfile.TemporaryDirectory(
+            prefix="voucher-legacy-import-"
+        ) as temp:
+            history_path = _history_path(material.history_bytes, Path(temp))
+            plan = build_legacy_migration_plan(
+                history_path=history_path,
+                expected_fingerprint=material.fingerprint,
+                secret=material.secret,
+                candidates=candidates,
+            )
+            evidence = apply_legacy_migration_plan(
+                database=database,
+                plan=plan,
+                migration_uuid=migration_uuid,
+                applied_at=imported_at,
+            )
+            materialization = materialize_resolved_legacy_events(
+                database=database,
+                materialized_at=imported_at,
+                migration_uuid=migration_uuid,
+            )
+
+        database.integrity_check()
+        copied, present = _copy_pdf_archive(
+            material,
+            prints_root=live_backup_service.paths.prints,
+        )
+    except Exception as exc:
+        _LOGGER.warning(
+            "legacy_backup_import_incomplete type=%s source_sha256_prefix=%s",
+            type(exc).__name__,
+            material.source_sha256[:12],
+        )
+        raise LegacyMigrationError(
+            "Importazione interrotta dopo la creazione del backup di "
+            "sicurezza. Alcune fasi possono essere già state registrate, ma "
+            "l'operazione è idempotente: correggere la causa e rieseguire lo "
+            "stesso backup senza cancellare dati."
+        ) from exc
     return LegacyBackupImportResult(
         inspection=inspection,
         safety_backup_path=Path(artifact.path),
