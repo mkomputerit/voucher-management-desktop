@@ -115,6 +115,15 @@
 - Regenerate sidebar icons when Tk exposes a changed display scaling value
   after root-window move/resize events, so per-monitor DPI changes do not leave
   raster navigation icons at the previous monitor's size.
+- Rework Home toward a UniFi-portal-style dashboard with controller health as
+  the first card, operational counters beneath it, a full-width recent-voucher
+  workspace and a cleaner activity/navigation footer.
+- Replace theme-dependent text glyphs for controller health with real coloured
+  connection indicators: green when connected, amber for local/unconfigured,
+  red for connection failure and blue only while synchronizing.
+- Simplify the Voucher command bar and replace the internal-sounding
+  "PREPARA STAMPA" action with the explicit operator action "Stampa
+  selezionati", preserving the same audited print/reprint workflow.
 
 ## 5.0.0 - 2026-09-27
 

@@ -88,6 +88,17 @@ def time_label(ts: int) -> str:
     return datetime.fromtimestamp(ts).strftime("%d/%m/%Y %H:%M") if ts else "-"
 
 
+def print_action_label(count: int) -> str:
+    """Return the operator-facing print action without workflow jargon."""
+
+    count = max(0, int(count))
+    return (
+        f"Stampa selezionati ({count})"
+        if count
+        else "Stampa selezionati"
+    )
+
+
 class VoucherApp(VoucherCreationMixin, tk.Tk):
     """Shared application state and stable voucher/print workflow methods."""
 
@@ -263,7 +274,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self.filter_var = tk.StringVar(value="Da stampare")
         self.search_var = tk.StringVar()
         self.count_var = tk.StringVar(value="0 voucher")
-        self.action_var = tk.StringVar(value="PREPARA STAMPA")
+        self.action_var = tk.StringVar(value=print_action_label(0))
         self._build_ui()
         # Route only an ordinary window-manager close through the 5.0
         # disaster-recovery workflow. Internal destroy() calls used after a
@@ -665,11 +676,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             f"{len(self.by_iid)} visualizzati  •  "
             f"{len(self.checked_ids)} selezionati"
         )
-        self.action_var.set(
-            f"PREPARA STAMPA  ({len(self.checked_ids)})"
-            if self.checked_ids
-            else "PREPARA STAMPA"
-        )
+        self.action_var.set(print_action_label(len(self.checked_ids)))
 
     def on_tree_click(self, event):
         if self.tree.identify_region(event.x, event.y) != "cell" or self.tree.identify_column(event.x) != "#1":

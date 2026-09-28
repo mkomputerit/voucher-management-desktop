@@ -83,7 +83,7 @@ def test_checkbox_click_updates_only_clicked_row_without_populate():
     assert tree.rows["row-2"][0] == "☐"
     assert tree.writes == ["row-1"]
     assert fake.count_var.value == "2 visualizzati  •  1 selezionati"
-    assert fake.action_var.value == "PREPARA STAMPA  (1)"
+    assert fake.action_var.value == "Stampa selezionati (1)"
 
 
 def test_toggle_all_visible_updates_marks_in_place_and_skips_expired():
@@ -117,7 +117,7 @@ def test_toggle_all_visible_updates_marks_in_place_and_skips_expired():
     assert tree.rows["row-1"][0] == "☐"
     assert tree.rows["row-2"][0] == "—"
     assert fake.count_var.value == "2 visualizzati  •  0 selezionati"
-    assert fake.action_var.value == "PREPARA STAMPA"
+    assert fake.action_var.value == "Stampa selezionati"
 
 
 class HomeTree:

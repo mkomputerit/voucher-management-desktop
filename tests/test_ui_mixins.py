@@ -7,6 +7,7 @@ from voucher_management.controller_connection_ui import ControllerConnectionMixi
 from voucher_management.data_maintenance_ui import DataMaintenanceMixin
 from voucher_management.modern_app import (
     ModernVoucherApp,
+    _controller_status_color_key,
     _controller_status_style_names,
     _main_window_minimum,
     _sidebar_icon_bitmap,
@@ -133,6 +134,14 @@ def test_controller_status_styles_keep_warning_states_distinct_from_errors():
     assert unconfigured[2] == "WarningDot.TLabel"
     assert error[0] == "Error.Status.TLabel"
     assert error[2] == "DisconnectedDot.TLabel"
+
+
+def test_controller_status_color_keys_are_semantically_distinct():
+    assert _controller_status_color_key("connected") == "green"
+    assert _controller_status_color_key("local") == "orange"
+    assert _controller_status_color_key("unconfigured") == "orange"
+    assert _controller_status_color_key("error") == "red"
+    assert _controller_status_color_key("syncing") == "blue"
 
 
 def test_sidebar_icon_size_tracks_windows_tk_scaling():
