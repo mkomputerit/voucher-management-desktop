@@ -762,6 +762,7 @@ class ModernVoucherApp(
 
         self._controller_status_failed = False
         self._controller_busy_label = ""
+        self._home_selection_syncing = False
         self.workspace_title_var = tk.StringVar(value="Home")
         self.workspace_subtitle_var = tk.StringVar(
             value="Panoramica generale e accesso rapido alle funzioni principali"
@@ -2442,15 +2443,17 @@ class ModernVoucherApp(
                     self._home_voucher_by_iid[iid] = voucher
                     if voucher_id in self.checked_ids and not expired:
                         selected_home_iids.append(iid)
-            if selected_home_iids:
-                self.home_recent_tree.selection_set(selected_home_iids)
+            # Selection is synchronized after the table rebuild by
+            # _sync_selection_ui(), with Home events temporarily suppressed.
         self._refresh_home_activity()
         self._refresh_report_summary()
         self._refresh_controller_workspace_status()
 
     def _home_recent_selection_changed(self, _event=None) -> None:
-        """Mirror Home selection into the single audited print selection."""
+        """Mirror an operator Home selection into the audited print selection."""
 
+        if getattr(self, "_home_selection_syncing", False):
+            return
         mapping = getattr(self, "_home_voucher_by_iid", {})
         selected_ids = {
             mapping[iid].id
@@ -2482,7 +2485,11 @@ class ModernVoucherApp(
             for iid, voucher in mapping.items()
             if voucher.id in self.checked_ids and not self._is_expired(voucher)
         ]
-        self.home_recent_tree.selection_set(selected)
+        self._home_selection_syncing = True
+        try:
+            self.home_recent_tree.selection_set(selected)
+        finally:
+            self._home_selection_syncing = False
         count = len(self.checked_ids)
         self.home_print_action_var.set(
             f"Stampa {count} voucher" if count else "Stampa voucher"
