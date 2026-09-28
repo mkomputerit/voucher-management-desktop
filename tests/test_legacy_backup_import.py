@@ -14,10 +14,12 @@ from reportlab.pdfgen import canvas
 
 from voucher_management.backup import BackupService
 from voucher_management.database import Database
+from voucher_management import legacy_backup_import
 from voucher_management.legacy_backup_import import (
     execute_legacy_backup_import,
     inspect_legacy_backup,
 )
+from voucher_management.legacy_migration import LegacyMigrationError
 from voucher_management.security.history_key import HistoryKeyStore
 
 
@@ -33,7 +35,12 @@ def _digest(code: str) -> str:
     ).hexdigest()
 
 
-def _pdf(path: Path, codes: list[str]) -> None:
+def _pdf(
+    path: Path,
+    codes: list[str],
+    *,
+    extra_lines: tuple[str, ...] = (),
+) -> None:
     document = canvas.Canvas(str(path))
     y = 800
     for code in codes:
@@ -44,10 +51,17 @@ def _pdf(path: Path, codes: list[str]) -> None:
             f"Codice / Code: {compact[:5]}-{compact[5:]}",
         )
         y -= 40
+    for line in extra_lines:
+        document.drawString(50, y, line)
+        y -= 40
     document.save()
 
 
-def _legacy_backup(tmp_path: Path) -> Path:
+def _legacy_backup(
+    tmp_path: Path,
+    *,
+    extra_pdf_lines: tuple[str, ...] = (),
+) -> Path:
     source = tmp_path / "legacy-source"
     (source / "config").mkdir(parents=True)
     (source / "data").mkdir()
@@ -93,7 +107,11 @@ def _legacy_backup(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     pdf = source / "Print" / "2026" / "09" / "Voucher_Legacy.pdf"
-    _pdf(pdf, ["1234567890", "9876543210"])
+    _pdf(
+        pdf,
+        ["1234567890", "9876543210"],
+        extra_lines=extra_pdf_lines,
+    )
 
     backup = tmp_path / "legacy-backup.zip"
     manifest = {
@@ -156,6 +174,7 @@ def test_inspection_recovers_codes_from_pdf_and_matches_hmac_history(tmp_path):
         assert inspection.recovered_codes == 2
         assert inspection.matched_history_vouchers == 2
         assert inspection.unmatched_history_vouchers == 0
+        assert inspection.unmatched_pdf_codes == 0
     finally:
         database.close()
 
@@ -182,7 +201,7 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
             "SELECT COUNT(*) FROM voucher_prints"
         ).fetchone()[0] == 2
         rows = database.connection.execute(
-            """SELECT code, present_on_controller, expired
+            """SELECT code, present_on_controller, expired, archived_at
                FROM vouchers ORDER BY code"""
         ).fetchall()
         assert [row["code"] for row in rows] == [
@@ -191,6 +210,7 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
         ]
         assert all(row["present_on_controller"] == 0 for row in rows)
         assert all(row["expired"] == 1 for row in rows)
+        assert all(row["archived_at"] is None for row in rows)
         imported_pdf = (
             paths.prints
             / "Imported"
@@ -277,5 +297,65 @@ def test_import_reuses_unique_current_voucher_when_available(tmp_path):
             (controller,),
         ).fetchone()["id"]
         assert database.print_summary(current_id).print_jobs == 1
+    finally:
+        database.close()
+
+
+def test_unrelated_ten_digit_pdf_text_is_not_created_as_voucher(tmp_path):
+    source = _legacy_backup(
+        tmp_path,
+        extra_pdf_lines=("Tel. 3331234567",),
+    )
+    paths, database = _live(tmp_path)
+    try:
+        inspection = inspect_legacy_backup(
+            source,
+            validator=BackupService(paths),
+        )
+        assert inspection.recovered_codes == 3
+        assert inspection.matched_history_vouchers == 2
+        assert inspection.unmatched_pdf_codes == 1
+
+        result = execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=source,
+            safety_backup_destination=tmp_path / "pre-import.vmbk",
+            safety_backup_password="a" * 24,
+            imported_at="2026-09-28T08:00:00+00:00",
+            migration_uuid="legacy-import-phone",
+        )
+
+        codes = {
+            row["code"]
+            for row in database.connection.execute(
+                "SELECT code FROM vouchers"
+            ).fetchall()
+        }
+        assert codes == {"12345-67890", "98765-43210"}
+        assert "33312-34567" not in codes
+        assert result.historical_vouchers_created == 2
+    finally:
+        database.close()
+
+
+def test_oversized_legacy_pdf_is_rejected_before_pdfium(monkeypatch, tmp_path):
+    source = _legacy_backup(tmp_path)
+    paths, database = _live(tmp_path)
+    try:
+        monkeypatch.setattr(
+            legacy_backup_import,
+            "MAX_LEGACY_PDF_BYTES",
+            1,
+        )
+        try:
+            inspect_legacy_backup(
+                source,
+                validator=BackupService(paths),
+            )
+        except LegacyMigrationError as exc:
+            assert "limite di sicurezza" in str(exc)
+        else:
+            raise AssertionError("oversized legacy PDF must be rejected")
     finally:
         database.close()

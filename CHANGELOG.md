@@ -54,6 +54,15 @@
   changes only from real operator row clicks.
 - Add a post-connection event-loop heartbeat to field diagnostics so a future
   UI stall can be distinguished from network/database completion.
+- Harden pre-SQLite backup import after engineering review: only clear PDF
+  codes that resolve against HMAC history can create historical voucher rows,
+  unrelated ten-digit text is reported and ignored, legacy-import rows no
+  longer misuse retention's archived_at marker, individual PDFs are capped at
+  64 MiB, copied paths are revalidated locally, and partial-import failures are
+  explicitly documented as safe to retry.
+- Show the source ZIP SHA-256 before legacy import and recommend a fresh .vmbk
+  export after successful conversion because the old ZIP format is not
+  externally authenticated.
 
 ## 5.0.0 - 2026-09-27
 

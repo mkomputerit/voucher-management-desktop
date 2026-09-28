@@ -675,10 +675,17 @@ class DataMaintenanceMixin:
                 f"Stampe fisiche: {info.print_rows}\n"
                 f"Voucher storici: {info.unique_history_vouchers}\n"
                 f"PDF presenti: {info.pdf_files}\n"
-                f"Codici recuperati dai PDF: {info.recovered_codes}\n"
+                f"Sequenze candidate recuperate dai PDF: "
+                f"{info.recovered_codes}\n"
                 f"Voucher correlati con HMAC: "
                 f"{info.matched_history_vouchers}\n"
-                f"Non correlati: {info.unmatched_history_vouchers}\n\n"
+                f"Sequenze PDF ignorate perché senza HMAC: "
+                f"{info.unmatched_pdf_codes}\n"
+                f"Eventi storici non correlati: "
+                f"{info.unmatched_history_vouchers}\n\n"
+                f"SHA-256 sorgente:\n{info.source_sha256}\n\n"
+                "Il formato ZIP precedente non è autenticato contro una "
+                "fonte esterna: importare solo archivi di provenienza nota. "
                 "L'importazione non sovrascrive la configurazione corrente. "
                 "Prima di modificare il database verrà creato un backup "
                 "cifrato di sicurezza della 5.x corrente.\n\n"
@@ -797,7 +804,9 @@ class DataMaintenanceMixin:
                     f"PDF già presenti: "
                     f"{result.pdfs_already_present}\n\n"
                     f"Backup di sicurezza della 5.x:\n"
-                    f"{result.safety_backup_path}",
+                    f"{result.safety_backup_path}\n\n"
+                    "Consigliato: dopo aver verificato l'importazione, crea "
+                    "un nuovo backup .vmbk della base dati aggiornata.",
                     parent=parent,
                 )
 
