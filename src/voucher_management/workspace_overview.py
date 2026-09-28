@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .database import Database
+from .identity import LEGACY_BACKUP_API_ROOT_PREFIX
 
 
 @dataclass(frozen=True)
@@ -104,11 +105,11 @@ def load_recent_workspace_activity(
             FROM vouchers AS v
             JOIN controllers AS c ON c.id=v.controller_id
             WHERE v.archived_at IS NULL
-              AND c.api_root NOT LIKE 'legacy-backup://%'
+              AND c.api_root NOT LIKE ?
               {controller_clause}
             ORDER BY v.imported_at DESC
             LIMIT ?""",
-        (*params, limit),
+        (f"{LEGACY_BACKUP_API_ROOT_PREFIX}%", *params, limit),
     ):
         label = str(row["name"] or "").strip() or str(row["code"] or "").strip()
         activities.append(

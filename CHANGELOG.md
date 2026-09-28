@@ -75,6 +75,16 @@
 - Exclude synthetic legacy-backup controllers from Home's "Voucher rilevato"
   feed so importing historical data is not presented as a new controller
   discovery in local-only mode.
+- Preserve retention-minimized legacy identities across later ZIPs whose
+  history has grown: stable HMAC evidence is rebound to the existing archived
+  voucher without restoring its clear code or creating a duplicate, while
+  conflicting code reuse fails closed before candidate creation.
+- Document and surface the retention boundary for imported legacy evidence:
+  verified generated/printed archive rows stay protected from ordinary
+  minimization, and an explicitly imported old ZIP may restore data that the
+  current database can no longer cryptographically link to a minimized row.
+- Centralize the synthetic legacy-controller API-root prefix so import and Home
+  filtering cannot drift onto different string literals.
 
 ## 5.0.0 - 2026-09-27
 

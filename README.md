@@ -46,6 +46,11 @@ The application currently provides:
   old/absent unused rows with no generated PDF are minimized without deleting
   their historical audit record; unverifiable HMAC history blocks retention
   rather than guessing whether a credential-bearing document exists;
+- explicit pre-SQLite ZIP history import whose verified generated/printed legacy
+  evidence is retained outside ordinary minimization; the confirmation warns
+  that deliberately importing an old archive can restore clear data that had
+  previously been minimized when no durable identity remains to prove it is the
+  same historical voucher;
 - persistent custom logo library;
 - installation-scoped first-run onboarding for genuinely new 5.0 deployments,
   including explicit UniFi/TLS verification and migration precedence;

@@ -61,8 +61,10 @@ def _legacy_backup(
     tmp_path: Path,
     *,
     extra_pdf_lines: tuple[str, ...] = (),
+    codes: tuple[str, ...] = ("12345-67890", "98765-43210"),
+    backup_name: str = "legacy-backup.zip",
 ) -> Path:
-    source = tmp_path / "legacy-source"
+    source = tmp_path / f"{Path(backup_name).stem}-source"
     (source / "config").mkdir(parents=True)
     (source / "data").mkdir()
     (source / "Print" / "2026" / "09").mkdir(parents=True)
@@ -79,7 +81,7 @@ def _legacy_backup(
     HistoryKeyStore(source).set(FIXTURE_KEY)
 
     rows = []
-    for index, code in enumerate(("12345-67890", "98765-43210"), start=1):
+    for index, code in enumerate(codes, start=1):
         rows.extend(
             [
                 {
@@ -109,11 +111,11 @@ def _legacy_backup(
     pdf = source / "Print" / "2026" / "09" / "Voucher_Legacy.pdf"
     _pdf(
         pdf,
-        ["1234567890", "9876543210"],
+        [code.replace("-", "") for code in codes],
         extra_lines=extra_pdf_lines,
     )
 
-    backup = tmp_path / "legacy-backup.zip"
+    backup = tmp_path / backup_name
     manifest = {
         "format": 2,
         "created_utc": "2026-09-25T10:30:00+00:00",
@@ -420,6 +422,91 @@ def test_reimport_does_not_restore_retention_minimized_legacy_voucher(tmp_path):
         assert second.minimized_vouchers_preserved >= 1
         assert second.evidence.already_applied is True
         assert first.evidence.resolved_rows == second.evidence.resolved_rows
+    finally:
+        database.close()
+
+
+def test_extended_history_reimport_preserves_minimized_legacy_identity(
+    tmp_path,
+):
+    source_a = _legacy_backup(
+        tmp_path,
+        backup_name="legacy-a.zip",
+    )
+    paths, database = _live(tmp_path)
+    try:
+        first = execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=source_a,
+            safety_backup_destination=tmp_path / "pre-import-a.vmbk",
+            safety_backup_password="a" * 24,
+            imported_at="2026-09-28T08:00:00+00:00",
+            migration_uuid="legacy-import-extended-a",
+        )
+        voucher = database.connection.execute(
+            "SELECT id FROM vouchers WHERE code='12345-67890'"
+        ).fetchone()
+        voucher_id = int(voucher["id"])
+        archived_at = "2027-06-01T08:00:00+00:00"
+        with database.transaction() as db:
+            db.execute(
+                """UPDATE vouchers
+                   SET code=?, name='', assigned_to='', notes='', archived_at=?
+                   WHERE id=?""",
+                (f"ARCHIVED-{voucher_id}", archived_at, voucher_id),
+            )
+            db.execute(
+                """INSERT INTO voucher_events
+                   (event_uuid, voucher_id, event_type, occurred_at, source,
+                    windows_user, details_json)
+                   VALUES (?, ?, 'RETENTION_ARCHIVED', ?, 'OPERATOR',
+                           'TEST\\operator', '{"credential_removed":true}')""",
+                (f"retention-extended-{voucher_id}", voucher_id, archived_at),
+            )
+
+        source_b = _legacy_backup(
+            tmp_path,
+            codes=(
+                "12345-67890",
+                "98765-43210",
+                "55555-66666",
+            ),
+            backup_name="legacy-b.zip",
+        )
+        second = execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=source_b,
+            safety_backup_destination=tmp_path / "pre-import-b.vmbk",
+            safety_backup_password="b" * 24,
+            imported_at="2027-06-02T08:00:00+00:00",
+            migration_uuid="legacy-import-extended-b",
+        )
+
+        preserved = database.connection.execute(
+            "SELECT code, name, archived_at FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert preserved["code"] == f"ARCHIVED-{voucher_id}"
+        assert preserved["name"] == ""
+        assert preserved["archived_at"] == archived_at
+
+        codes = {
+            row["code"]
+            for row in database.connection.execute(
+                "SELECT code FROM vouchers"
+            ).fetchall()
+        }
+        assert "12345-67890" not in codes
+        assert "55555-66666" in codes
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM vouchers"
+        ).fetchone()[0] == 3
+        assert second.minimized_vouchers_preserved >= 1
+        assert second.evidence.already_applied is False
+        assert second.evidence.resolved_rows == 6
+        assert first.inspection.source_sha256 != second.inspection.source_sha256
     finally:
         database.close()
 

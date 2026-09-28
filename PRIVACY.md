@@ -57,6 +57,17 @@ operator explicitly archives a candidate, the durable historical row remains
 but the reusable voucher code, recipient label, nominal assignment and free-text
 notes are removed.
 
+Pre-SQLite legacy ZIP import is an explicit historical-recovery operation.
+Voucher rows backed by verified legacy PDF-generation or print evidence are
+protected from ordinary retention so that imported audit evidence is not
+silently disconnected from its subject. Those imported rows, including any
+recipient label recovered from the legacy history, therefore remain in the
+local archive unless a future explicit archive-removal workflow is used.
+Importing an old ZIP can also deliberately restore clear voucher/recipient data
+that had already been minimized in the current database when no durable
+verifiable identity remains to prove that the ZIP record is the same minimized
+voucher. The import confirmation warns about this before any live data changes.
+
 Manual history exchange packages (`.vmhx`) are always password-protected.
 They contain local audit rows and the portable history key needed to preserve
 HMAC correlation across workstations, but do not contain generated PDFs,

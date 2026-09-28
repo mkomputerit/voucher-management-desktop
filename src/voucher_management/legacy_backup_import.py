@@ -30,6 +30,7 @@ import pypdfium2 as pdfium
 
 from .backup import BackupError, BackupService
 from .database import Database
+from .identity import LEGACY_BACKUP_API_ROOT_PREFIX
 from .legacy_migration import (
     LegacyMigrationApplyResult,
     LegacyMigrationError,
@@ -411,6 +412,53 @@ def _metadata_by_code(
     return result
 
 
+def _retention_minimized_legacy_candidate(
+    database: Database,
+    material: _LegacyBackupMaterial,
+    canonical: str,
+) -> LegacyVoucherCandidate | None:
+    """Return the durable legacy identity for a retention-minimized code.
+
+    A later legacy ZIP can contain an extended history whose whole-file SHA-256
+    differs from the first import. The HMAC voucher digest remains stable, so
+    an already RESOLVED identity can be linked back to its minimized voucher
+    without restoring the clear credential in SQLite.
+    """
+
+    digests = tuple(sorted(_digest_spellings(canonical, material.secret)))
+    placeholders = ",".join("?" for _ in digests)
+    rows = database.connection.execute(
+        f"""SELECT DISTINCT v.id, v.controller_id, v.unifi_id
+            FROM legacy_audit_events AS lae
+            JOIN vouchers AS v ON v.id=lae.voucher_id
+            WHERE lae.voucher_digest IN ({placeholders})
+              AND lae.resolution_status='RESOLVED'
+              AND v.archived_at IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM voucher_events AS ve
+                  WHERE ve.voucher_id=v.id
+                    AND ve.event_type='RETENTION_ARCHIVED'
+              )
+            ORDER BY v.id""",
+        digests,
+    ).fetchall()
+    if len(rows) > 1:
+        raise LegacyMigrationError(
+            "Identità legacy minimizzata ambigua: importazione interrotta"
+        )
+    if not rows:
+        return None
+
+    row = rows[0]
+    return LegacyVoucherCandidate(
+        controller_id=int(row["controller_id"]),
+        unifi_id=str(row["unifi_id"]),
+        # The clear code exists only transiently in memory for HMAC planning.
+        # The persisted voucher remains ARCHIVED-<id>.
+        code=canonical,
+    )
+
+
 def _ensure_import_candidates(
     database: Database,
     material: _LegacyBackupMaterial,
@@ -435,6 +483,21 @@ def _ensure_import_candidates(
                ORDER BY id""",
             (canonical,),
         ).fetchall()
+        minimized_candidate = _retention_minimized_legacy_candidate(
+            database,
+            material,
+            canonical,
+        )
+        if minimized_candidate is not None:
+            if rows:
+                raise LegacyMigrationError(
+                    "Codice legacy già minimizzato ma riutilizzato da un'altra "
+                    "identità: importazione interrotta senza creare duplicati"
+                )
+            chosen.append(minimized_candidate)
+            minimized += 1
+            continue
+
         selected = None
         if preferred_controller_id is not None:
             preferred = [
@@ -478,7 +541,7 @@ def _ensure_import_candidates(
 
     created = 0
     if missing:
-        archive_api_root = f"legacy-backup://{material.source_sha256}"
+        archive_api_root = f"{LEGACY_BACKUP_API_ROOT_PREFIX}{material.source_sha256}"
         with database.transaction() as db:
             controller = db.execute(
                 """SELECT id FROM controllers
@@ -617,25 +680,25 @@ def _fully_resolved_prior_run(
 
 def _repair_minimized_legacy_vouchers(
     database: Database,
-    material: _LegacyBackupMaterial,
 ) -> int:
-    """Keep true retention minimization irreversible across legacy reimports."""
+    """Keep true retention minimization irreversible across legacy reimports.
 
-    source_hash = _source_history_sha256(material)
+    Repair all RESOLVED legacy-linked vouchers carrying RETENTION_ARCHIVED,
+    rather than limiting recovery to one exact source-history hash. This keeps
+    field-preview states safe when a later ZIP contains an extended history.
+    """
+
     rows = database.connection.execute(
         """SELECT DISTINCT v.id
            FROM vouchers AS v
            JOIN legacy_audit_events AS lae ON lae.voucher_id=v.id
-           JOIN migration_runs AS mr
-             ON mr.migration_uuid=lae.first_migration_uuid
-           WHERE mr.source_history_sha256=?
+           WHERE lae.resolution_status='RESOLVED'
              AND v.archived_at IS NOT NULL
              AND EXISTS (
                  SELECT 1 FROM voucher_events AS ve
                  WHERE ve.voucher_id=v.id
                    AND ve.event_type='RETENTION_ARCHIVED'
-             )""",
-        (source_hash,),
+             )"""
     ).fetchall()
     if not rows:
         return 0
@@ -751,10 +814,7 @@ def execute_legacy_backup_import(
         ) from exc
 
     try:
-        minimized_preserved = _repair_minimized_legacy_vouchers(
-            database,
-            material,
-        )
+        minimized_preserved = _repair_minimized_legacy_vouchers(database)
         prior_run = _fully_resolved_prior_run(database, material)
         if prior_run is not None:
             reused = 0

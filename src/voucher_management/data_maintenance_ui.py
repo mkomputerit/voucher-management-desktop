@@ -689,6 +689,13 @@ class DataMaintenanceMixin:
                 "L'importazione non sovrascrive la configurazione corrente. "
                 "Prima di modificare il database verrà creato un backup "
                 "cifrato di sicurezza della 5.x corrente.\n\n"
+                "Privacy / retention: i voucher con evidenza legacy di "
+                "generazione o stampa vengono conservati come archivio storico "
+                "e non sono candidati alla retention ordinaria. Un import "
+                "volontario può inoltre reintrodurre codice o destinatario "
+                "presenti nello ZIP ma già minimizzati nel database corrente "
+                "quando non esiste più un legame verificabile con quel record. "
+                "Procedere solo se il recupero storico è intenzionale.\n\n"
                 "Procedere?"
             )
             if not messagebox.askyesno(

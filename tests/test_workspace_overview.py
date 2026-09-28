@@ -1,4 +1,5 @@
 from voucher_management.database import Database
+from voucher_management.identity import LEGACY_BACKUP_API_ROOT_PREFIX
 from voucher_management.workspace_overview import load_recent_workspace_activity
 
 
@@ -103,7 +104,7 @@ def test_local_activity_does_not_label_legacy_import_as_recent_discovery(tmp_pat
     try:
         archive = database.create_controller(
             name="Archivio backup precedente",
-            api_root="legacy-backup://" + ("a" * 64),
+            api_root=LEGACY_BACKUP_API_ROOT_PREFIX + ("a" * 64),
             created_at="2026-09-28T08:00:00+00:00",
         )
         database.upsert_voucher(

@@ -412,7 +412,7 @@ def apply_legacy_migration_plan(
 
         for item in plan.resolved:
             rows = db.execute(
-                """SELECT id, code FROM vouchers
+                """SELECT id, code, archived_at FROM vouchers
                    WHERE controller_id=? AND unifi_id=?""",
                 (
                     item.candidate.controller_id,
@@ -424,12 +424,29 @@ def apply_legacy_migration_plan(
                     "Voucher risolto non più presente univocamente in SQLite"
                 )
             voucher_row = rows[0]
-            if _canonical_code(voucher_row["code"]) != _canonical_code(
-                item.candidate.code
-            ):
-                raise LegacyMigrationError(
-                    "Codice voucher cambiato dopo la pianificazione"
+            code_matches = (
+                _canonical_code(voucher_row["code"])
+                == _canonical_code(item.candidate.code)
+            )
+            if not code_matches:
+                voucher_id = int(voucher_row["id"])
+                retention_minimized = (
+                    voucher_row["archived_at"] is not None
+                    and str(voucher_row["code"] or "")
+                    == f"ARCHIVED-{voucher_id}"
+                    and db.execute(
+                        """SELECT 1 FROM voucher_events
+                           WHERE voucher_id=?
+                             AND event_type='RETENTION_ARCHIVED'
+                           LIMIT 1""",
+                        (voucher_id,),
+                    ).fetchone()
+                    is not None
                 )
+                if not retention_minimized:
+                    raise LegacyMigrationError(
+                        "Codice voucher cambiato dopo la pianificazione"
+                    )
             resolutions.append(
                 (item.row, "RESOLVED", int(voucher_row["id"]))
             )
