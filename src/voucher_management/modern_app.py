@@ -52,41 +52,80 @@ def _sidebar_icon_bitmap(
     foreground: str,
     size: int = 20,
 ) -> Image.Image:
-    """Draw a crisp monochrome navigation icon without external icon files."""
+    """Draw a crisp antialiased navigation icon at the requested DPI size."""
 
-    image = Image.new("RGBA", (20, 20), (0, 0, 0, 0))
+    size = max(16, int(size))
+    supersample = 4
+    canvas = size * supersample
+    scale = canvas / 20.0
+
+    def pt(value: float) -> int:
+        return int(round(value * scale))
+
+    image = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     stroke = foreground
-    width = 2
+    width = max(1, pt(2))
+    thin = max(1, pt(1))
 
     if kind == "home":
-        draw.line((3, 9, 10, 3, 17, 9), fill=stroke, width=width)
-        draw.rounded_rectangle((5, 8, 15, 17), radius=1, outline=stroke, width=width)
-        draw.rectangle((9, 12, 11, 17), outline=stroke, width=1)
+        draw.line(
+            (pt(3), pt(9), pt(10), pt(3), pt(17), pt(9)),
+            fill=stroke,
+            width=width,
+            joint="curve",
+        )
+        draw.rounded_rectangle(
+            (pt(5), pt(8), pt(15), pt(17)),
+            radius=pt(1),
+            outline=stroke,
+            width=width,
+        )
+        draw.rectangle(
+            (pt(9), pt(12), pt(11), pt(17)),
+            outline=stroke,
+            width=thin,
+        )
     elif kind == "voucher":
-        draw.rounded_rectangle((3, 5, 17, 15), radius=2, outline=stroke, width=width)
-        draw.line((7, 6, 7, 14), fill=stroke, width=1)
-        draw.line((10, 8, 15, 8), fill=stroke, width=1)
-        draw.line((10, 11, 14, 11), fill=stroke, width=1)
+        draw.rounded_rectangle(
+            (pt(3), pt(5), pt(17), pt(15)),
+            radius=pt(2),
+            outline=stroke,
+            width=width,
+        )
+        draw.line((pt(7), pt(6), pt(7), pt(14)), fill=stroke, width=thin)
+        draw.line((pt(10), pt(8), pt(15), pt(8)), fill=stroke, width=thin)
+        draw.line((pt(10), pt(11), pt(14), pt(11)), fill=stroke, width=thin)
     elif kind == "report":
-        draw.rounded_rectangle((4, 3, 16, 17), radius=1, outline=stroke, width=width)
-        draw.line((7, 13, 7, 9), fill=stroke, width=2)
-        draw.line((10, 13, 10, 6), fill=stroke, width=2)
-        draw.line((13, 13, 13, 8), fill=stroke, width=2)
+        draw.rounded_rectangle(
+            (pt(4), pt(3), pt(16), pt(17)),
+            radius=pt(1),
+            outline=stroke,
+            width=width,
+        )
+        draw.line((pt(7), pt(13), pt(7), pt(9)), fill=stroke, width=width)
+        draw.line((pt(10), pt(13), pt(10), pt(6)), fill=stroke, width=width)
+        draw.line((pt(13), pt(13), pt(13), pt(8)), fill=stroke, width=width)
     else:
-        draw.ellipse((6, 6, 14, 14), outline=stroke, width=width)
-        draw.ellipse((9, 9, 11, 11), fill=stroke)
+        draw.ellipse(
+            (pt(6), pt(6), pt(14), pt(14)),
+            outline=stroke,
+            width=width,
+        )
+        draw.ellipse((pt(9), pt(9), pt(11), pt(11)), fill=stroke)
         for x1, y1, x2, y2 in (
             (10, 2, 10, 5), (10, 15, 10, 18),
             (2, 10, 5, 10), (15, 10, 18, 10),
             (4, 4, 6, 6), (14, 14, 16, 16),
             (14, 6, 16, 4), (4, 16, 6, 14),
         ):
-            draw.line((x1, y1, x2, y2), fill=stroke, width=width)
-    size = max(16, int(size))
-    if size != 20:
-        return image.resize((size, size), Image.Resampling.LANCZOS)
-    return image
+            draw.line(
+                (pt(x1), pt(y1), pt(x2), pt(y2)),
+                fill=stroke,
+                width=width,
+            )
+
+    return image.resize((size, size), Image.Resampling.LANCZOS)
 
 
 def _sidebar_icon_pixel_size(tk_scaling: object) -> int:

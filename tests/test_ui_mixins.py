@@ -9,6 +9,7 @@ from voucher_management.modern_app import (
     ModernVoucherApp,
     _controller_status_style_names,
     _main_window_minimum,
+    _sidebar_icon_bitmap,
     _sidebar_icon_pixel_size,
 )
 from voucher_management.retention_ui import RetentionMixin
@@ -142,3 +143,9 @@ def test_sidebar_icon_size_tracks_windows_tk_scaling():
 def test_main_window_minimum_stays_inside_short_display():
     assert _main_window_minimum(1600, 755) == (1220, 655)
     assert _main_window_minimum(1093, 614) == (1013, 514)
+
+
+def test_sidebar_icon_bitmap_is_rendered_at_requested_dpi_size():
+    assert _sidebar_icon_bitmap("home", "#ffffff", 20).size == (20, 20)
+    assert _sidebar_icon_bitmap("voucher", "#ffffff", 30).size == (30, 30)
+    assert _sidebar_icon_bitmap("report", "#ffffff", 32).size == (32, 32)

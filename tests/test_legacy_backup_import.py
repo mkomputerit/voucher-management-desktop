@@ -444,17 +444,60 @@ def test_extended_history_reimport_preserves_minimized_legacy_identity(
             imported_at="2026-09-28T08:00:00+00:00",
             migration_uuid="legacy-import-extended-a",
         )
-        voucher = database.connection.execute(
-            "SELECT id FROM vouchers WHERE code='12345-67890'"
-        ).fetchone()
-        voucher_id = int(voucher["id"])
+        vouchers = database.connection.execute(
+            """SELECT id, code FROM vouchers
+               WHERE code IN ('12345-67890', '98765-43210')
+               ORDER BY id"""
+        ).fetchall()
+        minimized_ids = {int(row["id"]) for row in vouchers}
         archived_at = "2027-06-01T08:00:00+00:00"
+        with database.transaction() as db:
+            for row in vouchers:
+                voucher_id = int(row["id"])
+                db.execute(
+                    """UPDATE vouchers
+                       SET code=?, name='', assigned_to='', notes='', archived_at=?
+                       WHERE id=?""",
+                    (f"ARCHIVED-{voucher_id}", archived_at, voucher_id),
+                )
+                db.execute(
+                    """INSERT INTO voucher_events
+                       (event_uuid, voucher_id, event_type, occurred_at, source,
+                        windows_user, details_json)
+                       VALUES (?, ?, 'RETENTION_ARCHIVED', ?, 'OPERATOR',
+                               'TEST\\operator', '{"credential_removed":true}')""",
+                    (
+                        f"retention-extended-{voucher_id}",
+                        voucher_id,
+                        archived_at,
+                    ),
+                )
+
+        unrelated = _legacy_backup(
+            tmp_path,
+            codes=("44444-33333",),
+            backup_name="legacy-unrelated.zip",
+        )
+        unrelated_result = execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=unrelated,
+            safety_backup_destination=tmp_path / "pre-import-unrelated.vmbk",
+            safety_backup_password="c" * 24,
+            imported_at="2027-06-01T12:00:00+00:00",
+            migration_uuid="legacy-import-unrelated",
+        )
+        assert unrelated_result.historical_vouchers_created == 1
+        unrelated_row = database.connection.execute(
+            "SELECT id FROM vouchers WHERE code='44444-33333'"
+        ).fetchone()
+        unrelated_id = int(unrelated_row["id"])
         with database.transaction() as db:
             db.execute(
                 """UPDATE vouchers
                    SET code=?, name='', assigned_to='', notes='', archived_at=?
                    WHERE id=?""",
-                (f"ARCHIVED-{voucher_id}", archived_at, voucher_id),
+                (f"ARCHIVED-{unrelated_id}", archived_at, unrelated_id),
             )
             db.execute(
                 """INSERT INTO voucher_events
@@ -462,7 +505,11 @@ def test_extended_history_reimport_preserves_minimized_legacy_identity(
                     windows_user, details_json)
                    VALUES (?, ?, 'RETENTION_ARCHIVED', ?, 'OPERATOR',
                            'TEST\\operator', '{"credential_removed":true}')""",
-                (f"retention-extended-{voucher_id}", voucher_id, archived_at),
+                (
+                    f"retention-unrelated-{unrelated_id}",
+                    unrelated_id,
+                    archived_at,
+                ),
             )
 
         source_b = _legacy_backup(
@@ -485,12 +532,22 @@ def test_extended_history_reimport_preserves_minimized_legacy_identity(
         )
 
         preserved = database.connection.execute(
+            """SELECT id, code, name, archived_at FROM vouchers
+               WHERE id IN (?, ?) ORDER BY id""",
+            tuple(sorted(minimized_ids)),
+        ).fetchall()
+        assert len(preserved) == 2
+        for row in preserved:
+            assert row["code"] == f"ARCHIVED-{int(row['id'])}"
+            assert row["name"] == ""
+            assert row["archived_at"] == archived_at
+
+        unrelated_preserved = database.connection.execute(
             "SELECT code, name, archived_at FROM vouchers WHERE id=?",
-            (voucher_id,),
+            (unrelated_id,),
         ).fetchone()
-        assert preserved["code"] == f"ARCHIVED-{voucher_id}"
-        assert preserved["name"] == ""
-        assert preserved["archived_at"] == archived_at
+        assert unrelated_preserved["code"] == f"ARCHIVED-{unrelated_id}"
+        assert unrelated_preserved["name"] == ""
 
         codes = {
             row["code"]
@@ -502,8 +559,8 @@ def test_extended_history_reimport_preserves_minimized_legacy_identity(
         assert "55555-66666" in codes
         assert database.connection.execute(
             "SELECT COUNT(*) FROM vouchers"
-        ).fetchone()[0] == 3
-        assert second.minimized_vouchers_preserved >= 1
+        ).fetchone()[0] == 4
+        assert second.minimized_vouchers_preserved == 2
         assert second.evidence.already_applied is False
         assert second.evidence.resolved_rows == 6
         assert first.inspection.source_sha256 != second.inspection.source_sha256

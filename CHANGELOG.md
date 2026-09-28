@@ -93,6 +93,12 @@
 - Move recovery/history tools out of the routine Backup tab into a dedicated
   Settings > Manutenzione page and explain that verified imported legacy
   generation/print evidence remains outside ordinary retention.
+- Make the legacy-import completion counter report distinct minimized vouchers
+  represented by the current ZIP only, excluding unrelated historical repairs
+  and duplicate accounting across repair/resolution phases.
+- Make fail-closed legacy identity conflicts actionable without silently
+  skipping evidence, and render sidebar icons from supersampled geometry at the
+  requested DPI size instead of enlarging a fixed 20-pixel bitmap.
 
 ## 5.0.0 - 2026-09-27
 

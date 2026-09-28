@@ -416,7 +416,7 @@ def _retention_minimized_legacy_candidate(
     database: Database,
     material: _LegacyBackupMaterial,
     canonical: str,
-) -> LegacyVoucherCandidate | None:
+) -> tuple[LegacyVoucherCandidate, int] | None:
     """Return the durable legacy identity for a retention-minimized code.
 
     A later legacy ZIP can contain an extended history whose whole-file SHA-256
@@ -444,18 +444,26 @@ def _retention_minimized_legacy_candidate(
     ).fetchall()
     if len(rows) > 1:
         raise LegacyMigrationError(
-            "Identità legacy minimizzata ambigua: importazione interrotta"
+            "Identità legacy minimizzata ambigua: più voucher locali "
+            "corrispondono allo stesso digest storico. Nessun voucher viene "
+            "saltato automaticamente per evitare associazioni errate. "
+            "Conservare lo ZIP e il backup di sicurezza .vmbk, risolvere il "
+            "conflitto nell'archivio locale e ripetere l'importazione."
         )
     if not rows:
         return None
 
     row = rows[0]
-    return LegacyVoucherCandidate(
-        controller_id=int(row["controller_id"]),
-        unifi_id=str(row["unifi_id"]),
-        # The clear code exists only transiently in memory for HMAC planning.
-        # The persisted voucher remains ARCHIVED-<id>.
-        code=canonical,
+    voucher_id = int(row["id"])
+    return (
+        LegacyVoucherCandidate(
+            controller_id=int(row["controller_id"]),
+            unifi_id=str(row["unifi_id"]),
+            # The clear code exists only transiently in memory for HMAC planning.
+            # The persisted voucher remains ARCHIVED-<id>.
+            code=canonical,
+        ),
+        voucher_id,
     )
 
 
@@ -465,7 +473,12 @@ def _ensure_import_candidates(
     *,
     imported_at: str,
     preferred_controller_id: int | None,
-) -> tuple[tuple[LegacyVoucherCandidate, ...], int, int, int]:
+) -> tuple[
+    tuple[LegacyVoucherCandidate, ...],
+    int,
+    int,
+    frozenset[int],
+]:
     """Resolve PDF codes to existing vouchers or deterministic archive rows."""
 
     metadata = _metadata_by_code(material)
@@ -473,7 +486,7 @@ def _ensure_import_candidates(
     chosen: list[LegacyVoucherCandidate] = []
     missing: list[str] = []
     reused = 0
-    minimized = 0
+    minimized_ids: set[int] = set()
 
     for canonical in resolved_pdf_codes:
         rows = database.connection.execute(
@@ -483,19 +496,23 @@ def _ensure_import_candidates(
                ORDER BY id""",
             (canonical,),
         ).fetchall()
-        minimized_candidate = _retention_minimized_legacy_candidate(
+        minimized_match = _retention_minimized_legacy_candidate(
             database,
             material,
             canonical,
         )
-        if minimized_candidate is not None:
+        if minimized_match is not None:
+            minimized_candidate, minimized_id = minimized_match
             if rows:
                 raise LegacyMigrationError(
-                    "Codice legacy già minimizzato ma riutilizzato da un'altra "
-                    "identità: importazione interrotta senza creare duplicati"
+                    "Un codice presente nello ZIP appartiene già a un voucher "
+                    "minimizzato ma compare anche su un'altra identità locale. "
+                    "L'importazione viene fermata per non associare evidenze "
+                    "alla credenziale sbagliata. Conservare ZIP e backup .vmbk, "
+                    "verificare il conflitto nell'archivio e poi riprovare."
                 )
             chosen.append(minimized_candidate)
-            minimized += 1
+            minimized_ids.add(minimized_id)
             continue
 
         selected = None
@@ -518,7 +535,7 @@ def _ensure_import_candidates(
                 (selected_id,),
             ).fetchone()
             if selected["archived_at"] is not None and retention_event is not None:
-                minimized += 1
+                minimized_ids.add(selected_id)
                 continue
             if selected["archived_at"] is not None and retention_event is None:
                 # Repair the early 5.1 import bug where archived_at was used as
@@ -616,7 +633,7 @@ def _ensure_import_candidates(
                         existing["archived_at"] is not None
                         and retention_event is not None
                     ):
-                        minimized += 1
+                        minimized_ids.add(existing_id)
                         continue
                     db.execute(
                         """UPDATE vouchers
@@ -654,7 +671,12 @@ def _ensure_import_candidates(
         # HMAC planning; the later SQLite snapshot of the same identity contains
         # ARCHIVED-<id> and must not replace that transient proof candidate.
         dedup.setdefault(item.key, item)
-    return tuple(dedup.values()), reused, created, minimized
+    return (
+        tuple(dedup.values()),
+        reused,
+        created,
+        frozenset(minimized_ids),
+    )
 
 
 def _source_history_sha256(material: _LegacyBackupMaterial) -> str:
@@ -684,7 +706,7 @@ def _fully_resolved_prior_run(
 
 def _repair_minimized_legacy_vouchers(
     database: Database,
-) -> int:
+) -> frozenset[int]:
     """Keep true retention minimization irreversible across legacy reimports.
 
     Repair all RESOLVED legacy-linked vouchers carrying RETENTION_ARCHIVED,
@@ -705,8 +727,12 @@ def _repair_minimized_legacy_vouchers(
              )"""
     ).fetchall()
     if not rows:
-        return 0
+        return frozenset()
 
+    protected_ids = frozenset(int(row["id"]) for row in rows)
+    # Deliberately global: field-preview builds could have rehydrated a legacy
+    # voucher during any earlier import. Every durable RETENTION_ARCHIVED fact
+    # is authoritative, regardless of which ZIP happens to be imported now.
     with database.transaction() as db:
         for row in rows:
             voucher_id = int(row["id"])
@@ -716,7 +742,35 @@ def _repair_minimized_legacy_vouchers(
                    WHERE id=?""",
                 (f"ARCHIVED-{voucher_id}", voucher_id),
             )
-    return len(rows)
+    return protected_ids
+
+
+def _minimized_voucher_ids_for_migration(
+    database: Database,
+    migration_uuid: str,
+) -> frozenset[int]:
+    """Return minimized voucher identities actually represented by one import."""
+
+    rows = database.connection.execute(
+        """SELECT DISTINCT lae.voucher_id
+           FROM legacy_audit_events AS lae
+           JOIN vouchers AS v ON v.id=lae.voucher_id
+           WHERE lae.resolution_status='RESOLVED'
+             AND lae.voucher_id IS NOT NULL
+             AND (
+                 lae.first_migration_uuid=?
+                 OR lae.last_migration_uuid=?
+             )
+             AND v.archived_at IS NOT NULL
+             AND v.code=('ARCHIVED-' || v.id)
+             AND EXISTS (
+                 SELECT 1 FROM voucher_events AS ve
+                 WHERE ve.voucher_id=v.id
+                   AND ve.event_type='RETENTION_ARCHIVED'
+             )""",
+        (migration_uuid, migration_uuid),
+    ).fetchall()
+    return frozenset(int(row["voucher_id"]) for row in rows)
 
 
 def _copy_pdf_archive(
@@ -818,7 +872,8 @@ def execute_legacy_backup_import(
         ) from exc
 
     try:
-        minimized_preserved = _repair_minimized_legacy_vouchers(database)
+        repaired_minimized_ids = _repair_minimized_legacy_vouchers(database)
+        resolution_minimized_ids: frozenset[int] = frozenset()
         prior_run = _fully_resolved_prior_run(database, material)
         if prior_run is not None:
             reused = 0
@@ -837,7 +892,7 @@ def execute_legacy_backup_import(
                 migration_uuid=str(prior_run["migration_uuid"]),
             )
         else:
-            candidates, reused, created, minimized_during_resolution = (
+            candidates, reused, created, resolution_minimized_ids = (
                 _ensure_import_candidates(
                     database,
                     material,
@@ -845,8 +900,6 @@ def execute_legacy_backup_import(
                     preferred_controller_id=preferred_controller_id,
                 )
             )
-            minimized_preserved += minimized_during_resolution
-
             with tempfile.TemporaryDirectory(
                 prefix="voucher-legacy-import-"
             ) as temp:
@@ -871,6 +924,18 @@ def execute_legacy_backup_import(
                     materialized_at=imported_at,
                     migration_uuid=migration_uuid,
                 )
+
+        current_minimized_ids = _minimized_voucher_ids_for_migration(
+            database,
+            evidence.migration_uuid,
+        )
+        # Count distinct minimized vouchers represented by this import only.
+        # The repair pass is intentionally global, while this operator-facing
+        # summary must not include unrelated legacy rows from other ZIPs.
+        minimized_preserved = len(
+            current_minimized_ids
+            & (repaired_minimized_ids | resolution_minimized_ids)
+        )
 
         database.integrity_check()
         copied, present = _copy_pdf_archive(
