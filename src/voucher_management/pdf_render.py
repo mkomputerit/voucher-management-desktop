@@ -58,8 +58,9 @@ PRESETS = {
 }
 
 # A4 geometry: 2 columns x 5 rows = 10 vouchers/page.
-# The coloured/rounded border belongs to the voucher itself. The separate
-# dashed guides are therefore the unambiguous physical cutting reference.
+# The coloured/rounded border belongs to the voucher itself. The recipient is
+# intentionally rendered inside that border so it remains attached after
+# cutting. The separate dashed guides remain the physical cutting reference.
 COLUMNS = 2
 ROWS = 5
 VOUCHERS_PER_PAGE = COLUMNS * ROWS
@@ -306,50 +307,35 @@ def _draw_label(
         voucher.code,
     )
 
-    c.setFillColor(preset["text"])
-    c.setFont(PDF_FONT_BOLD, 5.9)
-    c.drawCentredString(
-        x + w / 2,
-        y + 6.1 * mm,
-        "Personale - Non condividere",
+    recipient = _normalize_pdf_text(
+        f"Destinatario: {voucher.recipient_label}"
     )
-    c.setFont(PDF_FONT_ITALIC, 5.7)
-    c.drawCentredString(
-        x + w / 2,
-        y + 3.5 * mm,
-        "Personal - Do not share",
-    )
-
-
-def _draw_recipient(
-    c: canvas.Canvas,
-    voucher: VoucherRecord,
-    x: float,
-    y: float,
-    w: float,
-) -> None:
-    """Draw recipient in the sheet-only strip below the cut voucher."""
-
-    text = _normalize_pdf_text(f"Dest.: {voucher.recipient_label}")
-    font_size = _fit_font(
-        text,
+    recipient_font_size = _fit_font(
+        recipient,
         PDF_FONT_BOLD,
-        w,
-        6.0,
+        w - 10 * mm,
+        6.2,
         5.0,
     )
-    text = _truncate_to_width(
-        text,
+    recipient = _truncate_to_width(
+        recipient,
         PDF_FONT_BOLD,
-        font_size,
-        w,
+        recipient_font_size,
+        w - 10 * mm,
     )
-    c.setFillColor(black)
-    c.setFont(PDF_FONT_BOLD, font_size)
-    c.drawRightString(
-        x + w,
-        y - 2.8 * mm,
-        text,
+    c.setFillColor(preset["text"])
+    c.setFont(PDF_FONT_BOLD, recipient_font_size)
+    c.drawCentredString(
+        x + w / 2,
+        y + 7.0 * mm,
+        recipient,
+    )
+
+    c.setFont(PDF_FONT_ITALIC, 5.2)
+    c.drawCentredString(
+        x + w / 2,
+        y + 2.8 * mm,
+        "Personale - Non condividere / Personal - Do not share",
     )
 
 
@@ -470,13 +456,6 @@ def _render_pdf_file(
                 y,
                 label_w,
                 label_h,
-            )
-            _draw_recipient(
-                c,
-                voucher,
-                x,
-                y,
-                label_w,
             )
         c.showPage()
 

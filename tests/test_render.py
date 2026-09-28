@@ -240,7 +240,7 @@ def test_render_rejects_unsupported_text_before_creating_pdf(tmp_path):
 
 def test_long_recipient_is_truncated_to_column_width():
     ensure_pdf_fonts_registered()
-    text = "Dest.: " + ("Very long recipient name " * 12)
+    text = "Destinatario: " + ("Very long recipient name " * 12)
     width = 120
 
     shortened = _truncate_to_width(
@@ -309,9 +309,40 @@ def test_nfd_operator_text_is_normalized_to_nfc_before_render(tmp_path):
 
     assert "Guest José" in extracted
     assert "Zoë" in extracted
-    assert "Dest.: José Zoë" in extracted
+    assert "Destinatario: José Zoë" in extracted
     assert "\u0301" not in extracted
     assert "\u0308" not in extracted
+
+
+def test_recipient_is_rendered_inside_the_cut_voucher_content(tmp_path):
+    batch = VoucherBatch(
+        source_path=tmp_path / "CONTROLLER_API",
+        recipient="Reception",
+        vouchers=[
+            VoucherRecord(
+                code="12345-67890",
+                duration_minutes=60,
+                recipient="Reception",
+            )
+        ],
+    )
+    output = tmp_path / "recipient-inside.pdf"
+
+    render_batch_pdf(
+        batch,
+        output,
+        {
+            "preset": "Classico",
+            "wifi_title": "Guest Wi-Fi",
+            "structure_type": "Personalizzata",
+            "structure_name": "Example Venue",
+            "logo_path": "",
+        },
+    )
+
+    extracted = _extract_pdf_text(output)
+    assert "Destinatario: Reception" in extracted
+    assert "Personale - Non condividere / Personal - Do not share" in extracted
 
 
 def test_very_long_wifi_title_is_truncated_in_rendered_pdf(tmp_path):

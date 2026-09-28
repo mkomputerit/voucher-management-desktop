@@ -124,6 +124,12 @@
 - Simplify the Voucher command bar and replace the internal-sounding
   "PREPARA STAMPA" action with the explicit operator action "Stampa
   selezionati", preserving the same audited print/reprint workflow.
+- Keep the configured logo inside every physical voucher label and move the
+  recipient from the sheet-only strip into the cut area, preserving the proven
+  2-column × 5-row A4 geometry and dashed cutting guides.
+- Align package, window title and Windows executable metadata to 5.1.0 for the
+  5.1 field/release candidate instead of continuing to identify test builds as
+  5.0.0.
 
 ## 5.0.0 - 2026-09-27
 
