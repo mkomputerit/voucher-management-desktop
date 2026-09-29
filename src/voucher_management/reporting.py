@@ -240,19 +240,26 @@ def _parse_time(value: object) -> datetime | None:
         return None
 
 
+def _utc_time(value: object) -> datetime | None:
+    """Normalize persisted/report timestamps to the database's UTC contract."""
+
+    moment = _parse_time(value)
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
 def _time_bounds(values: Iterable[str]) -> tuple[str, str]:
     """Return chronological ISO bounds without relying on lexicographic offsets."""
 
     parsed: list[tuple[datetime, str]] = []
     for value in values:
         original = str(value or "").strip()
-        moment = _parse_time(original)
-        if moment is None:
+        normalized = _utc_time(original)
+        if normalized is None:
             continue
-        if moment.tzinfo is None:
-            normalized = moment.replace(tzinfo=timezone.utc)
-        else:
-            normalized = moment.astimezone(timezone.utc)
         parsed.append((normalized, original))
     if not parsed:
         return "", ""
@@ -263,18 +270,10 @@ def _time_bounds(values: Iterable[str]) -> tuple[str, str]:
 def _time_at_or_after(later: object, earlier: object) -> bool:
     """Return true only when both timestamps are parseable and ordered."""
 
-    later_time = _parse_time(later)
-    earlier_time = _parse_time(earlier)
+    later_time = _utc_time(later)
+    earlier_time = _utc_time(earlier)
     if later_time is None or earlier_time is None:
         return False
-    if later_time.tzinfo is None:
-        later_time = later_time.replace(tzinfo=timezone.utc)
-    else:
-        later_time = later_time.astimezone(timezone.utc)
-    if earlier_time.tzinfo is None:
-        earlier_time = earlier_time.replace(tzinfo=timezone.utc)
-    else:
-        earlier_time = earlier_time.astimezone(timezone.utc)
     return later_time >= earlier_time
 
 
@@ -286,18 +285,11 @@ def _expired_at_report_time(
 ) -> bool:
     if persisted_expired:
         return True
-    expiry = _parse_time(expires_at)
-    report_time = _parse_time(generated_at)
+    expiry = _utc_time(expires_at)
+    report_time = _utc_time(generated_at)
     if expiry is None or report_time is None:
         return False
-    if expiry.tzinfo is None and report_time.tzinfo is not None:
-        expiry = expiry.replace(tzinfo=report_time.tzinfo)
-    if report_time.tzinfo is None and expiry.tzinfo is not None:
-        report_time = report_time.replace(tzinfo=expiry.tzinfo)
-    try:
-        return expiry <= report_time
-    except TypeError:
-        return False
+    return expiry <= report_time
 
 
 def _status(
