@@ -97,7 +97,9 @@ CREATE TABLE IF NOT EXISTS vouchers (
     last_synced_at TEXT NOT NULL,
     assigned_to TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
-    created_by_app INTEGER CHECK (created_by_app IS NULL OR created_by_app IN (0, 1)),
+    origin TEXT CHECK (
+        origin IS NULL OR origin IN ('APPLICATION', 'CONTROLLER', 'LEGACY')
+    ),
     is_nominal INTEGER CHECK (is_nominal IS NULL OR is_nominal IN (0, 1)),
     classification_updated_at TEXT,
     ever_used INTEGER NOT NULL DEFAULT 0 CHECK (ever_used IN (0, 1)),
@@ -110,7 +112,7 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_code ON vouchers(controller_id, code);
 CREATE INDEX IF NOT EXISTS idx_vouchers_expired ON vouchers(controller_id, expired);
 CREATE INDEX IF NOT EXISTS idx_vouchers_usage ON vouchers(controller_id, authorized_guest_count);
 CREATE INDEX IF NOT EXISTS idx_vouchers_expires ON vouchers(expires_at);
-CREATE INDEX IF NOT EXISTS idx_vouchers_created_by_app ON vouchers(created_by_app);
+CREATE INDEX IF NOT EXISTS idx_vouchers_origin ON vouchers(origin);
 CREATE INDEX IF NOT EXISTS idx_vouchers_is_nominal ON vouchers(is_nominal);
 CREATE INDEX IF NOT EXISTS idx_vouchers_ever_used ON vouchers(ever_used);
 
@@ -300,8 +302,8 @@ ON legacy_audit_events(resolution_status, occurred_at);
 
 
 MIGRATION_2_TO_3_SQL = """
-ALTER TABLE vouchers ADD COLUMN created_by_app INTEGER
-    CHECK (created_by_app IS NULL OR created_by_app IN (0, 1));
+ALTER TABLE vouchers ADD COLUMN origin TEXT
+    CHECK (origin IS NULL OR origin IN ('APPLICATION', 'CONTROLLER', 'LEGACY'));
 ALTER TABLE vouchers ADD COLUMN is_nominal INTEGER
     CHECK (is_nominal IS NULL OR is_nominal IN (0, 1));
 ALTER TABLE vouchers ADD COLUMN classification_updated_at TEXT;
@@ -319,8 +321,8 @@ WHERE authorized_guest_count > 0
          AND CAST(COALESCE(observation.new_value, '0') AS INTEGER) > 0
    );
 
-CREATE INDEX IF NOT EXISTS idx_vouchers_created_by_app
-ON vouchers(created_by_app);
+CREATE INDEX IF NOT EXISTS idx_vouchers_origin
+ON vouchers(origin);
 CREATE INDEX IF NOT EXISTS idx_vouchers_is_nominal
 ON vouchers(is_nominal);
 CREATE INDEX IF NOT EXISTS idx_vouchers_ever_used
@@ -810,6 +812,7 @@ COMMIT;
         expires_at: str | None = None, expired: bool = False,
         data_limit_mb: int | None = None, download_limit_kbps: int | None = None,
         upload_limit_kbps: int | None = None,
+        origin: str | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> int:
         """Insert/update latest UniFi state without destroying local history.
@@ -818,12 +821,18 @@ COMMIT;
         its own transaction; otherwise this method owns a short transaction.
         """
 
+        normalized_origin = (
+            None if origin is None else str(origin).strip().upper()
+        )
+        if normalized_origin not in {None, "APPLICATION", "CONTROLLER", "LEGACY"}:
+            raise ValueError("invalid voucher origin")
+
         values = (
             controller_id, unifi_id, code, name, created_at, imported_at,
             duration_minutes, authorized_guest_limit, authorized_guest_count,
             activated_at, expires_at, int(expired), data_limit_mb,
             download_limit_kbps, upload_limit_kbps, last_synced_at, last_synced_at,
-            int(authorized_guest_count > 0),
+            normalized_origin, int(authorized_guest_count > 0),
         )
         def write(db: sqlite3.Connection) -> int:
             db.execute(
@@ -832,8 +841,8 @@ COMMIT;
                        duration_minutes, authorized_guest_limit, authorized_guest_count,
                        activated_at, expires_at, expired, data_limit_mb,
                        download_limit_kbps, upload_limit_kbps, last_seen_at, last_synced_at,
-                       ever_used
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       origin, ever_used
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(controller_id, unifi_id) DO UPDATE SET
                        code=excluded.code, name=excluded.name, created_at=excluded.created_at,
                        duration_minutes=excluded.duration_minutes,
@@ -906,7 +915,7 @@ COMMIT;
 
             db.execute(
                 f"""UPDATE vouchers
-                    SET created_by_app=1, is_nominal=?,
+                    SET origin='APPLICATION', is_nominal=?,
                         classification_updated_at=?
                     WHERE controller_id=? AND unifi_id IN ({placeholders})""",
                 (
@@ -1156,7 +1165,7 @@ COMMIT;
                     v.code,
                     v.name,
                     v.assigned_to,
-                    v.created_by_app,
+                    v.origin,
                     v.is_nominal,
                     v.classification_updated_at,
                     v.ever_used,
