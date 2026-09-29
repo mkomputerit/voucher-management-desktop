@@ -512,6 +512,57 @@ def test_schema_two_upgrade_preserves_unknown_classification_for_existing_rows(t
         migrated.close()
 
 
+def test_failed_schema_two_upgrade_rolls_back_partial_ddl(tmp_path, monkeypatch):
+    path = tmp_path / "schema-two-failure.db"
+    db = Database(path)
+    db.initialize()
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_usage_observed")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN usage_observed")
+    raw.execute("PRAGMA user_version = 2")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '2')"
+    )
+    raw.commit()
+    raw.close()
+
+    monkeypatch.setattr(
+        database_module,
+        "MIGRATION_2_TO_3_SQL",
+        """
+ALTER TABLE vouchers ADD COLUMN reporting_partial_probe INTEGER;
+THIS IS NOT VALID SQL;
+""",
+    )
+
+    migrated = Database(path)
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            migrated.initialize()
+        assert migrated.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        columns = {
+            row["name"]
+            for row in migrated.connection.execute("PRAGMA table_info(vouchers)")
+        }
+        assert "reporting_partial_probe" not in columns
+        assert (
+            migrated.connection.execute(
+                "SELECT value FROM app_metadata WHERE key='schema_version'"
+            ).fetchone()[0]
+            == "2"
+        )
+    finally:
+        migrated.close()
+
+
 def test_failed_schema_one_upgrade_rolls_back_partial_ddl(tmp_path, monkeypatch):
     path = tmp_path / "schema-one-failure.db"
     raw = sqlite3.connect(path)
