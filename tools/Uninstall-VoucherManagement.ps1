@@ -4,7 +4,8 @@ param(
     [string]$DataRoot = (Join-Path $env:ProgramData "VoucherManagement"),
     [string]$OperatorGroup = "Voucher Management Operators",
     [switch]$RemoveData,
-    [switch]$SkipShortcut
+    [switch]$SkipShortcut,
+    [switch]$KeepProgramFiles
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,7 +34,11 @@ $selfInsideInstall = $scriptFull.StartsWith(
     [StringComparison]::OrdinalIgnoreCase
 )
 
-if (-not $selfInsideInstall -and (Test-Path -LiteralPath $InstallRoot)) {
+if (
+    -not $KeepProgramFiles -and
+    -not $selfInsideInstall -and
+    (Test-Path -LiteralPath $InstallRoot)
+) {
     Remove-Item -LiteralPath $InstallRoot -Recurse -Force
 }
 
@@ -65,7 +70,11 @@ if ($RemoveData) {
     Write-Host "Dati condivisi conservati in: $DataRoot"
 }
 
-if ($selfInsideInstall -and (Test-Path -LiteralPath $InstallRoot)) {
+if (
+    -not $KeepProgramFiles -and
+    $selfInsideInstall -and
+    (Test-Path -LiteralPath $InstallRoot)
+) {
     $escaped = $InstallRoot.Replace('"', '""')
     $command = "timeout /t 2 /nobreak >nul & rmdir /s /q ""$escaped"""
     Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/c", $command -WindowStyle Hidden
