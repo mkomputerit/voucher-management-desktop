@@ -610,8 +610,8 @@ def _ensure_import_candidates(
                             imported_at, duration_minutes,
                             authorized_guest_count, expired,
                             present_on_controller, last_seen_at,
-                            last_synced_at, archived_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, NULL, ?, NULL)""",
+                            last_synced_at, origin, archived_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, NULL, ?, 'LEGACY', NULL)""",
                         (
                             archive_controller_id,
                             unifi_id,
@@ -645,6 +645,7 @@ def _ensure_import_candidates(
                                    WHEN TRIM(name)='' THEN ? ELSE name END,
                                duration_minutes=COALESCE(duration_minutes, ?),
                                expired=1, present_on_controller=0,
+                               origin=COALESCE(origin, 'LEGACY'),
                                archived_at=NULL
                            WHERE id=?""",
                         (
