@@ -327,6 +327,7 @@ WHERE authorized_guest_count > 0
 CREATE INDEX IF NOT EXISTS idx_vouchers_origin ON vouchers(origin);
 CREATE INDEX IF NOT EXISTS idx_vouchers_nominal ON vouchers(is_nominal);
 CREATE INDEX IF NOT EXISTS idx_vouchers_ever_used ON vouchers(ever_used);
+CREATE INDEX IF NOT EXISTS idx_vouchers_usage_observed ON vouchers(usage_observed);
 """
 
 
