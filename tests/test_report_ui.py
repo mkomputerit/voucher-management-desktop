@@ -25,7 +25,9 @@ def _empty_dataset() -> ReportDataset:
         rows=(),
         totals=ReportTotals(
             vouchers=0,
+            generated_vouchers=0,
             used_vouchers=0,
+            never_used_vouchers=0,
             total_controller_uses=0,
             expired_vouchers=0,
             printed_vouchers=0,
@@ -36,6 +38,8 @@ def _empty_dataset() -> ReportDataset:
             printed_never_used=0,
             never_printed=0,
             nominal_vouchers=0,
+            non_nominal_vouchers=0,
+            unclassified_vouchers=0,
         ),
         code_exposed=False,
     )
@@ -81,7 +85,7 @@ def test_report_query_runs_before_background_renderer(monkeypatch, tmp_path: Pat
     )
     dialog = SimpleNamespace(
         app=app,
-        kind_var=_variable("Riepilogo"),
+        kind_var=_variable("Riepilogo storico"),
         scope_var=_variable("Controller attivo"),
         format_var=_variable("PDF"),
         destroy=lambda: events.append(("destroy",)),
@@ -126,7 +130,7 @@ def test_active_controller_scope_without_controller_blocks_cleanly(monkeypatch):
     )
     dialog = SimpleNamespace(
         app=app,
-        kind_var=_variable("Riepilogo"),
+        kind_var=_variable("Riepilogo storico"),
         scope_var=_variable("Controller attivo"),
         format_var=_variable("PDF"),
     )
@@ -144,3 +148,12 @@ def test_active_controller_scope_without_controller_blocks_cleanly(monkeypatch):
     assert len(messages) == 1
     assert messages[0][0] == "Report"
     assert "Nessun controller attivo" in messages[0][1]
+
+
+def test_report_choices_cover_historical_core_views():
+    labels = [label for label, _kind in report_ui.REPORT_CHOICES]
+    assert "Generati da Voucher Management" in labels
+    assert "Generati e mai utilizzati" in labels
+    assert "Stampati" in labels
+    assert "Nominali" in labels
+    assert "Non classificati" in labels
