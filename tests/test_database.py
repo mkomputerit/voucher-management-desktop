@@ -10,6 +10,23 @@ from voucher_management import database as database_module
 from voucher_management.database import Database, SCHEMA_SQL, SCHEMA_VERSION
 
 
+def _schema_v2_sql() -> str:
+    """Reconstruct the immediately previous schema for migration tests."""
+
+    schema = SCHEMA_SQL
+    for fragment in (
+        "    created_by_app INTEGER CHECK (created_by_app IS NULL OR created_by_app IN (0, 1)),\n",
+        "    is_nominal INTEGER CHECK (is_nominal IS NULL OR is_nominal IN (0, 1)),\n",
+        "    classification_updated_at TEXT,\n",
+        "    ever_used INTEGER NOT NULL DEFAULT 0 CHECK (ever_used IN (0, 1)),\n",
+        "CREATE INDEX IF NOT EXISTS idx_vouchers_created_by_app ON vouchers(created_by_app);\n",
+        "CREATE INDEX IF NOT EXISTS idx_vouchers_is_nominal ON vouchers(is_nominal);\n",
+        "CREATE INDEX IF NOT EXISTS idx_vouchers_ever_used ON vouchers(ever_used);\n",
+    ):
+        schema = schema.replace(fragment, "")
+    return schema
+
+
 def _db(tmp_path):
     database = Database(tmp_path / "voucher-management.db")
     database.initialize()
@@ -84,6 +101,12 @@ def test_voucher_upsert_preserves_local_fields(tmp_path):
             ("Mario Rossi", "Consegna reception", voucher_id),
         )
         db.connection.commit()
+        db.mark_vouchers_created_by_app(
+            controller_id=controller,
+            unifi_ids=["remote-1"],
+            is_nominal=True,
+            classified_at="2026-09-25T12:02:00+00:00",
+        )
 
         same_id = db.upsert_voucher(
             controller_id=controller,
@@ -103,6 +126,10 @@ def test_voucher_upsert_preserves_local_fields(tmp_path):
         assert row["expired"] == 1
         assert row["assigned_to"] == "Mario Rossi"
         assert row["notes"] == "Consegna reception"
+        assert row["created_by_app"] == 1
+        assert row["is_nominal"] == 1
+        assert row["classification_updated_at"] == "2026-09-25T12:02:00+00:00"
+        assert row["ever_used"] == 1
     finally:
         db.close()
 
@@ -379,7 +406,7 @@ def test_print_summaries_for_codes_normalizes_display_format(tmp_path):
 def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
     path = tmp_path / "schema-one.db"
     raw = sqlite3.connect(path)
-    raw.executescript(SCHEMA_SQL)
+    raw.executescript(_schema_v2_sql())
     raw.execute("DROP TABLE legacy_audit_events")
     raw.execute("DROP TABLE migration_runs")
     raw.execute("PRAGMA user_version = 1")
@@ -392,7 +419,7 @@ def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
     db = Database(path)
     try:
         db.initialize()
-        assert db.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.connection.execute("PRAGMA user_version").fetchone()[0] == 3
         tables = {
             row[0]
             for row in db.connection.execute(
@@ -404,9 +431,70 @@ def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
             db.connection.execute(
                 "SELECT value FROM app_metadata WHERE key='schema_version'"
             ).fetchone()[0]
-            == "2"
+            == "3"
         )
+        voucher_columns = {
+            row["name"]
+            for row in db.connection.execute("PRAGMA table_info(vouchers)")
+        }
+        assert {
+            "created_by_app",
+            "is_nominal",
+            "classification_updated_at",
+            "ever_used",
+        } <= voucher_columns
         db.integrity_check()
+    finally:
+        db.close()
+
+
+def test_schema_two_migration_recovers_ever_used_without_guessing_classification(tmp_path):
+    path = tmp_path / "schema-two.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(_schema_v2_sql())
+    raw.execute("PRAGMA user_version = 2")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '2')"
+    )
+    controller = raw.execute(
+        """INSERT INTO controllers(name, api_root, created_at)
+           VALUES ('A', 'https://a.example', 't')"""
+    ).lastrowid
+    voucher = raw.execute(
+        """INSERT INTO vouchers(
+               controller_id, unifi_id, code, imported_at,
+               authorized_guest_count, last_synced_at
+           ) VALUES (?, 'v1', 'CODE', 't', 0, 't')""",
+        (controller,),
+    ).lastrowid
+    raw.execute(
+        """INSERT INTO sync_runs(
+               sync_uuid, controller_id, started_at, completed_at, status,
+               vouchers_received, changes_detected
+           ) VALUES ('sync-used', ?, 't', 't', 'SUCCESS', 1, 1)""",
+        (controller,),
+    )
+    raw.execute(
+        """INSERT INTO voucher_sync_observations(
+               voucher_id, observed_at, field_name, previous_value,
+               new_value, sync_uuid
+           ) VALUES (?, 't', 'authorized_guest_count', '0', '2', 'sync-used')""",
+        (voucher,),
+    )
+    raw.commit()
+    raw.close()
+
+    db = Database(path)
+    try:
+        db.initialize()
+        row = db.connection.execute(
+            "SELECT created_by_app, is_nominal, ever_used FROM vouchers WHERE id=?",
+            (voucher,),
+        ).fetchone()
+        assert db.connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert row["created_by_app"] is None
+        assert row["is_nominal"] is None
+        assert row["ever_used"] == 1
     finally:
         db.close()
 
