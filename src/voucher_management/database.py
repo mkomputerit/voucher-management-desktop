@@ -1368,14 +1368,13 @@ COMMIT;
         *,
         controller_id: int | None = None,
         include_voucher_code: bool = False,
-        include_personal_details: bool = True,
     ) -> list[sqlite3.Row]:
         """Return only the durable facts required by the requested report layer.
 
-        Clear voucher credentials are excluded by default. Aggregate-only
-        callers can also omit controller descriptions, local recipients and
-        operator identities so unnecessary personal/credential data never
-        crosses the SQLite boundary.
+        Clear voucher credentials are excluded by default. Controller
+        descriptions, local recipients and operator identities are deliberately
+        excluded from this first-pass facts query and can be fetched separately
+        only for rows that actually survive report filtering.
         """
 
         where = ""
@@ -1385,14 +1384,6 @@ COMMIT;
             params = (int(controller_id),)
 
         code_expr = "v.code" if include_voucher_code else "''"
-        name_expr = "v.name" if include_personal_details else "''"
-        assigned_expr = "v.assigned_to" if include_personal_details else "''"
-        operators_expr = (
-            "COALESCE(GROUP_CONCAT(DISTINCT vp.windows_user), '')"
-            if include_personal_details
-            else "''"
-        )
-
         return self.connection.execute(
             f"""SELECT
                     v.id AS voucher_id,
@@ -1400,8 +1391,8 @@ COMMIT;
                     CASE WHEN c.api_root LIKE 'legacy-backup://%' THEN 1 ELSE 0 END
                         AS legacy_source,
                     {code_expr} AS code,
-                    {name_expr} AS name,
-                    {assigned_expr} AS assigned_to,
+                    '' AS name,
+                    '' AS assigned_to,
                     v.origin,
                     v.is_nominal,
                     v.nominality_redacted,
@@ -1428,7 +1419,7 @@ COMMIT;
                     ) AS reprint_copies,
                     COALESCE(MIN(vp.printed_at), '') AS first_printed_at,
                     COALESCE(MAX(vp.printed_at), '') AS last_printed_at,
-                    {operators_expr} AS print_operators
+                    '' AS print_operators
                FROM vouchers AS v
                -- INNER JOIN is intentional. vouchers.controller_id is a
                -- foreign key with enforcement enabled, so a referenced
@@ -1442,6 +1433,32 @@ COMMIT;
                    v.id DESC""",
             params,
         ).fetchall()
+
+    def report_voucher_personal_details(
+        self,
+        *,
+        voucher_ids: list[int] | tuple[int, ...],
+    ) -> dict[int, sqlite3.Row]:
+        """Load personal/operator detail only for vouchers selected for output."""
+
+        ids = tuple(dict.fromkeys(int(value) for value in voucher_ids))
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.connection.execute(
+            f"""SELECT
+                    v.id AS voucher_id,
+                    v.name,
+                    v.assigned_to,
+                    COALESCE(GROUP_CONCAT(DISTINCT vp.windows_user), '')
+                        AS print_operators
+                FROM vouchers AS v
+                LEFT JOIN voucher_prints AS vp ON vp.voucher_id=v.id
+                WHERE v.id IN ({placeholders})
+                GROUP BY v.id""",
+            ids,
+        ).fetchall()
+        return {int(row["voucher_id"]): row for row in rows}
 
     @staticmethod
     def encode_event_details(details: dict | None) -> str | None:
