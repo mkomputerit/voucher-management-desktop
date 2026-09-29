@@ -158,6 +158,7 @@ def test_report_choices_cover_historical_core_and_data_quality_views():
     assert "Creati con questo software - nessun utilizzo rilevato" in labels
     assert "Stampati" in labels
     assert "Nominali" in labels
+    assert "Non nominali" in labels
     assert "Non classificati" in labels
     assert "Uso non determinabile" in labels
     assert "Origine creazione non determinabile" in labels
