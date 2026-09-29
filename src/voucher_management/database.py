@@ -1182,6 +1182,7 @@ COMMIT;
                     v.assigned_to,
                     v.origin,
                     v.is_nominal,
+                    v.nominality_redacted,
                     v.ever_used,
                     v.usage_observed,
                     v.created_at,
