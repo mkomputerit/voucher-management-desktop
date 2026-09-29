@@ -132,13 +132,24 @@ def _purpose_for_kind(kind: ReportKind) -> ReportPurpose:
     return ReportPurpose.AUDIT if kind is ReportKind.FULL_HISTORY else ReportPurpose.SUMMARY
 
 
+def _operator_label(value: str) -> str:
+    """Translate internal audit sentinels without inventing an operator."""
+
+    normalized = str(value or "").strip()
+    if normalized.upper() == "MIGRATION":
+        return "Importazione storica"
+    if normalized.casefold() == "unknown":
+        return "Operatore non determinato"
+    return normalized
+
+
 def _operators(value: object) -> tuple[str, ...]:
     values = {
-        item.strip()
+        _operator_label(item)
         for item in str(value or "").split(",")
         if item.strip()
     }
-    return tuple(sorted(values, key=str.casefold))
+    return tuple(sorted((item for item in values if item), key=str.casefold))
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -466,8 +477,10 @@ def _build_report_dataset_snapshot(
         f"Registrazioni da backup precedente: {legacy_count}; la loro importazione non prova "
         "scadenza né utilizzo e non è una sincronizzazione controller. "
         "Senza stampe registrate significa senza evidenze associate a questa identità locale, "
-        "non necessariamente mai stampato. Descrizione UniFi e destinatario locale sono "
-        "mantenuti separati: uno non prova il significato dell'altro."
+        "non necessariamente mai stampato. I job di stampa sono invii documento unici; "
+        "le copie fisiche contano invece le copie dei singoli voucher associate ai job. "
+        "Descrizione UniFi e destinatario locale sono mantenuti separati: uno non prova "
+        "il significato dell'altro."
     )
     if not all_rows:
         coverage_note = (
