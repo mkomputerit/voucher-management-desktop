@@ -130,7 +130,7 @@ def test_active_controller_scope_without_controller_blocks_cleanly(monkeypatch):
     )
     dialog = SimpleNamespace(
         app=app,
-        kind_var=_variable("Riepilogo"),
+        kind_var=_variable("Riepilogo storico"),
         scope_var=_variable("Controller attivo"),
         format_var=_variable("PDF"),
     )
