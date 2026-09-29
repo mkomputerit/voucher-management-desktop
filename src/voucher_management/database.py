@@ -362,7 +362,6 @@ class VoucherLocalMetadata:
     voucher_id: int
     controller_id: int
     unifi_id: str
-    code: str
     controller_description: str
     assigned_to: str
     notes: str
@@ -1024,7 +1023,6 @@ COMMIT;
             voucher_id=int(row["id"]),
             controller_id=int(row["controller_id"]),
             unifi_id=str(row["unifi_id"]),
-            code=str(row["code"] or ""),
             controller_description=str(row["name"] or ""),
             assigned_to=str(row["assigned_to"] or ""),
             notes=str(row["notes"] or ""),
@@ -1044,7 +1042,7 @@ COMMIT;
         """Return local-only metadata plus immutable controller correlation fields."""
 
         row = self.connection.execute(
-            """SELECT id, controller_id, unifi_id, code, name, assigned_to, notes,
+            """SELECT id, controller_id, unifi_id, name, assigned_to, notes,
                       origin, is_nominal, nominality_redacted,
                       present_on_controller, archived_at
                FROM vouchers
@@ -1061,7 +1059,7 @@ COMMIT;
         """Return local metadata keyed by stable UniFi voucher id."""
 
         rows = self.connection.execute(
-            """SELECT id, controller_id, unifi_id, code, name, assigned_to, notes,
+            """SELECT id, controller_id, unifi_id, name, assigned_to, notes,
                       origin, is_nominal, nominality_redacted,
                       present_on_controller, archived_at
                FROM vouchers
