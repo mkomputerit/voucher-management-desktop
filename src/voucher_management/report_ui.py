@@ -253,20 +253,41 @@ class ReportDialog(tk.Toplevel):
                 )
             else:
                 render_report_csv(dataset, output)
-            return output
+            return output, dataset
 
-        def completed(path: Path) -> None:
+        def completed(result) -> None:
+            path, dataset = result
             self._busy = False
             if temporary is not None:
                 try:
                     from .report_preview import ReportPreview
-                    ReportPreview(self.app, path, temporary)
+                    ReportPreview(
+                        self.app,
+                        path,
+                        temporary,
+                        result_count=dataset.totals.vouchers,
+                    )
                 except Exception:
                     temporary.cleanup()
-                    messagebox.showerror("Report", "Impossibile aprire l'anteprima. Riprova la generazione.", parent=self)
+                    messagebox.showerror(
+                        "Report",
+                        "Impossibile aprire l'anteprima. Riprova la generazione.",
+                        parent=self,
+                    )
                     return
             else:
-                messagebox.showinfo("Report", f"CSV salvato:\n{path}", parent=self)
+                count = dataset.totals.vouchers
+                detail = (
+                    "Nessun voucher soddisfa i criteri; il CSV contiene comunque "
+                    "ambito, copertura dati e riepilogo."
+                    if count == 0
+                    else f"{count} voucher nel report."
+                )
+                messagebox.showinfo(
+                    "Report",
+                    f"CSV salvato:\n{path}\n\n{detail}",
+                    parent=self,
+                )
             self.destroy()
 
         def failed(exc: Exception) -> None:
