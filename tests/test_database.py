@@ -490,7 +490,7 @@ def test_schema_two_migration_recovers_ever_used_without_guessing_classification
     try:
         db.initialize()
         row = db.connection.execute(
-            "SELECT created_by_app, is_nominal, ever_used FROM vouchers WHERE id=?",
+            "SELECT origin, is_nominal, ever_used FROM vouchers WHERE id=?",
             (voucher,),
         ).fetchone()
         assert db.connection.execute("PRAGMA user_version").fetchone()[0] == 3
