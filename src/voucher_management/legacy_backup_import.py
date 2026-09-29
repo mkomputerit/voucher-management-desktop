@@ -936,7 +936,10 @@ def execute_legacy_backup_import(
                 with database.transaction() as db:
                     db.execute(
                         """UPDATE vouchers
-                           SET origin='LEGACY_APPLICATION'
+                           SET origin=CASE
+                               WHEN origin='APPLICATION' THEN origin
+                               ELSE 'LEGACY_APPLICATION'
+                           END
                            WHERE id IN (
                                SELECT DISTINCT voucher_id
                                FROM legacy_audit_events
