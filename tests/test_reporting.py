@@ -736,7 +736,7 @@ def test_personal_detail_lookup_chunks_large_id_sets(tmp_path):
         db.close()
 
 
-def test_positive_use_evidence_cannot_also_be_usage_unknown(tmp_path):
+def test_uncertain_usage_provenance_dominates_conflicting_sticky_flag(tmp_path):
     db, controller = _db(tmp_path)
     try:
         voucher_id = _voucher(
@@ -746,8 +746,9 @@ def test_positive_use_evidence_cannot_also_be_usage_unknown(tmp_path):
             "1212121212",
             used=0,
         )
-        # Simulate conservative migrated coverage metadata. ever_used is a
-        # stronger positive fact and must dominate the stale coverage flag.
+        # Simulate contradictory migrated metadata. The coverage/provenance
+        # flag is the reporting gate: without trusted usage coverage we must
+        # not promote the sticky flag to a confirmed "used" statement.
         with db.transaction() as tx:
             tx.execute(
                 """UPDATE vouchers
@@ -762,8 +763,9 @@ def test_positive_use_evidence_cannot_also_be_usage_unknown(tmp_path):
             generated_at=NOW,
         )
         assert summary.totals.vouchers == 1
-        assert summary.totals.used_vouchers == 1
-        assert summary.totals.usage_unknown_vouchers == 0
+        assert summary.totals.used_vouchers == 0
+        assert summary.totals.never_used_vouchers == 0
+        assert summary.totals.usage_unknown_vouchers == 1
         assert (
             summary.totals.used_vouchers
             + summary.totals.never_used_vouchers
@@ -776,15 +778,15 @@ def test_positive_use_evidence_cannot_also_be_usage_unknown(tmp_path):
             kind=ReportKind.USAGE_UNKNOWN,
             generated_at=NOW,
         )
-        assert unknown.rows == ()
+        assert [row.voucher_id for row in unknown.rows] == [voucher_id]
+        assert unknown.rows[0].status == "Utilizzo non determinabile"
 
         used = build_report_dataset(
             db,
             kind=ReportKind.USED,
             generated_at=NOW,
         )
-        assert [row.voucher_id for row in used.rows] == [voucher_id]
-        assert used.rows[0].usage_observed is True
+        assert used.rows == ()
     finally:
         db.close()
 
