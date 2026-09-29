@@ -896,10 +896,14 @@ def test_printed_unused_requires_controller_observation_after_first_print(tmp_pa
         with db.transaction() as tx:
             tx.execute(
                 """UPDATE vouchers
-                   SET last_synced_at=?, usage_observed=1,
+                   SET last_synced_at=?, last_seen_at=?, usage_observed=1,
                        authorized_guest_count=0, ever_used=0
                    WHERE id=?""",
-                ("2026-09-03T10:00:00+00:00", voucher_id),
+                (
+                    "2026-09-03T10:00:00+00:00",
+                    "2026-09-03T10:00:00+00:00",
+                    voucher_id,
+                ),
             )
 
         observed_after_print = build_report_dataset(
@@ -972,5 +976,53 @@ def test_privacy_redaction_dominates_stale_nominal_bit(tmp_path):
             generated_at=NOW,
         )
         assert [row.voucher_id for row in redacted.rows] == [voucher_id]
+    finally:
+        db.close()
+
+
+def test_absence_sync_does_not_make_usage_evidence_look_fresher(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "disappeared",
+            "6767676767",
+            synced_at="2026-09-01T09:00:00+00:00",
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="disappeared-print",
+            codes=["67676-76767"],
+            output_file="voucher.pdf",
+            document_copies=1,
+            printed_at="2026-09-02T10:00:00+00:00",
+            windows_user="PC\\alice",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET present_on_controller=0,
+                       last_synced_at=?
+                   WHERE id=?""",
+                ("2026-09-05T10:00:00+00:00", voucher_id),
+            )
+
+        printed_unused = build_report_dataset(
+            db,
+            kind=ReportKind.PRINTED_UNUSED,
+            generated_at=NOW,
+        )
+        assert printed_unused.rows == ()
+
+        history = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+        row = next(row for row in history.rows if row.voucher_id == voucher_id)
+        assert row.last_synced_at == "2026-09-05T10:00:00+00:00"
+        assert row.last_seen_at == "2026-09-01T09:00:00+00:00"
+        assert history.data_as_of == "2026-09-01T09:00:00+00:00"
     finally:
         db.close()
