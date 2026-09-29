@@ -33,6 +33,7 @@ class CreateOutcome:
     vouchers: tuple[ApiVoucher, ...]
     refresh_error: UniFiApiError | None = None
     uncertain_error: UniFiMutationUncertain | None = None
+    local_persistence_error: Exception | None = None
 
 
 @dataclass(frozen=True)
