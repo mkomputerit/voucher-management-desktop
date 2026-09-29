@@ -146,7 +146,7 @@ def test_nominal_report_uses_explicit_local_flag_not_recipient_text(tmp_path):
         assert [row.recipient for row in dataset.rows] == ["Pinco Pallino"]
         row = dataset.rows[0]
         assert row.is_nominal is True
-        assert row.created_by_app is True
+        assert row.origin == "APPLICATION"
 
         summary = build_report_dataset(
             database,
