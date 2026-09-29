@@ -1446,21 +1446,31 @@ COMMIT;
         ids = tuple(dict.fromkeys(int(value) for value in voucher_ids))
         if not ids:
             return {}
-        placeholders = ",".join("?" for _ in ids)
-        rows = self.connection.execute(
-            f"""SELECT
-                    v.id AS voucher_id,
-                    v.name,
-                    v.assigned_to,
-                    COALESCE(GROUP_CONCAT(DISTINCT vp.windows_user), '')
-                        AS print_operators
-                FROM vouchers AS v
-                LEFT JOIN voucher_prints AS vp ON vp.voucher_id=v.id
-                WHERE v.id IN ({placeholders})
-                GROUP BY v.id""",
-            ids,
-        ).fetchall()
-        return {int(row["voucher_id"]): row for row in rows}
+        result: dict[int, sqlite3.Row] = {}
+        # Stay below conservative SQLite host-parameter limits used by some
+        # Windows builds while still keeping each query reasonably sized.
+        chunk_size = 500
+        for offset in range(0, len(ids), chunk_size):
+            chunk = ids[offset : offset + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.connection.execute(
+                f"""SELECT
+                        v.id AS voucher_id,
+                        v.name,
+                        v.assigned_to,
+                        COALESCE(GROUP_CONCAT(DISTINCT vp.windows_user), '')
+                            AS print_operators
+                    FROM vouchers AS v
+                    LEFT JOIN voucher_prints AS vp ON vp.voucher_id=v.id
+                    WHERE v.id IN ({placeholders})
+                    GROUP BY v.id""",
+                chunk,
+            ).fetchall()
+            result.update(
+                (int(row["voucher_id"]), row)
+                for row in rows
+            )
+        return result
 
     @staticmethod
     def encode_event_details(details: dict | None) -> str | None:
