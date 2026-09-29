@@ -153,6 +153,7 @@ def test_home_hides_local_snapshot_metrics_until_controller_snapshot_is_fresh(ro
     assert fake.home_used_var.get() == "—"
     assert fake.home_expired_var.get() == "—"
     assert fake.home_recent_tree.get_children() == ()
+    frame.destroy()
 
 
 def test_home_displays_ten_recent_vouchers_and_collapses_activity(root):
