@@ -518,7 +518,10 @@ def test_schema_two_upgrade_preserves_unknown_classification_for_existing_rows(t
         assert row["nominality_redacted"] == 0
         assert row["ever_used"] == 0
         assert row["usage_observed"] == 1
-        assert migrated.connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert (
+            migrated.connection.execute("PRAGMA user_version").fetchone()[0]
+            == SCHEMA_VERSION
+        )
     finally:
         migrated.close()
 
