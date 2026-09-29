@@ -23,6 +23,7 @@ REPORT_CHOICES = (
     ("Stampati - nessun utilizzo rilevato", ReportKind.PRINTED_UNUSED),
     ("Senza stampe registrate", ReportKind.NEVER_PRINTED),
     ("Nominali", ReportKind.NOMINAL),
+    ("Non nominali", ReportKind.NON_NOMINAL),
     ("Non classificati", ReportKind.UNCLASSIFIED),
     ("Uso non determinabile", ReportKind.USAGE_UNKNOWN),
     ("Origine creazione non determinabile", ReportKind.ORIGIN_UNKNOWN),
@@ -60,7 +61,8 @@ class ReportDialog(tk.Toplevel):
             text=(
                 HISTORY_NOTICE + " I codici voucher non sono esportati in chiaro. "
                 "Il Riepilogo storico contiene solo aggregati; i report di dettaglio "
-                "possono contenere destinatari e account Windows degli operatori."
+                "possono contenere descrizioni UniFi, destinatari locali e "
+                "account Windows degli operatori."
             ),
             style="Muted.TLabel",
             wraplength=520,
