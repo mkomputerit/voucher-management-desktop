@@ -77,7 +77,7 @@ def _dataset(*, code="") -> ReportDataset:
     )
 
 
-def test_csv_report_omits_voucher_column_when_policy_hides_code(tmp_path: Path):
+def test_summary_csv_is_aggregate_only_and_hides_codes(tmp_path: Path):
     output = tmp_path / "report.csv"
 
     render_report_csv(_dataset(), output)
@@ -85,8 +85,47 @@ def test_csv_report_omits_voucher_column_when_policy_hides_code(tmp_path: Path):
     payload = output.read_text(encoding="utf-8-sig")
     assert "Voucher;" not in payload
     assert "12345-67890" not in payload
-    assert "Mario & Lucia <ospiti>" in payload
+    assert "Mario & Lucia <ospiti>" not in payload
+    assert "Destinatario" not in payload
+    assert "Riepilogo aggregato di tutto lo storico locale conservato." in payload
     assert "Utilizzi controller (ultimo valore osservato);2" in payload
+
+
+def test_nominal_csv_uses_focused_columns(tmp_path: Path):
+    output = tmp_path / "nominali.csv"
+    dataset = replace(
+        _dataset(),
+        kind=ReportKind.NOMINAL,
+        title="Voucher nominali",
+    )
+
+    render_report_csv(dataset, output)
+
+    payload = output.read_text(encoding="utf-8-sig")
+    assert "Controller;Destinatario;Origine;Creazione;Scadenza;Uso storico;Utilizzi (ultimo);Stampe;Stato" in payload
+    assert "Mario & Lucia <ospiti>" in payload
+    assert "Voucher Management" in payload
+    assert "Prima acquisizione" not in payload
+    assert "Operatori" not in payload
+
+
+def test_printed_csv_surfaces_physical_print_audit_columns(tmp_path: Path):
+    output = tmp_path / "stampati.csv"
+    dataset = replace(
+        _dataset(),
+        kind=ReportKind.PRINTED,
+        title="Voucher stampati",
+    )
+
+    render_report_csv(dataset, output)
+
+    payload = output.read_text(encoding="utf-8-sig")
+    assert "Prima stampa" in payload
+    assert "Ultima stampa" in payload
+    assert "Copie" in payload
+    assert "Ristampe" in payload
+    assert "Operatori" in payload
+    assert "PC\\alice, PC\\bob" in payload
 
 
 def test_renderer_rejects_clear_code_for_summary_purpose(tmp_path: Path):
@@ -173,6 +212,8 @@ def test_csv_neutralizes_formula_like_operator_text(tmp_path: Path):
     )
     dangerous = replace(
         dataset,
+        kind=ReportKind.FULL_HISTORY,
+        title="Storico completo voucher",
         controller_label="-controller",
         rows=(dangerous_row,),
     )
