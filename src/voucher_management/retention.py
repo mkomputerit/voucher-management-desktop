@@ -41,6 +41,7 @@ class RetentionCandidate:
     expires_at: str
     age_basis: str
     last_synced_at: str
+    last_seen_at: str
 
 
 @dataclass(frozen=True)
@@ -166,7 +167,8 @@ def _candidate_rows(
                 v.imported_at,
                 v.expires_at,
                 COALESCE(v.expires_at, v.created_at, v.imported_at) AS age_basis,
-                v.last_synced_at
+                v.last_synced_at,
+                v.last_seen_at
            FROM vouchers AS v
            JOIN controllers AS c ON c.id=v.controller_id
            WHERE v.archived_at IS NULL
@@ -206,6 +208,7 @@ def retention_candidates(
             expires_at=str(row["expires_at"] or ""),
             age_basis=str(row["age_basis"] or ""),
             last_synced_at=str(row["last_synced_at"] or ""),
+            last_seen_at=str(row["last_seen_at"] or ""),
         )
         for row in _candidate_rows(
             database,
