@@ -171,6 +171,7 @@ def _candidate_rows(
            JOIN controllers AS c ON c.id=v.controller_id
            WHERE v.archived_at IS NULL
              AND v.present_on_controller=0
+             AND v.usage_observed=1
              AND v.ever_used=0
              AND v.authorized_guest_count=0
              AND NOT EXISTS (
@@ -367,7 +368,8 @@ def archive_retention_candidates(
 
             db.execute(
                 """UPDATE vouchers
-                   SET code=?, name='', assigned_to='', notes='', archived_at=?
+                   SET code=?, name='', assigned_to='', notes='',
+                       is_nominal=NULL, archived_at=?
                    WHERE id=?""",
                 (f"ARCHIVED-{voucher_id}", stamp, voucher_id),
             )
