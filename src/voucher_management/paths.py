@@ -103,6 +103,7 @@ class AppPaths:
         # Fast User Switching sessions.
         self.instance_lock = self.user_root / "application.instance.lock"
         self.pending_create = self.data / "pending_create_guard"
+        self.pending_create_reporting = self.data / "pending_create_reporting.json"
         self.database = self.data / "voucher_management.db"
         self.settings = self.config / "settings.json"
         self._logo_warning = ""
