@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+from uuid import uuid4
 
 SCHEMA_VERSION = 4
 
@@ -352,6 +353,24 @@ class PrintAuditSummary:
     physical_copies: int
     first_printed_at: str
     last_printed_at: str
+
+
+@dataclass(frozen=True)
+class VoucherLocalMetadata:
+    """Operator-owned voucher facts that must never be written back to UniFi."""
+
+    voucher_id: int
+    controller_id: int
+    unifi_id: str
+    code: str
+    controller_description: str
+    assigned_to: str
+    notes: str
+    origin: str
+    is_nominal: bool | None
+    nominality_redacted: bool
+    present_on_controller: bool
+    archived_at: str
 
 
 class Database:
@@ -984,6 +1003,146 @@ COMMIT;
             return
         with self.transaction() as db:
             write(db)
+
+    @staticmethod
+    def _local_metadata_from_row(row: sqlite3.Row) -> VoucherLocalMetadata:
+        nominal = row["is_nominal"]
+        return VoucherLocalMetadata(
+            voucher_id=int(row["id"]),
+            controller_id=int(row["controller_id"]),
+            unifi_id=str(row["unifi_id"]),
+            code=str(row["code"] or ""),
+            controller_description=str(row["name"] or ""),
+            assigned_to=str(row["assigned_to"] or ""),
+            notes=str(row["notes"] or ""),
+            origin=str(row["origin"] or "UNKNOWN"),
+            is_nominal=None if nominal is None else bool(nominal),
+            nominality_redacted=bool(row["nominality_redacted"]),
+            present_on_controller=bool(row["present_on_controller"]),
+            archived_at=str(row["archived_at"] or ""),
+        )
+
+    def voucher_local_metadata(
+        self,
+        *,
+        controller_id: int,
+        unifi_id: str,
+    ) -> VoucherLocalMetadata | None:
+        """Return local-only metadata plus immutable controller correlation fields."""
+
+        row = self.connection.execute(
+            """SELECT id, controller_id, unifi_id, code, name, assigned_to, notes,
+                      origin, is_nominal, nominality_redacted,
+                      present_on_controller, archived_at
+               FROM vouchers
+               WHERE controller_id=? AND unifi_id=?""",
+            (int(controller_id), str(unifi_id).strip()),
+        ).fetchone()
+        return None if row is None else self._local_metadata_from_row(row)
+
+    def voucher_local_metadata_map(
+        self,
+        *,
+        controller_id: int,
+    ) -> dict[str, VoucherLocalMetadata]:
+        """Return local metadata keyed by stable UniFi voucher id."""
+
+        rows = self.connection.execute(
+            """SELECT id, controller_id, unifi_id, code, name, assigned_to, notes,
+                      origin, is_nominal, nominality_redacted,
+                      present_on_controller, archived_at
+               FROM vouchers
+               WHERE controller_id=?""",
+            (int(controller_id),),
+        ).fetchall()
+        return {
+            str(row["unifi_id"]): self._local_metadata_from_row(row)
+            for row in rows
+        }
+
+    def update_voucher_local_metadata(
+        self,
+        *,
+        controller_id: int,
+        unifi_id: str,
+        assigned_to: str,
+        notes: str,
+        is_nominal: bool | None,
+        updated_at: str,
+        windows_user: str,
+    ) -> VoucherLocalMetadata:
+        """Update only operator-owned fields; controller-sourced fields stay immutable."""
+
+        remote_id = str(unifi_id or "").strip()
+        local_recipient = str(assigned_to or "").strip()
+        local_notes = str(notes or "").strip()
+        stamp = str(updated_at or "").strip()
+        operator = str(windows_user or "").strip()
+        if not remote_id:
+            raise ValueError("UniFi voucher id is required")
+        if type(is_nominal) is not bool and is_nominal is not None:
+            raise ValueError("is_nominal must be true, false or null")
+        if len(local_recipient) > 200:
+            raise ValueError("Il destinatario locale non può superare 200 caratteri.")
+        if len(local_notes) > 2000:
+            raise ValueError("Le note locali non possono superare 2000 caratteri.")
+        if not stamp or not operator:
+            raise ValueError("updated_at and windows_user are required")
+
+        with self.transaction() as db:
+            row = db.execute(
+                """SELECT id, assigned_to, notes, is_nominal,
+                          nominality_redacted, present_on_controller, archived_at
+                   FROM vouchers
+                   WHERE controller_id=? AND unifi_id=?""",
+                (int(controller_id), remote_id),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Voucher locale non trovato. Sincronizzare con UniFi.")
+            if not bool(row["present_on_controller"]) or row["archived_at"] is not None:
+                raise RuntimeError(
+                    "Il voucher non è più attivo nello snapshot UniFi locale. "
+                    "Sincronizzare prima di modificare i dati locali."
+                )
+
+            nominal_value = None if is_nominal is None else int(is_nominal)
+            changed_fields: list[str] = []
+            if str(row["assigned_to"] or "") != local_recipient:
+                changed_fields.append("assigned_to")
+            if str(row["notes"] or "") != local_notes:
+                changed_fields.append("notes")
+            if row["is_nominal"] != nominal_value or bool(row["nominality_redacted"]):
+                changed_fields.append("is_nominal")
+
+            if changed_fields:
+                db.execute(
+                    """UPDATE vouchers
+                       SET assigned_to=?, notes=?, is_nominal=?,
+                           nominality_redacted=0
+                       WHERE id=?""",
+                    (local_recipient, local_notes, nominal_value, int(row["id"])),
+                )
+                db.execute(
+                    """INSERT INTO voucher_events
+                       (event_uuid, voucher_id, event_type, occurred_at,
+                        source, windows_user, details_json)
+                       VALUES (?, ?, 'LOCAL_METADATA_UPDATED', ?, 'OPERATOR', ?, ?)""",
+                    (
+                        str(uuid4()),
+                        int(row["id"]),
+                        stamp,
+                        operator,
+                        self.encode_event_details({"fields": changed_fields}),
+                    ),
+                )
+
+        updated = self.voucher_local_metadata(
+            controller_id=int(controller_id),
+            unifi_id=remote_id,
+        )
+        if updated is None:
+            raise RuntimeError("Voucher locale non disponibile dopo l'aggiornamento.")
+        return updated
 
     def print_summary(self, voucher_id: int) -> PrintAuditSummary:
         """Return immutable print totals used before allowing a duplicate."""
