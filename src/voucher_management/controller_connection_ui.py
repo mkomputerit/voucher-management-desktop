@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import messagebox
 
+from .create_reporting_recovery import reconcile_pending_create_reporting_to_path
 from .sync_store import (
     PersistedControllerSnapshot,
     persist_connection_snapshot_to_path,
@@ -89,24 +90,35 @@ class ControllerConnectionMixin:
             info = client.connect(api_key)
             vouchers = list(client.list_vouchers())
             observed_at = datetime.now(timezone.utc).isoformat()
-            persisted = persist_connection_snapshot_to_path(
-                database_path,
-                api_root=client.base_url,
-                cert_sha256=client.trusted_cert_sha256 or "",
-                requested_name=requested_name,
-                site_name=str(info.get("siteName") or ""),
-                vouchers=vouchers,
-                observed_at=observed_at,
-            )
-            return client, info, vouchers, persisted
+            persisted = None
+            archive_error = None
+            try:
+                persisted = persist_connection_snapshot_to_path(
+                    database_path,
+                    api_root=client.base_url,
+                    cert_sha256=client.trusted_cert_sha256 or "",
+                    requested_name=requested_name,
+                    site_name=str(info.get("siteName") or ""),
+                    vouchers=vouchers,
+                    observed_at=observed_at,
+                )
+                reconcile_pending_create_reporting_to_path(
+                    database_path,
+                    self.paths.pending_create_reporting,
+                    controller_id=persisted.controller_id,
+                )
+            except Exception as exc:
+                archive_error = exc
+            return client, info, vouchers, persisted, archive_error
 
         def completed(result) -> None:
-            connected_client, info, vouchers, persisted = result
+            connected_client, info, vouchers, persisted, archive_error = result
             self._finish_connection(
                 connected_client,
                 info,
                 vouchers,
                 persisted=persisted,
+                archive_error=archive_error,
             )
 
         def failed(exc: Exception) -> None:
@@ -238,6 +250,7 @@ class ControllerConnectionMixin:
         profile_name: str | None = None,
         observed_at: str | None = None,
         persisted: PersistedControllerSnapshot | None = None,
+        archive_error: Exception | None = None,
     ) -> None:
         """Apply one connection result after durable worker persistence.
 
@@ -276,18 +289,23 @@ class ControllerConnectionMixin:
                     info.get("siteName") or "Controller UniFi"
                 )
 
-            controller_id = self.database.get_or_create_controller(
-                name=persisted_name,
-                api_root=client.base_url,
-                observed_at=snapshot_observed_at,
-                cert_sha256=client.trusted_cert_sha256 or "",
-            )
-            persist_successful_snapshot(
-                self.database,
-                controller_id=controller_id,
-                vouchers=snapshot,
-                observed_at=snapshot_observed_at,
-            )
+            if archive_error is None:
+                controller_id = self.database.get_or_create_controller(
+                    name=persisted_name,
+                    api_root=client.base_url,
+                    observed_at=snapshot_observed_at,
+                    cert_sha256=client.trusted_cert_sha256 or "",
+                )
+                persist_successful_snapshot(
+                    self.database,
+                    controller_id=controller_id,
+                    vouchers=snapshot,
+                    observed_at=snapshot_observed_at,
+                )
+            else:
+                # The network side is healthy; do not retry SQLite on Tk or
+                # misreport this as a controller failure.
+                controller_id = existing_id
         else:
             controller_id = persisted.controller_id
             persisted_name = persisted.controller_name
@@ -316,9 +334,25 @@ class ControllerConnectionMixin:
             f"{site_label} • {tls_label}"
         )
         self.checked_ids.clear()
-        callback = getattr(self, "_controller_operation_succeeded", None)
-        if callback is not None:
-            callback()
+        if archive_error is None:
+            callback = getattr(self, "_controller_operation_succeeded", None)
+            if callback is not None:
+                callback()
+        else:
+            self.logger.error(
+                "connection_archive_persistence_failed type=%s",
+                type(archive_error).__name__,
+            )
+            callback = getattr(self, "_controller_operation_stale", None)
+            if callback is not None:
+                callback(archive_failed=True)
+            messagebox.showwarning(
+                "Controller collegato • archivio locale da verificare",
+                "La connessione UniFi è riuscita e i dati Home sono live, ma "
+                "lo storico locale non è stato aggiornato. I Report potrebbero "
+                "essere incompleti finché una sincronizzazione non riesce.",
+                parent=self,
+            )
         self.populate()
         self.logger.info(
             "controller_api_connected network_version=%s tls_pinned=%s "
