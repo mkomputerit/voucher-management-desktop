@@ -130,10 +130,10 @@ Section "Voucher Management" SEC_MAIN
   SetOutPath "$PLUGINSDIR\payload"
   File /r "${PAYLOAD_DIR}\*"
 
-  StrCpy $R2 '$"$PowerShellPath$" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $"$PLUGINSDIR\payload\Install-VoucherManagement.ps1$" -SourcePath $"$PLUGINSDIR\payload$" -InstallRoot $"$INSTDIR$" -DataRoot $"$DataRoot$" -OperatorGroup $"$OperatorGroup$"'
+  StrCpy $R2 '$\"$PowerShellPath$\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $\"$PLUGINSDIR\payload\Install-VoucherManagement.ps1$\" -SourcePath $\"$PLUGINSDIR\payload$\" -InstallRoot $\"$INSTDIR$\" -DataRoot $\"$DataRoot$\" -OperatorGroup $\"$OperatorGroup$\"'
 
   ${If} $OperatorUser != ""
-    StrCpy $R2 '$R2 -OperatorUser $"$OperatorUser$"'
+    StrCpy $R2 '$R2 -OperatorUser $\"$OperatorUser$\"'
   ${EndIf}
 
   ${If} $SkipShortcut == "1"
@@ -156,8 +156,8 @@ Section "Voucher Management" SEC_MAIN
   WriteRegStr HKLM "${UNINSTALL_KEY}" "Publisher" "Voucher Management contributors"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\${PRODUCT_EXE}"
-  WriteRegStr HKLM "${UNINSTALL_KEY}" "UninstallString" '$"$INSTDIR\Uninstall.exe$"'
-  WriteRegStr HKLM "${UNINSTALL_KEY}" "QuietUninstallString" '$"$INSTDIR\Uninstall.exe$" /S'
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "QuietUninstallString" '$\"$INSTDIR\Uninstall.exe$\" /S'
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoRepair" 1
 
@@ -231,7 +231,7 @@ Function un.PurgePageLeave
 FunctionEnd
 
 Section "Uninstall"
-  StrCpy $R2 '$"$PowerShellPath$" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $"$INSTDIR\Uninstall-VoucherManagement.ps1$" -InstallRoot $"$INSTDIR$" -DataRoot $"$DataRoot$" -OperatorGroup $"$OperatorGroup$" -SkipShortcut -KeepProgramFiles'
+  StrCpy $R2 '$\"$PowerShellPath$\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $\"$INSTDIR\Uninstall-VoucherManagement.ps1$\" -InstallRoot $\"$INSTDIR$\" -DataRoot $\"$DataRoot$\" -OperatorGroup $\"$OperatorGroup$\" -SkipShortcut -KeepProgramFiles'
 
   ${If} $PurgeData == "1"
     StrCpy $R2 '$R2 -RemoveData'
