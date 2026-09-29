@@ -376,7 +376,7 @@ def archive_retention_candidates(
             db.execute(
                 """UPDATE vouchers
                    SET code=?, name='', assigned_to='', notes='',
-                       is_nominal=NULL, archived_at=?
+                       is_nominal=NULL, nominality_redacted=1, archived_at=?
                    WHERE id=?""",
                 (f"ARCHIVED-{voucher_id}", stamp, voucher_id),
             )
