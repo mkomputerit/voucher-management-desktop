@@ -358,16 +358,20 @@ version in the manifest, and excludes live `-wal`/`-shm`/`-journal`
 sidecars. Validation repeats the integrity/hash/schema checks before restore.
 The pre-restore rollback snapshot uses the same SQLite-safe mechanism.
 
-Automatic backup-on-close is enabled by default. Because the 5.0 SQLite
-database contains clear voucher codes, the normal 5.0 backup path is encrypted
-and password-protected. The password is requested only for the current close
-attempt and is never persisted. Automatic snapshots are written outside the
-managed application-data tree under the current Windows user's home directory,
-so restore cannot replace the backup that protects it and shared ProgramData
-ACLs do not need to be broadened.
+In 5.1, backup-on-close is a proposal enabled by default. The first-run wizard
+and Settings > Backup persist the default directory and this preference.
+One modal collects a per-copy directory override and optional encryption;
+passwords and overrides never update settings. Password protection is selected
+by default, while an unencrypted ZIP requires an explicit operator opt-out.
+Operators can cancel, skip the copy, or create a verified ZIP/.vmbk before
+closing. With encryption selected, the existing password validation and
+authenticated streaming format apply. An unencrypted ZIP is clearly identified
+in the UI and follows the same
+snapshot/validation path. All destinations remain outside the managed data
+tree; the old operator-home directory is the fallback for existing installs.
+Exported settings clear the machine-specific backup directory. Home shows the
+last successful backup audit, and refreshes after new backup audit writes.
 
-The normal backup button also creates only encrypted/authenticated `.vmbk`
-files. Unencrypted ZIP remains accepted only as a legacy restore/import format.
 If another serialized background operation is active, an ordinary window close
 is refused instead of interrupting a controller mutation, print, restore or
 other data workflow. A failed shutdown backup offers Retry, Close anyway and

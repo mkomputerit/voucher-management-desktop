@@ -18,6 +18,8 @@ from .settings import DEFAULT_SETTINGS, SettingsStore
 
 DEFAULT_VOUCHER_RETENTION_DAYS = 180
 ONBOARDING_IN_PROGRESS_KEY = "onboarding_in_progress"
+SHARED_FRESH_START_KEY = "shared_per_user_migration_decision"
+SHARED_FRESH_START_VALUE = "fresh_start"
 
 
 class OnboardingState(str, Enum):
@@ -43,6 +45,8 @@ class OnboardingDraft:
     pdf_subtitle: str = ""
     pdf_contact: str = ""
     pdf_notes: str = ""
+    backup_directory: str = ""
+    backup_on_close: bool = True
     unused_unprinted_days: int = DEFAULT_VOUCHER_RETENTION_DAYS
 
 
@@ -112,6 +116,24 @@ def begin_onboarding(database: Database) -> None:
     database.set_metadata_value(ONBOARDING_IN_PROGRESS_KEY, "1")
 
 
+def choose_shared_fresh_start(database: Database) -> None:
+    """Persist an explicit decision to ignore, not delete, old per-user data."""
+
+    database.set_metadata_value(
+        SHARED_FRESH_START_KEY,
+        SHARED_FRESH_START_VALUE,
+    )
+
+
+def shared_fresh_start_selected(database: Database) -> bool:
+    """Return whether the operator explicitly chose a separate new archive."""
+
+    return (
+        database.metadata_value(SHARED_FRESH_START_KEY)
+        == SHARED_FRESH_START_VALUE
+    )
+
+
 def validate_onboarding_draft(draft: OnboardingDraft) -> OnboardingDraft:
     """Validate only fields that can be persisted by onboarding."""
 
@@ -141,6 +163,8 @@ def validate_onboarding_draft(draft: OnboardingDraft) -> OnboardingDraft:
         pdf_subtitle=draft.pdf_subtitle.strip(),
         pdf_contact=draft.pdf_contact.strip(),
         pdf_notes=draft.pdf_notes.strip(),
+        backup_directory=draft.backup_directory.strip(),
+        backup_on_close=bool(draft.backup_on_close),
         unused_unprinted_days=days,
     )
 
@@ -168,6 +192,8 @@ def complete_onboarding(
         structure_name=clean.structure_name,
         wifi_title=clean.wifi_title,
         logo_path=clean.logo_path,
+        backup_directory=clean.backup_directory,
+        backup_on_close=clean.backup_on_close,
     )
 
     with database.transaction() as db:

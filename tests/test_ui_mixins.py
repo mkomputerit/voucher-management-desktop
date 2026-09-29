@@ -5,7 +5,16 @@ from types import SimpleNamespace
 from voucher_management.app import VoucherApp
 from voucher_management.controller_connection_ui import ControllerConnectionMixin
 from voucher_management.data_maintenance_ui import DataMaintenanceMixin
-from voucher_management.modern_app import ModernVoucherApp
+from voucher_management.modern_app import (
+    ModernVoucherApp,
+    _controller_status_color_key,
+    _controller_status_style_names,
+    _main_window_minimum,
+    _sidebar_icon_bitmap,
+    _sidebar_icon_pixel_size,
+    _theme_display_label,
+    _theme_setting_value,
+)
 from voucher_management.retention_ui import RetentionMixin
 from voucher_management.voucher_creation_ui import VoucherCreationMixin
 from voucher_management.voucher_deletion_ui import VoucherDeletionMixin
@@ -113,3 +122,77 @@ def test_failed_restore_reopens_and_verifies_database(tmp_path):
         fake.database.integrity_check()
     finally:
         fake.database.close()
+
+
+def test_controller_status_styles_keep_warning_states_distinct_from_errors():
+    local = _controller_status_style_names("local")
+    unconfigured = _controller_status_style_names("unconfigured")
+    error = _controller_status_style_names("error")
+
+    assert local[0] == "Warning.Status.TLabel"
+    assert local[2] == "WarningDot.TLabel"
+    assert unconfigured[2] == "WarningDot.TLabel"
+    assert error[0] == "Error.Status.TLabel"
+    assert error[2] == "DisconnectedDot.TLabel"
+
+
+def test_controller_status_color_keys_are_semantically_distinct():
+    assert _controller_status_color_key("connected") == "green"
+    assert _controller_status_color_key("local") == "orange"
+    assert _controller_status_color_key("unconfigured") == "orange"
+    assert _controller_status_color_key("error") == "red"
+    assert _controller_status_color_key("syncing") == "blue"
+
+
+def test_sidebar_icon_size_tracks_windows_tk_scaling():
+    assert _sidebar_icon_pixel_size(96 / 72) == 20
+    assert _sidebar_icon_pixel_size((96 / 72) * 1.25) == 25
+    assert _sidebar_icon_pixel_size((96 / 72) * 1.5) == 30
+    assert _sidebar_icon_pixel_size("invalid") == 20
+
+
+def test_main_window_minimum_stays_inside_short_display():
+    assert _main_window_minimum(1600, 755) == (1220, 655)
+    assert _main_window_minimum(1093, 614) == (1013, 514)
+
+
+def test_sidebar_icon_bitmap_is_rendered_at_requested_dpi_size():
+    assert _sidebar_icon_bitmap("home", "#ffffff", 20).size == (20, 20)
+    assert _sidebar_icon_bitmap("voucher", "#ffffff", 30).size == (30, 30)
+    assert _sidebar_icon_bitmap("report", "#ffffff", 32).size == (32, 32)
+
+
+def test_theme_labels_keep_operator_text_separate_from_persisted_values():
+    assert _theme_display_label("system") == "Segui Windows"
+    assert _theme_display_label("light") == "Chiaro"
+    assert _theme_display_label("dark") == "Scuro"
+    assert _theme_setting_value("Segui Windows") == "system"
+    assert _theme_setting_value("Chiaro") == "light"
+    assert _theme_setting_value("Scuro") == "dark"
+    assert _theme_setting_value("unknown") == "system"
+
+
+def test_sidebar_icons_refresh_only_when_tk_scaling_changes():
+    calls = []
+
+    class TkProxy:
+        def __init__(self, scaling):
+            self.scaling = scaling
+
+        def call(self, *_args):
+            return self.scaling
+
+    fake = SimpleNamespace(
+        _display_scale_after="pending",
+        _last_sidebar_icon_size=20,
+        tk=TkProxy((96 / 72) * 1.5),
+        _refresh_sidebar_icons=lambda: calls.append("refresh"),
+    )
+    ModernVoucherApp._refresh_sidebar_icons_if_scale_changed(fake)
+    assert fake._display_scale_after is None
+    assert calls == ["refresh"]
+
+    calls.clear()
+    fake._last_sidebar_icon_size = 30
+    ModernVoucherApp._refresh_sidebar_icons_if_scale_changed(fake)
+    assert calls == []

@@ -1,5 +1,170 @@
 # Changelog
 
+## 5.1.0 - Unreleased
+
+- Print only the recipient value inside each cut voucher, without the
+  "Destinatario:" prefix.
+- Complete first-run setup with a backup step for the default folder and the
+  optional shutdown proposal; expose these preferences in Settings > Backup.
+- Show the last verified successful backup in Home with a manual backup action.
+- Offer per-copy destination and optional password protection for manual and
+  shutdown backups. Protection is selected by default; creating a readable ZIP
+  requires an explicit opt-out, while .vmbk copies retain authenticated encryption.
+  Closing also offers skip/cancel,
+  and a one-off directory override never updates the saved default.
+- Clear machine-specific backup destinations from portable settings and retain
+  validated restore compatibility for both ZIP and .vmbk files.
+
+- Reconnect from Home through a compact saved-controller summary asking only
+  for the session API key, without opening Settings. Healthy active sessions
+  still synchronize directly; failed sessions can enter a fresh key through
+  the same TLS verification and background connection workflow.
+- Give the Home table priority for a complete ten-voucher batch, compact the
+  controller summary, remove redundant area shortcuts and collapse recent
+  activity by default into an optional two-row panel.
+
+- Explain in the privacy documentation and print preview that the recipient
+  stays on newly generated cut vouchers handed to guests.
+- Replace legacy-conflict instructions for a nonexistent in-app repair flow
+  with explicit technical-assistance guidance; ambiguous imports remain blocked.
+- Clarify the 5.1.0 release-candidate status and outstanding Windows visual/DPI
+  acceptance checks without claiming automatic per-monitor DPI support.
+
+- Keep Home and Voucher keyboard highlighting aligned with the actual print
+  selection: arrows move focus and Space toggles the focused voucher, preserving
+  hidden selections and excluding expired vouchers without selection-event loops.
+- Add vertical and horizontal scrolling to both Home tables and correct recovery
+  instructions to point to Settings > Manutenzione.
+
+- Begin the operator-first desktop redesign with first-class Home, Voucher,
+  Report and Settings workspaces.
+- Move controller URL/API-key controls out of the main operational surface and
+  into the Controller settings area.
+- Add concise controller synchronization states (ready, local snapshot,
+  synchronizing, unreachable, not configured) backed by the durable
+  last-successful-sync timestamp.
+- Add Home operational metrics/recent activity and an embedded Report overview.
+- Make voucher row highlighting track the actual print selection so the
+  operator sees one unambiguous selection concept.
+- Add explicit first-start choices when legacy per-user data is detected:
+  migrate it, restore a backup, or deliberately begin a separate new shared
+  installation without deleting the old profile data.
+- Make the Home synchronization action context-sensitive: synchronize an active
+  session, otherwise guide the operator directly to Controller settings.
+- Refine the Home into a professional operator dashboard with recent vouchers,
+  controller health, last synchronization time, durable recent activity and
+  quick actions.
+- Split the main Settings workspace into Generali, Controller, PDF / stampa,
+  Retention and Backup sections; routine operator screens no longer mix
+  controller, retention and recovery concepts together.
+- Surface backup recency and current retention policy in plain operator
+  language while keeping recovery/migration tools in a separate maintenance
+  area.
+- Make startup window mapping deterministic on Windows before maximizing or
+  opening first-run/retention modals, preventing a live background process with
+  no visible top-level window on affected sessions.
+- Add explicit green/red controller connection indicators in Home and sidebar.
+- Use a high-contrast Windows-blue voucher selection in both light and dark
+  themes and reorganize the Voucher workspace around the print workflow.
+- Preserve automatic selection of newly created vouchers and expose the same
+  audited print/reprint flow directly from Home.
+- Replace text-symbol navigation with theme-aware drawn sidebar icons and allow
+  operators to assign a persistent descriptive name to the controller.
+- Increase the voucher logo and immediate heading text while preserving the
+  established A4 and cutting geometry.
+- Guide restore of pre-SQLite backups through the required second phase:
+  reconnect/synchronize UniFi and migrate the verified legacy print history
+  into SQLite before relying on 5.x reports.
+- Add direct import of pre-SQLite ZIP backups: voucher codes are recovered
+  from the archived PDFs, verified against HMAC print history, materialized
+  into SQLite, and the archived PDFs are copied into the current print archive
+  without overwriting current application settings.
+- Move initial and manual controller snapshot persistence off the Tk thread so
+  large UniFi responses cannot block the operator window after connection.
+- Refresh report aggregates only when the Report workspace is opened instead
+  of rebuilding them during every voucher-table population.
+- Prevent Home/Voucher selection feedback from recursively generating Tk
+  Treeview selection events after controller refreshes; Home selection now
+  changes only from real operator row clicks.
+- Add a post-connection event-loop heartbeat to field diagnostics so a future
+  UI stall can be distinguished from network/database completion.
+- Harden pre-SQLite backup import after engineering review: only clear PDF
+  codes that resolve against HMAC history can create historical voucher rows,
+  unrelated ten-digit text is reported and ignored, legacy-import rows no
+  longer misuse retention's archived_at marker, individual PDFs are capped at
+  64 MiB, copied paths are revalidated locally, and partial-import failures are
+  explicitly documented as safe to retry.
+- Show the source ZIP SHA-256 before legacy import and recommend a fresh .vmbk
+  export after successful conversion because the old ZIP format is not
+  externally authenticated.
+- Make retention minimization irreversible across legacy reimports: a
+  previously scrubbed credential/recipient is never reconstructed, and early
+  5.1 rows accidentally rehydrated after retention are scrubbed again from the
+  durable RETENTION_ARCHIVED audit fact.
+- Treat both materialized legacy PDF-generation events and resolved pre-
+  materialization legacy evidence as retention blockers, even when the current
+  installation's HMAC history file contains no corresponding event.
+- Preserve specific legacy-import validation errors after the pre-import safety
+  backup instead of replacing them with a generic partial-import message.
+- Exclude synthetic legacy-backup controllers from Home's "Voucher rilevato"
+  feed so importing historical data is not presented as a new controller
+  discovery in local-only mode.
+- Preserve retention-minimized legacy identities across later ZIPs whose
+  history has grown: stable HMAC evidence is rebound to the existing archived
+  voucher without restoring its clear code or creating a duplicate, while
+  conflicting code reuse fails closed before candidate creation.
+- Document and surface the retention boundary for imported legacy evidence:
+  verified generated/printed archive rows stay protected from ordinary
+  minimization, and an explicitly imported old ZIP may restore data that the
+  current database can no longer cryptographically link to a minimized row.
+- Centralize the synthetic legacy-controller API-root prefix so import and Home
+  filtering cannot drift onto different string literals.
+- Refine the operator shell for Windows scaling and clearer status semantics:
+  sidebar icons follow Tk DPI scaling, warning/local controller states use
+  amber instead of error red, Settings shows the same status dot, the active
+  navigation item uses the primary blue accent and the main-window minimum no
+  longer assumes a 740-pixel-tall desktop.
+- Move recovery/history tools out of the routine Backup tab into a dedicated
+  Settings > Manutenzione page and explain that verified imported legacy
+  generation/print evidence remains outside ordinary retention.
+- Make the legacy-import completion counter report distinct minimized vouchers
+  represented by the current ZIP only, excluding unrelated historical repairs
+  and duplicate accounting across repair/resolution phases.
+- Make fail-closed legacy identity conflicts actionable without silently
+  skipping evidence, and render sidebar icons from supersampled geometry at the
+  requested DPI size instead of enlarging a fixed 20-pixel bitmap.
+- Rebalance the Home workspace for daily operation: give recent vouchers and
+  durable activity more space, compact the shell for short displays, keep
+  create/print/sync actions beside their actual context, and turn the former
+  duplicated quick-action card into simple navigation to Voucher, Report and
+  Settings.
+- Refine the Voucher workspace for constrained Windows displays: separate the
+  destructive delete action, let search expand naturally, and add horizontal
+  scrolling so the full operational table remains reachable at higher DPI or
+  narrower window sizes without changing print-selection behavior.
+- Refine Report and General settings without changing their data paths: make
+  report/export scope and privacy explicit, and show theme choices as
+  operator-facing Italian labels while persisting the existing system/light/
+  dark values for backward compatibility.
+- Regenerate sidebar icons when Tk exposes a changed display scaling value
+  after root-window move/resize events, so per-monitor DPI changes do not leave
+  raster navigation icons at the previous monitor's size.
+- Rework Home toward a UniFi-portal-style dashboard with controller health as
+  the first card, operational counters beneath it, a full-width recent-voucher
+  workspace and a cleaner activity/navigation footer.
+- Replace theme-dependent text glyphs for controller health with real coloured
+  connection indicators: green when connected, amber for local/unconfigured,
+  red for connection failure and blue only while synchronizing.
+- Simplify the Voucher command bar and replace the internal-sounding
+  "PREPARA STAMPA" action with the explicit operator action "Stampa
+  selezionati", preserving the same audited print/reprint workflow.
+- Keep the configured logo inside every physical voucher label and move the
+  recipient from the sheet-only strip into the cut area, preserving the proven
+  2-column × 5-row A4 geometry and dashed cutting guides.
+- Align package, window title and Windows executable metadata to 5.1.0 for the
+  5.1 field/release candidate instead of continuing to identify test builds as
+  5.0.0.
+
 ## 5.0.0 - 2026-09-27
 
 - Introduced the SQLite 5.0 persistence foundation with WAL mode, integrity

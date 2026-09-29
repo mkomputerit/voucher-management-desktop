@@ -331,6 +331,8 @@ class BackupService:
     def _sanitized_settings_bytes(settings_path: Path) -> bytes:
         """Serialize supported settings without machine-specific logo paths."""
         settings = SettingsStore(settings_path).load()
+        # A restored archive must not carry a different machine's destination.
+        settings["backup_directory"] = ""
         logo_value = str(settings.get("logo_path", "") or "").strip()
         if logo_value:
             settings["logo_path"] = BackupService._portable_basename(logo_value)

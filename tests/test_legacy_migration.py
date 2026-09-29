@@ -475,6 +475,62 @@ def test_apply_same_migration_uuid_is_idempotent(tmp_path):
         db.close()
 
 
+def test_later_plan_keeps_resolution_and_updates_last_migration_uuid(
+    tmp_path,
+):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "stable-event",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+    db, controller_id, voucher_id = _database_with_voucher(tmp_path)
+    try:
+        plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    controller_id,
+                    "legacy-voucher-1",
+                    "1234567890",
+                )
+            ],
+        )
+        apply_legacy_migration_plan(
+            database=db,
+            plan=plan,
+            migration_uuid="migration-stable-1",
+            applied_at="2026-09-26T10:05:00+00:00",
+        )
+        apply_legacy_migration_plan(
+            database=db,
+            plan=plan,
+            migration_uuid="migration-stable-2",
+            applied_at="2026-09-26T10:10:00+00:00",
+        )
+
+        row = db.connection.execute(
+            """SELECT resolution_status, voucher_id, first_migration_uuid,
+                      last_migration_uuid
+               FROM legacy_audit_events
+               WHERE legacy_event_key='generate:stable-event'"""
+        ).fetchone()
+        assert row["resolution_status"] == "RESOLVED"
+        assert row["voucher_id"] == voucher_id
+        assert row["first_migration_uuid"] == "migration-stable-1"
+        assert row["last_migration_uuid"] == "migration-stable-2"
+    finally:
+        db.close()
+
+
 def test_later_plan_can_resolve_previously_unresolved_evidence(tmp_path):
     history = tmp_path / "history.jsonl"
     _write_history(

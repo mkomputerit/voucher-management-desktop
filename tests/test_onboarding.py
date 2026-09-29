@@ -12,6 +12,7 @@ from voucher_management.onboarding import (
     OnboardingDraft,
     OnboardingState,
     begin_onboarding,
+    choose_shared_fresh_start,
     complete_onboarding,
     legacy_installation_has_evidence,
     onboarding_state,
@@ -356,7 +357,12 @@ def test_scheduler_runs_wizard_only_for_required_first_run(tmp_path):
                     "per_user_root": tmp_path / "profile",
                 },
             )(),
-            "after_idle": lambda self, callback: scheduled.append(callback),
+            "after": lambda self, delay, callback: scheduled.append(
+                (delay, callback)
+            ),
+            "winfo_exists": lambda self: True,
+            "deiconify": lambda self: None,
+            "lift": lambda self: None,
         },
     )()
     try:
@@ -366,9 +372,10 @@ def test_scheduler_runs_wizard_only_for_required_first_run(tmp_path):
         )
         assert state is OnboardingState.REQUIRED
         assert len(scheduled) == 1
+        assert scheduled[0][0] == 320
         assert launched == []
 
-        scheduled[0]()
+        scheduled[0][1]()
         assert launched == [app]
     finally:
         database.close()
@@ -401,6 +408,62 @@ def test_shared_first_run_defers_to_explicit_per_user_migration(tmp_path):
         state = schedule_first_run_onboarding(app)
         assert state is OnboardingState.MIGRATION_AVAILABLE
         assert scheduled == []
+    finally:
+        database.close()
+
+
+def test_shared_first_run_can_explicitly_start_fresh_without_deleting_legacy(
+    tmp_path,
+):
+    database = _database(tmp_path)
+    per_user = tmp_path / "LocalAppData" / "VoucherManagement"
+    store = SettingsStore(per_user / "config" / "settings.json")
+    store.save({"structure_name": "Legacy Sala"})
+
+    app = type(
+        "FakeApp",
+        (),
+        {
+            "database": database,
+            "paths": type(
+                "Paths",
+                (),
+                {
+                    "shared_mode": True,
+                    "per_user_root": per_user,
+                },
+            )(),
+            "settings": dict(DEFAULT_SETTINGS),
+            "after_idle": lambda self, callback: None,
+        },
+    )()
+    try:
+        assert (
+            startup_onboarding_state(app)
+            is OnboardingState.MIGRATION_AVAILABLE
+        )
+
+        choose_shared_fresh_start(database)
+
+        assert startup_onboarding_state(app) is OnboardingState.REQUIRED
+        assert (per_user / "config" / "settings.json").is_file()
+        assert store.load()["structure_name"] == "Legacy Sala"
+    finally:
+        database.close()
+
+
+def test_shared_fresh_start_does_not_override_interrupted_onboarding(tmp_path):
+    database = _database(tmp_path)
+    per_user = tmp_path / "profile"
+    store = SettingsStore(per_user / "config" / "settings.json")
+    store.save({"structure_name": "Legacy Sala"})
+    app = _startup_app(tmp_path, database, shared_mode=True)
+    app.paths.per_user_root = per_user
+    try:
+        choose_shared_fresh_start(database)
+        begin_onboarding(database)
+
+        assert startup_onboarding_state(app) is OnboardingState.REQUIRED
     finally:
         database.close()
 

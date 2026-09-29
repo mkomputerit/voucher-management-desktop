@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from tkinter import messagebox
 
-from .sync_store import persist_successful_snapshot
+from .sync_store import (
+    PersistedControllerSnapshot,
+    persist_connection_snapshot_to_path,
+    persist_successful_snapshot,
+)
 
 from .unifi_api import (
     UniFiApiError,
@@ -36,6 +41,12 @@ class ControllerConnectionMixin:
 
         api_root = self.api_root_var.get().strip()
         api_key = self.api_key_var.get()
+        name_var = getattr(self, "controller_name_var", None)
+        self._requested_controller_name = (
+            str(name_var.get()).strip()
+            if name_var is not None
+            else ""
+        )
         # Clear the visible secret before any network operation starts. The
         # captured value exists only in memory for the active worker chain.
         self.api_key_var.set("")
@@ -67,19 +78,35 @@ class ControllerConnectionMixin:
         client: UniFiClient,
         api_key: str,
     ) -> None:
-        """Run one TLS/API connection attempt on the worker thread."""
+        """Connect, fetch and persist one snapshot entirely off the Tk thread."""
+
+        database_path = Path(self.paths.database)
+        requested_name = str(
+            getattr(self, "_requested_controller_name", "") or ""
+        ).strip()
 
         def worker():
             info = client.connect(api_key)
-            vouchers = client.list_vouchers()
-            return client, info, vouchers
+            vouchers = list(client.list_vouchers())
+            observed_at = datetime.now(timezone.utc).isoformat()
+            persisted = persist_connection_snapshot_to_path(
+                database_path,
+                api_root=client.base_url,
+                cert_sha256=client.trusted_cert_sha256 or "",
+                requested_name=requested_name,
+                site_name=str(info.get("siteName") or ""),
+                vouchers=vouchers,
+                observed_at=observed_at,
+            )
+            return client, info, vouchers, persisted
 
         def completed(result) -> None:
-            connected_client, info, vouchers = result
+            connected_client, info, vouchers, persisted = result
             self._finish_connection(
                 connected_client,
                 info,
                 vouchers,
+                persisted=persisted,
             )
 
         def failed(exc: Exception) -> None:
@@ -194,6 +221,9 @@ class ControllerConnectionMixin:
     def _connection_failed(self, exc: Exception) -> None:
         self.client = None
         self.connection_var.set("Connessione non riuscita")
+        callback = getattr(self, "_controller_operation_failed", None)
+        if callback is not None:
+            callback()
         self._show_network_error(
             "UniFi",
             exc,
@@ -207,43 +237,68 @@ class ControllerConnectionMixin:
         *,
         profile_name: str | None = None,
         observed_at: str | None = None,
+        persisted: PersistedControllerSnapshot | None = None,
     ) -> None:
+        """Apply one connection result after durable worker persistence.
+
+        Normal operator connections pass a persisted result and therefore
+        perform no bulk SQLite work on the Tk thread. The synchronous fallback
+        remains only for onboarding/tests that explicitly call this method.
+        """
+
         snapshot = list(vouchers)
         snapshot_observed_at = (
-            str(observed_at).strip()
-            if observed_at and str(observed_at).strip()
-            else datetime.now(timezone.utc).isoformat()
+            persisted.observed_at
+            if persisted is not None
+            else (
+                str(observed_at).strip()
+                if observed_at and str(observed_at).strip()
+                else datetime.now(timezone.utc).isoformat()
+            )
         )
-        requested_name = (
-            str(profile_name).strip()
-            if profile_name and str(profile_name).strip()
-            else ""
-        )
-        existing_id = self.database.find_controller_by_api_root(client.base_url)
-        persisted_name = requested_name
-        if not persisted_name and existing_id is not None:
-            persisted_name = self.database.controller_name(existing_id) or ""
-        if not persisted_name:
-            persisted_name = str(info.get("siteName") or "Controller UniFi")
 
-        controller_id = self.database.get_or_create_controller(
-            name=persisted_name,
-            api_root=client.base_url,
-            observed_at=snapshot_observed_at,
-            cert_sha256=client.trusted_cert_sha256 or "",
-        )
-        # Connection success includes a complete list_vouchers() snapshot, so
-        # it is safe to persist absence as well as current voucher facts.
-        persist_successful_snapshot(
-            self.database,
-            controller_id=controller_id,
-            vouchers=snapshot,
-            observed_at=snapshot_observed_at,
-        )
+        if persisted is None:
+            requested_name = (
+                str(profile_name).strip()
+                if profile_name and str(profile_name).strip()
+                else str(
+                    getattr(self, "_requested_controller_name", "")
+                ).strip()
+            )
+            existing_id = self.database.find_controller_by_api_root(
+                client.base_url
+            )
+            persisted_name = requested_name
+            if not persisted_name and existing_id is not None:
+                persisted_name = self.database.controller_name(existing_id) or ""
+            if not persisted_name:
+                persisted_name = str(
+                    info.get("siteName") or "Controller UniFi"
+                )
+
+            controller_id = self.database.get_or_create_controller(
+                name=persisted_name,
+                api_root=client.base_url,
+                observed_at=snapshot_observed_at,
+                cert_sha256=client.trusted_cert_sha256 or "",
+            )
+            persist_successful_snapshot(
+                self.database,
+                controller_id=controller_id,
+                vouchers=snapshot,
+                observed_at=snapshot_observed_at,
+            )
+        else:
+            controller_id = persisted.controller_id
+            persisted_name = persisted.controller_name
+
         self.active_controller_id = controller_id
         self.client = client
         self.vouchers = snapshot
         self.api_root_var.set(client.base_url)
+        name_var = getattr(self, "controller_name_var", None)
+        if name_var is not None:
+            name_var.set(persisted_name)
         self.settings = self.settings_store.update(
             controller_api_root=client.base_url,
             controller_cert_sha256=client.trusted_cert_sha256,
@@ -260,9 +315,22 @@ class ControllerConnectionMixin:
             f"{site_label} • {tls_label}"
         )
         self.checked_ids.clear()
+        callback = getattr(self, "_controller_operation_succeeded", None)
+        if callback is not None:
+            callback()
         self.populate()
         self.logger.info(
-            "controller_api_connected network_version=%s tls_pinned=%s",
+            "controller_api_connected network_version=%s tls_pinned=%s "
+            "snapshot_persisted_off_ui=%s",
             info["applicationVersion"],
             bool(client.trusted_cert_sha256),
+            persisted is not None,
         )
+        after = getattr(self, "after", None)
+        if callable(after):
+            after(
+                300,
+                lambda: self.logger.info(
+                    "controller_ui_event_loop_ready"
+                ),
+            )

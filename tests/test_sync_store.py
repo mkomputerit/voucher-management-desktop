@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from voucher_management.database import Database
-from voucher_management.sync_store import load_local_vouchers, persist_successful_snapshot
+from voucher_management.sync_store import (
+    load_local_vouchers,
+    persist_connection_snapshot_to_path,
+    persist_refresh_snapshot_to_path,
+    persist_successful_snapshot,
+)
 from voucher_management.unifi_api import ApiVoucher
 
 
@@ -226,3 +231,64 @@ def test_controller_reappearance_reactivates_archived_voucher(tmp_path):
         )] == ["1"]
     finally:
         db.close()
+
+
+def test_worker_path_connection_persists_controller_and_snapshot(tmp_path):
+    path = tmp_path / "worker.sqlite"
+    bootstrap = Database(path)
+    bootstrap.initialize()
+    bootstrap.close()
+
+    result = persist_connection_snapshot_to_path(
+        path,
+        api_root="https://controller.example",
+        cert_sha256="AA",
+        requested_name="Reception",
+        site_name="Default Site",
+        vouchers=[voucher("worker-1")],
+        observed_at="2026-09-28T07:30:00+00:00",
+    )
+
+    db = Database(path)
+    try:
+        db.initialize()
+        assert result.controller_name == "Reception"
+        assert db.controller_name(result.controller_id) == "Reception"
+        row = db.connection.execute(
+            "SELECT COUNT(*) FROM vouchers WHERE controller_id=?",
+            (result.controller_id,),
+        ).fetchone()
+        assert row[0] == 1
+    finally:
+        db.close()
+
+
+def test_worker_path_refresh_updates_snapshot(tmp_path):
+    path = tmp_path / "worker-refresh.sqlite"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="Reception",
+        api_root="https://controller.example",
+        created_at="2026-09-28T07:00:00+00:00",
+    )
+    db.close()
+
+    persist_refresh_snapshot_to_path(
+        path,
+        controller_id=controller,
+        vouchers=[voucher("worker-refresh", used=2)],
+        observed_at="2026-09-28T07:31:00+00:00",
+    )
+
+    check = Database(path)
+    try:
+        check.initialize()
+        row = check.connection.execute(
+            """SELECT authorized_guest_count
+               FROM vouchers WHERE controller_id=?""",
+            (controller,),
+        ).fetchone()
+        assert row["authorized_guest_count"] == 2
+    finally:
+        check.close()

@@ -26,6 +26,14 @@ was prepared for. Voucher codes themselves are not stored in clear text in
 labels should therefore be treated as local operational data and are included
 when application data is backed up.
 
+Starting with 5.1, each generated voucher label includes its recipient inside
+the cutting border, next to the access code. The recipient therefore remains
+on the physical voucher handed to the guest, as well as in the archived PDF.
+This includes any name or room reference entered as the recipient. The print
+preview explains this before physical printing. Operators should use only the
+recipient information they intend to hand to the guest. Existing archived PDFs
+retain their original layout; this change does not rewrite them.
+
 If a physical print was submitted but its audit write has not completed, a
 local `pending_print_audit.json` file temporarily stores only HMAC voucher
 identifiers plus print metadata needed for idempotent recovery. It does not
@@ -39,10 +47,16 @@ unverified hash/format/schema metadata. Full Windows destination paths,
 passwords and exception messages are not stored; failure detail is limited to
 the exception type.
 
-The normal backup workflow creates only password-protected `.vmbk` files.
-Legacy unencrypted ZIP archives remain readable for restore compatibility but
-are no longer offered as normal backup output. The encrypted form protects the
-complete portable snapshot, including generated PDFs and the local history key.
+From 5.1, operators choose an unencrypted ZIP or a password-protected `.vmbk`
+for each normal manual or shutdown backup. Password protection is selected by
+default, so producing a readable ZIP requires an explicit opt-out. The dialog explicitly identifies
+unencrypted copies: anyone with file access can read the database, voucher
+codes, recipients and PDFs. Selecting password protection encrypts and
+authenticates the complete portable snapshot, including the local history key.
+The default backup folder is stored as an operator preference. A folder chosen
+in the backup dialog applies only to that copy and never changes the default.
+Machine-specific backup destinations are cleared in exported settings so a
+restore cannot silently reuse another workstation's destination.
 Backup passwords are used only for the active create/restore operation and are
 not stored in settings, logs or backup metadata. Encrypted validation/restore uses
 an OS-managed anonymous/auto-delete temporary file for decrypted ZIP bytes,
@@ -56,6 +70,17 @@ automatically. When an
 operator explicitly archives a candidate, the durable historical row remains
 but the reusable voucher code, recipient label, nominal assignment and free-text
 notes are removed.
+
+Pre-SQLite legacy ZIP import is an explicit historical-recovery operation.
+Voucher rows backed by verified legacy PDF-generation or print evidence are
+protected from ordinary retention so that imported audit evidence is not
+silently disconnected from its subject. Those imported rows, including any
+recipient label recovered from the legacy history, therefore remain in the
+local archive unless a future explicit archive-removal workflow is used.
+Importing an old ZIP can also deliberately restore clear voucher/recipient data
+that had already been minimized in the current database when no durable
+verifiable identity remains to prove that the ZIP record is the same minimized
+voucher. The import confirmation warns about this before any live data changes.
 
 Manual history exchange packages (`.vmhx`) are always password-protected.
 They contain local audit rows and the portable history key needed to preserve

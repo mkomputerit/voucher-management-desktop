@@ -7,6 +7,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from .backup_options_ui import default_backup_directory, validate_backup_directory
 from .controller_probe import ControllerProbeResult, probe_controller
 from .identity import (
     DEFAULT_STRUCTURE_NAME,
@@ -21,9 +22,11 @@ from .onboarding import (
     OnboardingDraft,
     OnboardingState,
     begin_onboarding,
+    choose_shared_fresh_start,
     complete_onboarding,
     legacy_installation_has_evidence,
     onboarding_state,
+    shared_fresh_start_selected,
 )
 from .unifi_api import (
     UniFiApiError,
@@ -61,6 +64,7 @@ def startup_onboarding_state(app) -> OnboardingState:
 
     if (
         getattr(app.paths, "shared_mode", False)
+        and not shared_fresh_start_selected(app.database)
         and source_has_migratable_data(app.paths.per_user_root)
     ):
         # Shared ProgramData must remain pristine until the explicit per-user
@@ -81,7 +85,20 @@ def schedule_first_run_onboarding(
     state = startup_onboarding_state(app)
     if state is OnboardingState.REQUIRED:
         factory = wizard_factory or FirstRunWizard
-        app.after_idle(lambda: factory(app))
+
+        def launch() -> None:
+            try:
+                if not app.winfo_exists():
+                    return
+                app.deiconify()
+                app.lift()
+            except (AttributeError, tk.TclError):
+                pass
+            factory(app)
+
+        # Give the root one event-loop turn to become a real Windows top-level
+        # before creating the transient/grabbed wizard.
+        app.after(320, launch)
     return state
 
 
@@ -92,7 +109,8 @@ class FirstRunWizard(tk.Toplevel):
     PAGE_IDENTITY = 1
     PAGE_CONTROLLER = 2
     PAGE_RETENTION = 3
-    PAGE_SUMMARY = 4
+    PAGE_BACKUP = 4
+    PAGE_SUMMARY = 5
     LAST_PAGE = PAGE_SUMMARY
 
     def __init__(self, app):
@@ -161,6 +179,9 @@ class FirstRunWizard(tk.Toplevel):
         self.retention_days_var = tk.StringVar(
             value=str(DEFAULT_VOUCHER_RETENTION_DAYS)
         )
+
+        self.backup_directory_var = tk.StringVar(value=default_backup_directory(app))
+        self.backup_on_close_var = tk.BooleanVar(value=bool(settings.get("backup_on_close", True)))
 
         shell = ttk.Frame(self, padding=22)
         shell.pack(fill="both", expand=True)
@@ -243,6 +264,7 @@ class FirstRunWizard(tk.Toplevel):
             self.PAGE_IDENTITY: self._render_identity,
             self.PAGE_CONTROLLER: self._render_controller,
             self.PAGE_RETENTION: self._render_retention,
+            self.PAGE_BACKUP: self._render_backup,
             self.PAGE_SUMMARY: self._render_summary,
         }
         renderers[self.page]()
@@ -251,7 +273,7 @@ class FirstRunWizard(tk.Toplevel):
     def _render_welcome(self) -> None:
         self.header_var.set("Benvenuto in Voucher Management")
         self.subtitle_var.set(
-            "Questa procedura configura una nuova installazione 5.0. "
+            "Questa procedura configura una nuova installazione. "
             "Le credenziali UniFi vengono usate solo nella sessione corrente "
             "e non vengono salvate."
         )
@@ -260,7 +282,7 @@ class FirstRunWizard(tk.Toplevel):
             text=(
                 "La procedura imposta l'identità della postazione e dei voucher, "
                 "verifica il controller UniFi e applica la retention conservativa "
-                "dello storico locale."
+                "dello storico locale e la cartella dei backup."
             ),
             wraplength=650,
         ).pack(anchor="w", pady=(18, 8))
@@ -431,6 +453,34 @@ class FirstRunWizard(tk.Toplevel):
             wraplength=650,
         ).pack(anchor="w", pady=(18, 0))
 
+    def _render_backup(self) -> None:
+        self.header_var.set("Copie di sicurezza")
+        self.subtitle_var.set("Scegli la cartella predefinita. Potrai cambiarla in Impostazioni > Backup.")
+        ttk.Label(self.body, text="Cartella predefinita dei backup").pack(anchor="w", pady=(12, 6))
+        ttk.Entry(self.body, textvariable=self.backup_directory_var, width=65).pack(fill="x")
+        ttk.Button(self.body, text="Scegli cartella…", command=self._choose_backup_directory).pack(anchor="w", pady=8)
+        ttk.Checkbutton(self.body, text="Proponi una copia di sicurezza alla chiusura",
+                        variable=self.backup_on_close_var).pack(anchor="w", pady=(12, 8))
+        ttk.Label(self.body, text=(
+            "A ogni backup potrai usare questa cartella oppure sceglierne un'altra solo per quella copia. "
+            "La protezione con password è facoltativa ma preselezionata: lasciandola attiva il backup è cifrato (.vmbk); "
+            "disattivandola esplicitamente viene creato un ZIP leggibile. "
+            "In chiusura potrai anche uscire senza creare una copia."
+        ), wraplength=650).pack(anchor="w", pady=8)
+
+    def _choose_backup_directory(self) -> None:
+        selected = filedialog.askdirectory(parent=self, title="Cartella predefinita backup",
+                                           initialdir=self.backup_directory_var.get(), mustexist=False)
+        if selected:
+            self.backup_directory_var.set(selected)
+
+    def _validated_backup_directory(self) -> str | None:
+        try:
+            return str(validate_backup_directory(self.backup_directory_var.get(), self.app.paths.user_root))
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Cartella backup", str(exc), parent=self)
+            return None
+
     def _render_summary(self) -> None:
         self.header_var.set("Riepilogo")
         self.subtitle_var.set(
@@ -440,6 +490,8 @@ class FirstRunWizard(tk.Toplevel):
         info = result.info if result is not None else {}
         rows = (
             ("Installazione", self.installation_name_var.get().strip()),
+            ("Cartella backup", self.backup_directory_var.get()),
+            ("Backup alla chiusura", "Proposto" if self.backup_on_close_var.get() else "Non proposto"),
             ("Struttura", self.structure_name_var.get().strip()),
             ("Titolo Wi-Fi", self.wifi_title_var.get().strip()),
             ("Controller", self.controller_name_var.get().strip()),
@@ -550,6 +602,8 @@ class FirstRunWizard(tk.Toplevel):
         if self.page == self.PAGE_RETENTION:
             if self._validated_retention() is None:
                 return
+        if self.page == self.PAGE_BACKUP and self._validated_backup_directory() is None:
+            return
         if self.page == self.PAGE_SUMMARY:
             self._finish()
             return
@@ -762,6 +816,12 @@ class FirstRunWizard(tk.Toplevel):
             self._render_page()
             return
 
+        backup_directory = self._validated_backup_directory()
+        if backup_directory is None:
+            self.page = self.PAGE_BACKUP
+            self._render_page()
+            return
+
         observed_at = datetime.now(timezone.utc).isoformat()
         result = self._controller_result
         try:
@@ -787,6 +847,8 @@ class FirstRunWizard(tk.Toplevel):
                 pdf_contact="",
                 pdf_notes="",
                 unused_unprinted_days=retention,
+                backup_directory=backup_directory,
+                backup_on_close=bool(self.backup_on_close_var.get()),
             )
             self.app.settings = complete_onboarding(
                 self.app.database,

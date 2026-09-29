@@ -6,6 +6,20 @@ The current development line is field-tested with Ubiquiti UniFi Network. **Vouc
 
 ## Current development state
 
+This branch contains the **5.1.0 release candidate**, identified as 5.1.0 in
+the application and executable metadata for field testing. It is not yet a
+published stable release; `CHANGELOG.md` deliberately remains `Unreleased`
+until the release gate is completed. The last stable release is 5.0.0.
+
+Before tagging 5.1.0, complete visual checks on Windows at 125% and 150% scaling,
+including moving the window between monitors with different scaling. Inspect
+Home/Voucher/Report/Settings, sidebar icons and connection colours in both
+themes. Icon regeneration currently follows changes reported by `tk scaling`;
+automatic per-monitor DPI adaptation has not been established by the tests.
+Verify a physical voucher with a configured logo and recipient inside the cut
+area. Automated keyboard coverage exercises real Tk navigation and Space on
+Windows in addition to the selection-model tests.
+
 The application currently provides:
 
 - direct voucher listing and creation, with a durable anti-repeat barrier for
@@ -32,9 +46,10 @@ The application currently provides:
   export/import for deliberate idempotent merging between compatible stations;
   new generation events carry stable IDs so independent identical events from
   separate stations remain distinct during convergence;
-- encrypted/authenticated `.vmbk` backup creation and restore of
-  application-managed data, including a default backup-before-close workflow;
-  plaintext ZIP remains accepted only for legacy restore compatibility;
+- verified backup creation and restore, with optional password-protected
+  `.vmbk` encryption or an explicitly identified unencrypted ZIP;
+- first-run backup-folder configuration, a Home last-successful-backup indicator
+  and an optional backup proposal on close with per-copy destination choices;
 - SQLite backup audit for manual, shutdown and migration safety backups,
   recording privacy-safe outcome metadata plus SHA-256/format/schema facts for
   verified final artifacts without storing passwords or full destination paths;
@@ -46,6 +61,11 @@ The application currently provides:
   old/absent unused rows with no generated PDF are minimized without deleting
   their historical audit record; unverifiable HMAC history blocks retention
   rather than guessing whether a credential-bearing document exists;
+- explicit pre-SQLite ZIP history import whose verified generated/printed legacy
+  evidence is retained outside ordinary minimization; the confirmation warns
+  that deliberately importing an old archive can restore clear data that had
+  previously been minimized when no durable identity remains to prove it is the
+  same historical voucher;
 - persistent custom logo library;
 - installation-scoped first-run onboarding for genuinely new 5.0 deployments,
   including explicit UniFi/TLS verification and migration precedence;
@@ -179,6 +199,20 @@ working file containing printable voucher data. At startup, Voucher Management
 removes only managed renderer temp files older than 24 hours; these scratch
 files are also excluded from application backups.
 
+
+The first-run wizard configures the default backup folder and whether to offer
+backup on close. Existing installations can set these in Settings > Backup.
+Closing offers **Create backup and close**, **Exit without backup**, or **Cancel**.
+The dialog shows the default folder; selecting another folder changes only that
+copy, not the saved preference. Password protection is optional for both manual
+and shutdown copies, but it is selected by default: leaving it selected creates
+an AES-GCM `.vmbk` and requires matching passwords of at least 12 characters;
+explicitly unchecking it creates a readable `.zip`.
+Home shows the last verified successful backup recorded locally and provides a
+manual backup action. A failed attempt does not replace that timestamp. After a
+restore, the saved destination is reset to the local fallback folder; choose a
+new default in Settings. Safety backups for migration retain their dedicated
+protected workflow.
 
 Encrypted backups use a password supplied only for the active operation. The
 application derives an AES-256 key with Scrypt and authenticates the complete

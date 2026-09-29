@@ -40,7 +40,10 @@ from .print_archive import (
 )
 from .settings import SettingsStore
 from .single_instance import InstanceAlreadyRunning, SingleInstanceGuard
-from .sync_store import load_local_vouchers, persist_successful_snapshot
+from .sync_store import (
+    load_local_vouchers,
+    persist_refresh_snapshot_to_path,
+)
 from .voucher_creation_ui import VoucherCreationMixin
 from .security.history_key import HistoryKeyStore
 from .unifi_api import ApiVoucher, UniFiApiError
@@ -83,6 +86,17 @@ def status_label(status: str) -> str:
 
 def time_label(ts: int) -> str:
     return datetime.fromtimestamp(ts).strftime("%d/%m/%Y %H:%M") if ts else "-"
+
+
+def print_action_label(count: int) -> str:
+    """Return the operator-facing print action without workflow jargon."""
+
+    count = max(0, int(count))
+    return (
+        f"Stampa selezionati ({count})"
+        if count
+        else "Stampa selezionati"
+    )
 
 
 class VoucherApp(VoucherCreationMixin, tk.Tk):
@@ -260,7 +274,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self.filter_var = tk.StringVar(value="Da stampare")
         self.search_var = tk.StringVar()
         self.count_var = tk.StringVar(value="0 voucher")
-        self.action_var = tk.StringVar(value="PREPARA STAMPA")
+        self.action_var = tk.StringVar(value=print_action_label(0))
         self._build_ui()
         # Route only an ordinary window-manager close through the 5.0
         # disaster-recovery workflow. Internal destroy() calls used after a
@@ -281,7 +295,9 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         if retention_intro is not None and (
             retention_intro_allowed is None or retention_intro_allowed()
         ):
-            self.after_idle(retention_intro)
+            # Avoid racing the first Windows mapping with a transient/grabbed
+            # retention dialog in a console-less packaged build.
+            self.after(380, retention_intro)
         if logo_warning:
             messagebox.showwarning(
                 "Logo rimosso",
@@ -568,18 +584,30 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             return
 
         client = self.client
+        controller_id = getattr(self, "active_controller_id", None)
+        database_path = (
+            Path(self.paths.database)
+            if controller_id is not None
+            else None
+        )
 
-        def completed(vouchers) -> None:
-            snapshot = list(vouchers)
-            controller_id = getattr(self, "active_controller_id", None)
+        def worker():
+            snapshot = list(refresh_vouchers(client))
             if controller_id is not None:
-                persist_successful_snapshot(
-                    self.database,
+                persist_refresh_snapshot_to_path(
+                    database_path,
                     controller_id=controller_id,
                     vouchers=snapshot,
                     observed_at=datetime.now(timezone.utc).isoformat(),
                 )
+            return snapshot
+
+        def completed(vouchers) -> None:
+            snapshot = list(vouchers)
             self.vouchers = snapshot
+            callback = getattr(self, "_controller_operation_succeeded", None)
+            if callback is not None:
+                callback()
             try:
                 self.create_guard.clear()
             except CreateMutationGuardError as exc:
@@ -597,6 +625,9 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             self.populate()
 
         def failed(exc: Exception) -> None:
+            callback = getattr(self, "_controller_operation_failed", None)
+            if callback is not None:
+                callback()
             self._show_network_error(
                 "Sincronizzazione",
                 exc,
@@ -604,7 +635,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         self._run_network_task(
             "Aggiornamento voucher…",
-            lambda: refresh_vouchers(client),
+            worker,
             completed,
             failed,
         )
@@ -645,11 +676,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             f"{len(self.by_iid)} visualizzati  •  "
             f"{len(self.checked_ids)} selezionati"
         )
-        self.action_var.set(
-            f"PREPARA STAMPA  ({len(self.checked_ids)})"
-            if self.checked_ids
-            else "PREPARA STAMPA"
-        )
+        self.action_var.set(print_action_label(len(self.checked_ids)))
 
     def on_tree_click(self, event):
         if self.tree.identify_region(event.x, event.y) != "cell" or self.tree.identify_column(event.x) != "#1":
@@ -691,7 +718,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         if not selected:
             messagebox.showinfo(
                 "Stampa",
-                "Selezionare uno o più voucher attivi dalla prima colonna",
+                "Selezionare uno o più voucher attivi nella tabella",
                 parent=self,
             )
             return
