@@ -2544,7 +2544,11 @@ class ModernVoucherApp(
 
     def _controller_operation_failed(self) -> None:
         self._controller_status_failed = True
+        self.controller_snapshot_live = False
         self._refresh_controller_workspace_status()
+        populate = getattr(self, "populate", None)
+        if callable(populate):
+            populate()
 
     def _controller_operation_succeeded(self) -> None:
         self._controller_status_failed = False
