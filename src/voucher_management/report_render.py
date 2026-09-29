@@ -60,6 +60,15 @@ def _csv_cell(value: object) -> str:
     return text
 
 
+def _origin_label(origin: str | None) -> str:
+    return {
+        "APPLICATION": "Voucher Management",
+        "CONTROLLER": "Controller / esterno",
+        "LEGACY": "Import storico",
+        None: "Non determinata",
+    }.get(origin, "Non determinata")
+
+
 def _display_time(value: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -144,7 +153,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
     values.extend(
         [
             row.recipient or "—",
-            "Voucher Management" if row.created_by_app is True else "Non attribuita",
+            _origin_label(row.origin),
             nominal,
             _display_time(row.created_at),
             _display_time(row.imported_at),
@@ -226,7 +235,7 @@ def render_report_pdf(
             for value in (
                 row.controller_name,
                 row.recipient,
-                "Voucher Management" if row.created_by_app is True else "Non attribuita",
+                _origin_label(row.origin),
                 "Sì" if row.is_nominal is True else "No" if row.is_nominal is False else "Non classificato",
                 row.status,
                 ", ".join(row.print_operators),
