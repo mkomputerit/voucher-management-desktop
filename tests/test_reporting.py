@@ -864,3 +864,73 @@ def test_report_totals_count_distinct_print_jobs_not_voucher_relations(tmp_path)
         assert full.totals.reprint_jobs == 1
     finally:
         db.close()
+
+
+def test_printed_unused_requires_controller_observation_after_first_print(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "printed-after-last-sync",
+            "5656565656",
+            synced_at="2026-09-01T09:00:00+00:00",
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="after-sync-print",
+            codes=["56565-65656"],
+            output_file="voucher.pdf",
+            document_copies=1,
+            printed_at="2026-09-02T10:00:00+00:00",
+            windows_user="PC\\alice",
+        )
+
+        stale = build_report_dataset(
+            db,
+            kind=ReportKind.PRINTED_UNUSED,
+            generated_at=NOW,
+        )
+        assert stale.rows == ()
+
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET last_synced_at=?, usage_observed=1,
+                       authorized_guest_count=0, ever_used=0
+                   WHERE id=?""",
+                ("2026-09-03T10:00:00+00:00", voucher_id),
+            )
+
+        observed_after_print = build_report_dataset(
+            db,
+            kind=ReportKind.PRINTED_UNUSED,
+            generated_at=NOW,
+        )
+        assert [row.voucher_id for row in observed_after_print.rows] == [voucher_id]
+    finally:
+        db.close()
+
+
+def test_internal_migration_operator_is_labeled_as_historical_import(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller, "legacy-print-label", "7878787878")
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="migration-print-label",
+            codes=["78787-87878"],
+            output_file="legacy.pdf",
+            document_copies=1,
+            printed_at="2026-09-02T10:00:00+00:00",
+            windows_user="MIGRATION",
+        )
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.PRINTED,
+            generated_at=NOW,
+        )
+        row = next(row for row in dataset.rows if row.voucher_id == voucher_id)
+        assert row.print_operators == ("Importazione storica",)
+    finally:
+        db.close()
