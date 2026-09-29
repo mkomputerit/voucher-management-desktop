@@ -316,10 +316,16 @@ class RetentionReviewDialog(tk.Toplevel):
             )
             return
         if self.app.active_controller_id is not None:
-            self.app.vouchers = load_local_vouchers(
-                self.app.database,
-                controller_id=self.app.active_controller_id,
-            )
+            # Archivable rows are already absent from a live controller snapshot,
+            # so a connected Home does not need to replace its fresh list with
+            # the broader historical SQLite cache. In local/offline mode, reload
+            # that cache but keep Home explicitly non-live.
+            if not bool(getattr(self.app, "controller_snapshot_live", False)):
+                self.app.vouchers = load_local_vouchers(
+                    self.app.database,
+                    controller_id=self.app.active_controller_id,
+                )
+                self.app.controller_snapshot_live = False
             self.app.checked_ids.clear()
             self.app.populate()
 
