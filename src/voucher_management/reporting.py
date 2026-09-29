@@ -182,6 +182,24 @@ def _time_bounds(values: Iterable[str]) -> tuple[str, str]:
     return parsed[0][1], parsed[-1][1]
 
 
+def _time_at_or_after(later: object, earlier: object) -> bool:
+    """Return true only when both timestamps are parseable and ordered."""
+
+    later_time = _parse_time(later)
+    earlier_time = _parse_time(earlier)
+    if later_time is None or earlier_time is None:
+        return False
+    if later_time.tzinfo is None:
+        later_time = later_time.replace(tzinfo=timezone.utc)
+    else:
+        later_time = later_time.astimezone(timezone.utc)
+    if earlier_time.tzinfo is None:
+        earlier_time = earlier_time.replace(tzinfo=timezone.utc)
+    else:
+        earlier_time = earlier_time.astimezone(timezone.utc)
+    return later_time >= earlier_time
+
+
 def _expired_at_report_time(
     *,
     persisted_expired: bool,
@@ -262,7 +280,12 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind is ReportKind.PRINTED:
         return row.print_jobs > 0
     if kind is ReportKind.PRINTED_UNUSED:
-        return row.print_jobs > 0 and row.usage_observed and not row.ever_used
+        return (
+            row.print_jobs > 0
+            and row.usage_observed
+            and not row.ever_used
+            and _time_at_or_after(row.last_synced_at, row.first_printed_at)
+        )
     if kind is ReportKind.NEVER_PRINTED:
         return row.print_jobs == 0
     if kind is ReportKind.NOMINAL:
@@ -484,7 +507,9 @@ def _build_report_dataset_snapshot(
         f"Registrazioni da backup precedente: {legacy_count}; la loro importazione non prova "
         "scadenza né utilizzo e non è una sincronizzazione controller. "
         "Senza stampe registrate significa senza evidenze associate a questa identità locale, "
-        "non necessariamente mai stampato. I job di stampa sono invii documento unici; "
+        "non necessariamente mai stampato. 'Stampati - nessun utilizzo rilevato' richiede "
+        "una osservazione controller non precedente alla prima stampa. "
+        "I job di stampa sono invii documento unici; "
         "le copie fisiche contano invece le copie dei singoli voucher associate ai job. "
         "Descrizione UniFi e destinatario locale sono mantenuti separati: uno non prova "
         "il significato dell'altro."
