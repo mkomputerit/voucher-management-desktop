@@ -183,7 +183,11 @@ class CreateDialog(tk.Toplevel):
                 data_mb=self.data.get(),
                 down_mbps=self.down.get(),
                 up_mbps=self.up.get(),
-                is_nominal=self.nominal.get(),
+                is_nominal=(
+                    self.nominal.get()
+                    if hasattr(self, "nominal")
+                    else False
+                ),
             )
         except (TypeError, ValueError, tk.TclError):
             messagebox.showerror(
