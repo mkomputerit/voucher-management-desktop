@@ -1183,3 +1183,33 @@ def test_report_consistency_guard_rejects_detail_count_mismatch(tmp_path):
             validate_report_dataset_consistency(broken)
     finally:
         db.close()
+
+
+def test_naive_persisted_times_follow_utc_contract(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "naive-time",
+            "7272727272",
+            expires_at="2026-09-29T09:30:00",
+            synced_at="2026-09-29T09:00:00",
+        )
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.EXPIRED,
+            generated_at="2026-09-29T11:00:00+02:00",
+        )
+        # 11:00 +02 == 09:00 UTC, so a naive persisted 09:30 UTC expiry
+        # has not yet occurred.
+        assert dataset.rows == ()
+
+        expired = build_report_dataset(
+            db,
+            kind=ReportKind.EXPIRED,
+            generated_at="2026-09-29T12:00:00+02:00",
+        )
+        assert [row.voucher_id for row in expired.rows] == [voucher_id]
+    finally:
+        db.close()
