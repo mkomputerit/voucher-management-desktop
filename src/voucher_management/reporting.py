@@ -191,7 +191,7 @@ def origin_label(origin: str) -> str:
     return {
         "APPLICATION": "Voucher Management",
         "LEGACY_APPLICATION": "Evidenza legacy (creazione non provata)",
-        "CONTROLLER": "Controller / esterno",
+        "CONTROLLER": "Rilevato sulla controller (creatore non provato)",
         "UNKNOWN": "Non determinata",
     }.get(str(origin or "").strip(), "Non determinata")
 
