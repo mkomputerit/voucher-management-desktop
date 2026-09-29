@@ -15,11 +15,13 @@ def _schema_v2_sql() -> str:
 
     schema = SCHEMA_SQL
     for fragment in (
-        "    created_by_app INTEGER CHECK (created_by_app IS NULL OR created_by_app IN (0, 1)),\n",
+        "    origin TEXT CHECK (\n"
+        "        origin IS NULL OR origin IN ('APPLICATION', 'CONTROLLER', 'LEGACY')\n"
+        "    ),\n",
         "    is_nominal INTEGER CHECK (is_nominal IS NULL OR is_nominal IN (0, 1)),\n",
         "    classification_updated_at TEXT,\n",
         "    ever_used INTEGER NOT NULL DEFAULT 0 CHECK (ever_used IN (0, 1)),\n",
-        "CREATE INDEX IF NOT EXISTS idx_vouchers_created_by_app ON vouchers(created_by_app);\n",
+        "CREATE INDEX IF NOT EXISTS idx_vouchers_origin ON vouchers(origin);\n",
         "CREATE INDEX IF NOT EXISTS idx_vouchers_is_nominal ON vouchers(is_nominal);\n",
         "CREATE INDEX IF NOT EXISTS idx_vouchers_ever_used ON vouchers(ever_used);\n",
     ):
@@ -126,7 +128,7 @@ def test_voucher_upsert_preserves_local_fields(tmp_path):
         assert row["expired"] == 1
         assert row["assigned_to"] == "Mario Rossi"
         assert row["notes"] == "Consegna reception"
-        assert row["created_by_app"] == 1
+        assert row["origin"] == "APPLICATION"
         assert row["is_nominal"] == 1
         assert row["classification_updated_at"] == "2026-09-25T12:02:00+00:00"
         assert row["ever_used"] == 1
@@ -438,7 +440,7 @@ def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
             for row in db.connection.execute("PRAGMA table_info(vouchers)")
         }
         assert {
-            "created_by_app",
+            "origin",
             "is_nominal",
             "classification_updated_at",
             "ever_used",
@@ -492,7 +494,7 @@ def test_schema_two_migration_recovers_ever_used_without_guessing_classification
             (voucher,),
         ).fetchone()
         assert db.connection.execute("PRAGMA user_version").fetchone()[0] == 3
-        assert row["created_by_app"] is None
+        assert row["origin"] is None
         assert row["is_nominal"] is None
         assert row["ever_used"] == 1
     finally:
