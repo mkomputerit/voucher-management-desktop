@@ -581,22 +581,22 @@ class SettingsDialog(tk.Toplevel):
             text=(
                 "Il backup comprende configurazione, storico, PDF generati, "
                 "loghi e la chiave portabile della cronologia. La API key UniFi "
-                "non viene mai salvata. I nuovi backup creati dall'interfaccia "
-                "sono sempre cifrati e autenticati."
+                "non viene mai salvata. Puoi scegliere un ZIP non cifrato "
+                "oppure proteggere la copia con una password (.vmbk)."
             ),
             style="Muted.TLabel",
             wraplength=560,
         ).pack(anchor="w", pady=(3, 10))
         ttk.Checkbutton(
             frame,
-            text="Crea un backup cifrato prima della chiusura (consigliato)",
+            text="Proponi una copia di sicurezza alla chiusura",
             variable=self.backup_on_close,
         ).pack(anchor="w", pady=(0, 10))
         ttk.Label(
             frame,
             text=(
-                "Il backup automatico richiede la password alla chiusura e la "
-                "password non viene memorizzata."
+                "Alla chiusura puoi scegliere cartella e password facoltativa "
+                "oppure uscire senza backup. La password non viene memorizzata."
             ),
             style="Muted.TLabel",
             wraplength=560,

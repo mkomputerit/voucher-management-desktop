@@ -148,6 +148,8 @@ def test_real_wizard_reaches_backup_step_and_saves_it_at_completion(tmp_path, mo
     root.logger = SimpleNamespace(error=lambda *args: None)
     root._finish_connection = lambda *args, **kwargs: None
     monkeypatch.setattr(onboarding_ui.messagebox, "showinfo", lambda *args, **kwargs: None)
+    monkeypatch.setattr(onboarding_ui.messagebox, "showerror",
+                        lambda *args, **kwargs: pytest.fail(f"Unexpected wizard error: {args}"))
     try:
         wizard = onboarding_ui.FirstRunWizard(root)
         wizard._next()
