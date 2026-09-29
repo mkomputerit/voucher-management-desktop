@@ -106,7 +106,7 @@ class VoucherCreationMixin:
                         "configurazione multi-postazione non è sicuro attribuire "
                         "automaticamente eventuali nuovi voucher a questa richiesta."
                     )
-                    if outcome.local_persistence_error is not None:
+                    if getattr(outcome, "local_persistence_error", None) is not None:
                         detail += (
                             "\nInoltre l'archivio locale dei report non è stato "
                             "aggiornato correttamente."
@@ -149,10 +149,10 @@ class VoucherCreationMixin:
             self.filter_var.set("Da stampare")
             self.populate()
 
-            if outcome.local_persistence_error is not None:
+            if getattr(outcome, "local_persistence_error", None) is not None:
                 self.logger.error(
                     "create_reporting_persistence_failed type=%s",
-                    type(outcome.local_persistence_error).__name__,
+                    type(getattr(outcome, "local_persistence_error", None)).__name__,
                 )
                 messagebox.showwarning(
                     "Voucher creati • archivio locale da verificare",
