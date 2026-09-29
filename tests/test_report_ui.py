@@ -8,11 +8,7 @@ from types import SimpleNamespace
 from voucher_management import report_ui
 from voucher_management.report_policy import ReportPurpose
 from voucher_management.report_ui import ReportDialog
-from voucher_management.reporting import (
-    ReportDataset,
-    ReportKind,
-    ReportTotals,
-)
+from voucher_management.reporting import ReportDataset, ReportKind, ReportTotals
 
 
 def _empty_dataset() -> ReportDataset:
@@ -50,14 +46,18 @@ def _variable(value):
     return SimpleNamespace(get=lambda: value)
 
 
-def test_report_query_runs_before_background_renderer(monkeypatch, tmp_path: Path):
+def test_report_query_and_renderer_both_run_inside_background_worker(
+    monkeypatch,
+    tmp_path: Path,
+):
     events = []
     tasks = []
     output = tmp_path / "report.pdf"
     dataset = _empty_dataset()
+    database_path = tmp_path / "voucher_management.db"
 
-    def build(database, **kwargs):
-        events.append(("build", database, kwargs))
+    def build(path, **kwargs):
+        events.append(("build", Path(path), kwargs))
         return dataset
 
     def render(current_dataset, target, *, installation_name=""):
@@ -78,8 +78,8 @@ def test_report_query_runs_before_background_renderer(monkeypatch, tmp_path: Pat
         return True
 
     app = SimpleNamespace(
-        database=object(),
         active_controller_id=7,
+        paths=SimpleNamespace(database=database_path),
         settings={"structure_name": "Sala Assemblee"},
         logger=SimpleNamespace(error=lambda *args, **kwargs: None),
         _run_background_task=run_background,
@@ -93,7 +93,7 @@ def test_report_query_runs_before_background_renderer(monkeypatch, tmp_path: Pat
         _set_busy=lambda busy: events.append(("busy", busy)),
     )
 
-    monkeypatch.setattr(report_ui, "build_report_dataset", build)
+    monkeypatch.setattr(report_ui, "build_report_dataset_from_path", build)
     monkeypatch.setattr(report_ui, "render_report_pdf", render)
     monkeypatch.setattr(
         report_ui.filedialog,
@@ -103,28 +103,28 @@ def test_report_query_runs_before_background_renderer(monkeypatch, tmp_path: Pat
 
     ReportDialog._generate(dialog)
 
-    assert events[0][0] == "build"
+    assert events == []
     assert len(tasks) == 1
     assert tasks[0]["label"] == "Generazione report…"
     assert tasks[0]["busy_scope"] is dialog._set_busy
-    assert all(event[0] != "render" for event in events)
 
     result = tasks[0]["worker"]()
 
     assert result == output
-    assert events[-1] == (
+    assert events[0][0] == "build"
+    assert events[0][1] == database_path
+    assert events[0][2]["controller_id"] == 7
+    assert events[1] == (
         "render",
         dataset,
         output,
         "Sala Assemblee",
     )
-    assert events[0][2]["controller_id"] == 7
 
 
 def test_active_controller_scope_without_controller_blocks_cleanly(monkeypatch):
     messages = []
     app = SimpleNamespace(
-        database=object(),
         active_controller_id=None,
         settings={},
         logger=SimpleNamespace(error=lambda *args, **kwargs: None),
@@ -151,11 +151,13 @@ def test_active_controller_scope_without_controller_blocks_cleanly(monkeypatch):
     assert "Nessun controller attivo" in messages[0][1]
 
 
-def test_report_choices_cover_historical_core_views():
+def test_report_choices_cover_historical_core_and_data_quality_views():
     labels = [label for label, _kind in report_ui.REPORT_CHOICES]
-    assert "Generati da Voucher Management" in labels
-    assert "Generati e mai utilizzati" in labels
+    assert "Creazione VM confermata" in labels
+    assert "Creazione VM confermata • mai osservati usati" in labels
     assert "Stampati" in labels
     assert "Nominali" in labels
     assert "Non classificati" in labels
     assert "Uso non determinabile" in labels
+    assert "Origine creazione non determinabile" in labels
+    assert "Nominalità rimossa per privacy" in labels
