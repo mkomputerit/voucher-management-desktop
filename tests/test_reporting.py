@@ -443,7 +443,9 @@ def test_legacy_import_is_not_expiry_or_controller_observation(tmp_path):
     expired = build_report_dataset(db, kind=ReportKind.EXPIRED, generated_at=NOW)
     assert expired.totals.vouchers == 0
     summary = build_report_dataset(db, kind=ReportKind.SUMMARY, generated_at=NOW)
-    old = next(row for row in summary.rows if row.controller_name == "Previous backup")
+    assert summary.rows == ()
+    history = build_report_dataset(db, kind=ReportKind.FULL_HISTORY, generated_at=NOW)
+    old = next(row for row in history.rows if row.controller_name == "Previous backup")
     assert old.last_synced_at == ""
     assert not old.expired
     assert "backup" in old.status.lower()
@@ -458,7 +460,7 @@ def test_empty_filtered_report_keeps_scope_observation_and_missing_data_reason(t
     assert report.totals.vouchers == 0
     assert report.data_as_of == NOW
     assert "Nessun risultato" in report.coverage_note
-    assert "nominalità 1" in report.coverage_note
+    assert "nominalità non classificata 1" in report.coverage_note
     db.close()
 
 
