@@ -214,6 +214,18 @@ def test_delete_candidates_are_reread_before_policy():
     assert client.delete_calls == []
 
 
+def test_delete_policy_blocks_voucher_with_durable_historical_use():
+    current = voucher("v1", "1111122222", used=0, status="VALID_MULTI")
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        historically_used_ids=frozenset({"v1"}),
+    )
+
+    assert len(blocked) == 1
+    assert blocked[0].policy.reason == "in_use"
+
+
 def test_delete_policy_also_blocks_locally_printed_voucher():
     current = voucher("v1", "1111122222")
     blocked = evaluate_delete_candidates(
