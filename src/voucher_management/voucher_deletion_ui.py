@@ -137,7 +137,7 @@ class VoucherDeletionMixin:
                 callback = getattr(self, "_controller_operation_stale", None)
                 if callback is not None:
                     callback()
-            elif outcome.local_persistence_error is not None:
+            elif getattr(outcome, "local_persistence_error", None) is not None:
                 callback = getattr(self, "_controller_operation_stale", None)
                 if callback is not None:
                     callback(archive_failed=True)
@@ -157,10 +157,10 @@ class VoucherDeletionMixin:
                 )
                 return
 
-            if outcome.local_persistence_error is not None:
+            if getattr(outcome, "local_persistence_error", None) is not None:
                 self.logger.error(
                     "delete_archive_persistence_failed type=%s",
-                    type(outcome.local_persistence_error).__name__,
+                    type(getattr(outcome, "local_persistence_error", None)).__name__,
                 )
                 messagebox.showwarning(
                     "Eliminazione completata • archivio locale da verificare",
@@ -210,9 +210,14 @@ class VoucherDeletionMixin:
                         vouchers=list(outcome.vouchers),
                         observed_at=datetime.now(timezone.utc).isoformat(),
                     )
+                    marker_path = getattr(
+                        paths,
+                        "pending_create_reporting",
+                        database_path.with_name("pending_create_reporting.json"),
+                    )
                     reconcile_pending_create_reporting_to_path(
                         database_path,
-                        self.paths.pending_create_reporting,
+                        marker_path,
                         controller_id=controller_id,
                     )
                 except Exception as exc:
@@ -255,9 +260,14 @@ class VoucherDeletionMixin:
                         vouchers=vouchers,
                         observed_at=datetime.now(timezone.utc).isoformat(),
                     )
+                    marker_path = getattr(
+                        paths,
+                        "pending_create_reporting",
+                        database_path.with_name("pending_create_reporting.json"),
+                    )
                     reconcile_pending_create_reporting_to_path(
                         database_path,
-                        self.paths.pending_create_reporting,
+                        marker_path,
                         controller_id=controller_id,
                     )
                 except Exception as exc:
