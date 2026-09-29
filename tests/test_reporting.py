@@ -628,20 +628,19 @@ def test_report_query_defaults_to_credential_minimization(tmp_path):
         row = db.report_voucher_rows(controller_id=controller)[0]
         assert int(row["voucher_id"]) == voucher_id
         assert row["code"] == ""
-        assert row["name"] == "Descrizione UniFi"
-        assert row["assigned_to"] == "Mario Rossi"
-        assert row["print_operators"] == "PC\\operator"
+        assert row["name"] == ""
+        assert row["assigned_to"] == ""
+        assert row["print_operators"] == ""
         assert "controller_api_root" not in row.keys()
         assert row["legacy_source"] == 0
 
-        aggregate_row = db.report_voucher_rows(
-            controller_id=controller,
-            include_personal_details=False,
-        )[0]
-        assert aggregate_row["code"] == ""
-        assert aggregate_row["name"] == ""
-        assert aggregate_row["assigned_to"] == ""
-        assert aggregate_row["print_operators"] == ""
+        details = db.report_voucher_personal_details(
+            voucher_ids=[voucher_id],
+        )
+        assert set(details) == {voucher_id}
+        assert details[voucher_id]["name"] == "Descrizione UniFi"
+        assert details[voucher_id]["assigned_to"] == "Mario Rossi"
+        assert details[voucher_id]["print_operators"] == "PC\\operator"
     finally:
         db.close()
 
@@ -657,5 +656,63 @@ def test_report_query_exposes_code_only_when_explicitly_authorized(tmp_path):
         )[0]
         assert hidden["code"] == ""
         assert exposed["code"] == "1234567890"
+    finally:
+        db.close()
+
+
+def test_filtered_report_enriches_only_rows_that_match(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        nominal = _voucher(
+            db,
+            controller,
+            "nominal-only",
+            "1111122222",
+            name="Nominale UniFi",
+        )
+        excluded = _voucher(
+            db,
+            controller,
+            "excluded",
+            "3333344444",
+            name="Non nominale UniFi",
+        )
+        db.update_voucher_local_metadata(
+            controller_id=controller,
+            unifi_id="nominal-only",
+            assigned_to="Mario Rossi",
+            notes="",
+            is_nominal=True,
+            updated_at=NOW,
+            windows_user="PC\\alice",
+        )
+        db.update_voucher_local_metadata(
+            controller_id=controller,
+            unifi_id="excluded",
+            assigned_to="Dato che non deve entrare",
+            notes="",
+            is_nominal=False,
+            updated_at=NOW,
+            windows_user="PC\\bob",
+        )
+
+        requested = []
+        original = db.report_voucher_personal_details
+
+        def tracked(*, voucher_ids):
+            requested.extend(voucher_ids)
+            return original(voucher_ids=voucher_ids)
+
+        db.report_voucher_personal_details = tracked
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.NOMINAL,
+            generated_at=NOW,
+        )
+        assert requested == [nominal]
+        assert [row.voucher_id for row in dataset.rows] == [nominal]
+        assert dataset.rows[0].recipient == "Mario Rossi"
+        assert dataset.rows[0].controller_description == "Nominale UniFi"
+        assert excluded not in requested
     finally:
         db.close()
