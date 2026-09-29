@@ -106,6 +106,8 @@ def test_create_success_refresh_failure_merges_created_without_recreating():
     assert outcome.created == (created,)
     assert {item.id for item in outcome.vouchers} == {"cached", "created"}
     assert str(outcome.refresh_error) == "refresh unavailable"
+    assert outcome.snapshot_complete is False
+    assert outcome.reconciliation_required is True
 
 
 def test_nominal_flag_is_application_only_and_never_sent_to_unifi():
@@ -167,6 +169,26 @@ def test_uncertain_create_refresh_failure_keeps_cache_without_replaying_post():
     assert str(outcome.refresh_error) == "refresh unavailable"
 
 
+def test_create_successful_but_stale_list_keeps_confirmed_post_rows_visible():
+    created = voucher("created", "3333344444")
+    stale_other = voucher("other", "5555566666")
+    client = FakeClient()
+    client.created = [created]
+    client.list_result = [stale_other]
+
+    outcome = create_vouchers_and_refresh(
+        client,
+        [],
+        {"recipient": "Guest", "quantity": 1},
+    )
+
+    assert outcome.refresh_error is None
+    assert outcome.snapshot_complete is False
+    assert outcome.reconciliation_required is True
+    assert {item.id for item in outcome.vouchers} == {"created", "other"}
+    assert outcome.created == (created,)
+
+
 def test_create_success_prefers_fresh_controller_list():
     created = voucher("created", "3333344444")
     server_copy = voucher(
@@ -186,6 +208,8 @@ def test_create_success_prefers_fresh_controller_list():
     )
 
     assert outcome.refresh_error is None
+    assert outcome.snapshot_complete is True
+    assert outcome.reconciliation_required is False
     assert outcome.vouchers == (server_copy, other)
 
 
