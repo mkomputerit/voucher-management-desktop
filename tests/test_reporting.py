@@ -1066,3 +1066,72 @@ def test_verified_controller_absence_is_visible_in_report_status(tmp_path):
         assert row.status == "Senza stampe registrate · non presente su UniFi"
     finally:
         db.close()
+
+
+def test_summary_classification_partitions_cover_scope_exactly_once(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        used = _voucher(db, controller, "partition-used", "1010101010", used=1)
+        unused = _voucher(db, controller, "partition-unused", "2020202020", used=0)
+        unknown = _voucher(db, controller, "partition-unknown", "3030303030", used=0)
+        redacted = _voucher(db, controller, "partition-redacted", "4040404040", used=0)
+
+        db.mark_application_created_vouchers(
+            controller_id=controller,
+            unifi_ids=["partition-used"],
+            is_nominal=True,
+        )
+        db.mark_application_created_vouchers(
+            controller_id=controller,
+            unifi_ids=["partition-unused"],
+            is_nominal=False,
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET usage_observed=0 WHERE id=?",
+                (unknown,),
+            )
+            tx.execute(
+                """UPDATE vouchers
+                   SET is_nominal=NULL, nominality_redacted=1
+                   WHERE id=?""",
+                (redacted,),
+            )
+
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="partition-print",
+            codes=["10101-01010"],
+            output_file="partition.pdf",
+            document_copies=1,
+            printed_at="2026-09-05T10:00:00+00:00",
+            windows_user="PC\\alice",
+        )
+
+        summary = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+        )
+        totals = summary.totals
+        assert totals.vouchers == 4
+        assert (
+            totals.used_vouchers
+            + totals.never_used_vouchers
+            + totals.usage_unknown_vouchers
+            == totals.vouchers
+        )
+        assert (
+            totals.nominal_vouchers
+            + totals.non_nominal_vouchers
+            + totals.unclassified_vouchers
+            + totals.redacted_nominality_vouchers
+            == totals.vouchers
+        )
+        assert totals.printed_vouchers + totals.never_printed == totals.vouchers
+        assert totals.generated_vouchers + totals.unknown_origin_vouchers == totals.vouchers
+
+        assert used > 0
+        assert unused > 0
+    finally:
+        db.close()
