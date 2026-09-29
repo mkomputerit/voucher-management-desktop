@@ -435,9 +435,24 @@ COMMIT;
 
         if current == 3:
             try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                migration_sql = (
+                    MIGRATION_3_TO_4_SQL
+                    if "nominality_redacted" not in columns
+                    else """
+UPDATE vouchers
+SET origin='UNKNOWN'
+WHERE origin='LEGACY_APPLICATION';
+"""
+                )
                 self.connection.executescript(
                     "BEGIN IMMEDIATE;\n"
-                    + MIGRATION_3_TO_4_SQL
+                    + migration_sql
                     + """
 PRAGMA user_version = 4;
 INSERT OR REPLACE INTO app_metadata(key, value)
