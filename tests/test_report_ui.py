@@ -19,12 +19,14 @@ def _empty_dataset() -> ReportDataset:
     return ReportDataset(
         kind=ReportKind.SUMMARY,
         purpose=ReportPurpose.SUMMARY,
-        title="Riepilogo voucher",
+        title="Riepilogo storico voucher",
         generated_at="2026-09-26T12:00:00+00:00",
         controller_label="Controller",
         rows=(),
         totals=ReportTotals(
             vouchers=0,
+            generated_by_app=0,
+            generated_never_used=0,
             used_vouchers=0,
             total_controller_uses=0,
             expired_vouchers=0,
@@ -36,6 +38,8 @@ def _empty_dataset() -> ReportDataset:
             printed_never_used=0,
             never_printed=0,
             nominal_vouchers=0,
+            non_nominal_vouchers=0,
+            unclassified_nominality=0,
         ),
         code_exposed=False,
     )
@@ -81,7 +85,7 @@ def test_report_query_runs_before_background_renderer(monkeypatch, tmp_path: Pat
     )
     dialog = SimpleNamespace(
         app=app,
-        kind_var=_variable("Riepilogo"),
+        kind_var=_variable("Riepilogo storico"),
         scope_var=_variable("Controller attivo"),
         format_var=_variable("PDF"),
         destroy=lambda: events.append(("destroy",)),
