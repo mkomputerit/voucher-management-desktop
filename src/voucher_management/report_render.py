@@ -1,4 +1,4 @@
-"""Atomic PDF/CSV rendering for privacy-safe report datasets."""
+"""Atomic PDF/CSV rendering for privacy-safe historical reports."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.units import mm
 from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import mm
 from reportlab.platypus import (
     Paragraph,
     SimpleDocTemplate,
@@ -69,6 +69,18 @@ def _origin_label(origin: str | None) -> str:
     }.get(origin, "Non determinata")
 
 
+def _nominal_label(row) -> str:
+    if row.is_nominal is True:
+        return "Sì"
+    if row.is_nominal is False:
+        return "No"
+    return "Non classificato"
+
+
+def _historical_use_label(row) -> str:
+    return "Utilizzato" if row.ever_used else "Mai osservato"
+
+
 def _display_time(value: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -100,7 +112,10 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Generati da Voucher Management", str(totals.generated_by_app)],
         ["Generati e mai utilizzati", str(totals.generated_never_used)],
         ["Utilizzati almeno una volta", str(totals.used_vouchers)],
-        ["Utilizzi controller (ultimo valore osservato)", str(totals.total_controller_uses)],
+        [
+            "Utilizzi controller (ultimo valore osservato)",
+            str(totals.total_controller_uses),
+        ],
         ["Voucher scaduti", str(totals.expired_vouchers)],
         ["Voucher stampati", str(totals.printed_vouchers)],
         ["Job di stampa", str(totals.print_jobs)],
@@ -113,18 +128,6 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Voucher non nominali", str(totals.non_nominal_vouchers)],
         ["Nominalità non classificata", str(totals.unclassified_nominality)],
     ]
-
-
-def _nominal_label(row) -> str:
-    if row.is_nominal is True:
-        return "Sì"
-    if row.is_nominal is False:
-        return "No"
-    return "Non classificato"
-
-
-def _historical_use_label(row) -> str:
-    return "Utilizzato" if row.ever_used else "Mai osservato"
 
 
 def _report_note(kind: ReportKind) -> str:
@@ -169,6 +172,11 @@ def _report_note(kind: ReportKind) -> str:
 
 
 def _detail_columns(dataset: ReportDataset):
+    """Return report-specific columns as (header, weight, formatter)."""
+
+    if dataset.kind is ReportKind.SUMMARY and not dataset.code_exposed:
+        return ()
+
     columns = [("Controller", 0.85, lambda row: row.controller_name)]
     if dataset.code_exposed:
         columns.append(("Voucher", 0.85, lambda row: row.code))
@@ -176,21 +184,13 @@ def _detail_columns(dataset: ReportDataset):
     recipient = ("Destinatario", 1.45, lambda row: row.recipient or "—")
     origin = ("Origine", 1.0, lambda row: _origin_label(row.origin))
     nominal = ("Nominale", 0.82, _nominal_label)
-    created = (
-        "Creazione",
-        0.95,
-        lambda row: _display_time(row.created_at),
-    )
+    created = ("Creazione", 0.95, lambda row: _display_time(row.created_at))
     imported = (
         "Prima acquisizione",
         0.95,
         lambda row: _display_time(row.imported_at),
     )
-    expires = (
-        "Scadenza",
-        0.95,
-        lambda row: _display_time(row.expires_at),
-    )
+    expires = ("Scadenza", 0.95, lambda row: _display_time(row.expires_at))
     historical_use = ("Uso storico", 0.82, _historical_use_label)
     current_uses = (
         "Utilizzi (ultimo)",
@@ -218,52 +218,117 @@ def _detail_columns(dataset: ReportDataset):
     status = ("Stato", 0.75, lambda row: row.status)
 
     by_kind = {
-        ReportKind.SUMMARY: (),
+        ReportKind.SUMMARY: (
+            recipient,
+            origin,
+            nominal,
+            created,
+            imported,
+            expires,
+            historical_use,
+            current_uses,
+            prints,
+            copies,
+            reprints,
+            operators,
+            status,
+        ),
         ReportKind.GENERATED: (
-            recipient, nominal, created, expires,
-            historical_use, prints, status,
+            recipient,
+            nominal,
+            created,
+            expires,
+            historical_use,
+            prints,
+            status,
         ),
         ReportKind.GENERATED_UNUSED: (
-            recipient, nominal, created, expires, prints, status,
+            recipient,
+            nominal,
+            created,
+            expires,
+            prints,
+            status,
         ),
         ReportKind.USED: (
-            recipient, origin, nominal, created, expires,
-            historical_use, current_uses, prints, status,
+            recipient,
+            origin,
+            nominal,
+            created,
+            expires,
+            historical_use,
+            current_uses,
+            prints,
+            status,
         ),
         ReportKind.EXPIRED: (
-            recipient, origin, nominal, expires,
-            historical_use, prints, status,
+            recipient,
+            origin,
+            nominal,
+            expires,
+            historical_use,
+            prints,
+            status,
         ),
         ReportKind.PRINTED: (
-            recipient, origin, nominal, first_print, last_print,
-            copies, reprints, operators, historical_use, status,
+            recipient,
+            origin,
+            nominal,
+            first_print,
+            last_print,
+            copies,
+            reprints,
+            operators,
+            historical_use,
+            status,
         ),
         ReportKind.PRINTED_UNUSED: (
-            recipient, origin, nominal, first_print, last_print,
-            copies, reprints, operators, status,
+            recipient,
+            origin,
+            nominal,
+            first_print,
+            last_print,
+            copies,
+            reprints,
+            operators,
+            status,
         ),
         ReportKind.NEVER_PRINTED: (
-            recipient, origin, nominal, created, expires,
-            historical_use, status,
+            recipient,
+            origin,
+            nominal,
+            created,
+            expires,
+            historical_use,
+            status,
         ),
         ReportKind.NOMINAL: (
-            recipient, origin, created, expires,
-            historical_use, current_uses, prints, status,
+            recipient,
+            origin,
+            created,
+            expires,
+            historical_use,
+            current_uses,
+            prints,
+            status,
         ),
         ReportKind.FULL_HISTORY: (
-            recipient, origin, nominal, created, imported, expires,
-            historical_use, current_uses, prints, copies,
-            reprints, operators, status,
+            recipient,
+            origin,
+            nominal,
+            created,
+            imported,
+            expires,
+            historical_use,
+            current_uses,
+            prints,
+            copies,
+            reprints,
+            operators,
+            status,
         ),
     }
-
-    selected = by_kind[dataset.kind]
-    # Operational-handoff policy tests can construct a code-bearing SUMMARY
-    # dataset even though the normal UI never does. Keep such datasets
-    # renderable without changing the ordinary aggregate-only summary.
-    if dataset.kind is ReportKind.SUMMARY and dataset.code_exposed:
-        selected = by_kind[ReportKind.FULL_HISTORY]
-    columns.extend(selected)
+    columns.extend(by_kind[dataset.kind])
     return tuple(columns)
 
 
@@ -281,6 +346,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
 def _detail_weights(dataset: ReportDataset) -> list[float]:
     return [weight for _header, weight, _getter in _detail_columns(dataset)]
 
+
 def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
     """Write an Excel-friendly CSV atomically from a sanitized dataset."""
 
@@ -288,14 +354,16 @@ def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
     output_path = Path(output_path)
     handle, temp_path = _atomic_target(output_path, ".csv.tmp")
     os.close(handle)
+
     try:
         with temp_path.open("w", encoding="utf-8-sig", newline="") as stream:
             writer = csv.writer(stream, delimiter=";")
+            writer.writerow([_csv_cell("Report"), _csv_cell(dataset.title)])
             writer.writerow(
-                [_csv_cell("Report"), _csv_cell(dataset.title)]
-            )
-            writer.writerow(
-                [_csv_cell("Generato"), _csv_cell(_display_time(dataset.generated_at))]
+                [
+                    _csv_cell("Generato"),
+                    _csv_cell(_display_time(dataset.generated_at)),
+                ]
             )
             writer.writerow(
                 [_csv_cell("Ambito"), _csv_cell(dataset.controller_label)]
@@ -307,11 +375,138 @@ def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
             writer.writerow([_csv_cell("Riepilogo"), _csv_cell("Valore")])
             for summary_row in _summary_rows(dataset):
                 writer.writerow([_csv_cell(value) for value in summary_row])
+
             headers = _detail_headers(dataset)
+            if headers:
+                writer.writerow([])
+                writer.writerow([_csv_cell(value) for value in headers])
+                for row in dataset.rows:
+                    writer.writerow(
+                        [_csv_cell(value) for value in _detail_row(dataset, row)]
+                    )
+
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, output_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def render_report_pdf(
+    dataset: ReportDataset,
+    output_path: Path,
+    *,
+    installation_name: str = "",
+) -> None:
+    """Render a printable A4 landscape report atomically."""
+
+    _validate_dataset_policy(dataset)
+    ensure_pdf_fonts_registered()
+    output_path = Path(output_path)
+
+    text_values = [
+        dataset.title,
+        dataset.controller_label,
+        installation_name,
+        _report_note(dataset.kind),
+        *(
+            value
+            for row in dataset.rows
+            for value in _detail_row(dataset, row)
+        ),
+    ]
+    validate_pdf_text_support(text_values)
+
+    handle, temp_path = _atomic_target(output_path, ".pdf.tmp")
+    os.close(handle)
+
+    page_width, _page_height = landscape(A4)
+    regular = ParagraphStyle(
+        "ReportRegular",
+        fontName=PDF_FONT_REGULAR,
+        fontSize=7,
+        leading=9,
+        textColor=colors.black,
+    )
+    small = ParagraphStyle(
+        "ReportSmall",
+        parent=regular,
+        fontSize=6.2,
+        leading=7.6,
+    )
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=regular,
+        fontName=PDF_FONT_BOLD,
+        fontSize=16,
+        leading=19,
+        spaceAfter=4 * mm,
+    )
+    subtitle_style = ParagraphStyle(
+        "ReportSubtitle",
+        parent=regular,
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor("#555555"),
+    )
+
+    try:
+        doc = SimpleDocTemplate(
+            str(temp_path),
+            pagesize=landscape(A4),
+            leftMargin=10 * mm,
+            rightMargin=10 * mm,
+            topMargin=10 * mm,
+            bottomMargin=10 * mm,
+            title=dataset.title,
+            author="Voucher Management",
+        )
+
+        story = []
+        if installation_name.strip():
+            story.append(_paragraph(installation_name.strip(), subtitle_style))
+        story.append(_paragraph(dataset.title, title_style))
+        story.append(
+            _paragraph(
+                (
+                    f"Generato: {_display_time(dataset.generated_at)}"
+                    f"  |  Ambito: {dataset.controller_label}"
+                ),
+                subtitle_style,
+            )
+        )
+        story.append(_paragraph(_report_note(dataset.kind), subtitle_style))
+        story.append(Spacer(1, 4 * mm))
+
+        summary = [
+            [_paragraph(label, small), _paragraph(value, small)]
+            for label, value in _summary_rows(dataset)
+        ]
+        summary_table = Table(
+            summary,
+            colWidths=[58 * mm, 22 * mm],
+            hAlign="LEFT",
+        )
+        summary_table.setStyle(
+            TableStyle(
+                [
+                    ("FONTNAME", (0, 0), (-1, -1), PDF_FONT_REGULAR),
+                    ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F2F2F2")),
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#CCCCCC")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        story.append(summary_table)
+
+        headers = _detail_headers(dataset)
         if headers:
-            rows = [
-                [_paragraph(value, small) for value in headers]
-            ]
+            story.append(Spacer(1, 5 * mm))
+            rows = [[_paragraph(value, small) for value in headers]]
             for row in dataset.rows:
                 rows.append(
                     [
@@ -342,8 +537,19 @@ def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
                         [
                             ("FONTNAME", (0, 0), (-1, -1), PDF_FONT_REGULAR),
                             ("FONTNAME", (0, 0), (-1, 0), PDF_FONT_BOLD),
-                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8E8E8")),
-                            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
+                            (
+                                "BACKGROUND",
+                                (0, 0),
+                                (-1, 0),
+                                colors.HexColor("#E8E8E8"),
+                            ),
+                            (
+                                "GRID",
+                                (0, 0),
+                                (-1, -1),
+                                0.25,
+                                colors.HexColor("#CCCCCC"),
+                            ),
                             ("VALIGN", (0, 0), (-1, -1), "TOP"),
                             ("LEFTPADDING", (0, 0), (-1, -1), 2.5),
                             ("RIGHTPADDING", (0, 0), (-1, -1), 2.5),
@@ -355,96 +561,11 @@ def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
                 story.append(detail_table)
 
         story.append(Spacer(1, 4 * mm))
-
-        summary = [
-            [
-                _paragraph(label, small),
-                _paragraph(value, small),
-            ]
-            for label, value in _summary_rows(dataset)
-        ]
-        summary_table = Table(
-            summary,
-            colWidths=[58 * mm, 22 * mm],
-            hAlign="LEFT",
-        )
-        summary_table.setStyle(
-            TableStyle(
-                [
-                    ("FONTNAME", (0, 0), (-1, -1), PDF_FONT_REGULAR),
-                    ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F2F2F2")),
-                    ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#CCCCCC")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                    ("TOPPADDING", (0, 0), (-1, -1), 3),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                ]
-            )
-        )
-        story.append(summary_table)
-        story.append(Spacer(1, 5 * mm))
-
-        headers = _detail_headers(dataset)
-        rows = [
-            [_paragraph(value, small) for value in headers]
-        ]
-        for row in dataset.rows:
-            rows.append(
-                [
-                    _paragraph(value, small)
-                    for value in _detail_row(dataset, row)
-                ]
-            )
-
-        if len(rows) == 1:
-            story.append(
-                _paragraph(
-                    "Nessun voucher corrisponde ai criteri del report.",
-                    regular,
-                )
-            )
-        else:
-            usable = page_width - 20 * mm
-            if dataset.code_exposed:
-                weights = [
-                    0.8, 0.8, 1.3, 0.9, 0.8, 0.8, 0.8, 0.8,
-                    0.72, 0.62, 0.5, 0.5, 0.5, 0.9, 0.7,
-                ]
-            else:
-                weights = [
-                    0.8, 1.35, 0.9, 0.8, 0.8, 0.8, 0.8,
-                    0.72, 0.62, 0.5, 0.5, 0.5, 0.9, 0.7,
-                ]
-            scale = usable / sum(weights)
-            detail_table = Table(
-                rows,
-                colWidths=[weight * scale for weight in weights],
-                repeatRows=1,
-                hAlign="LEFT",
-            )
-            detail_table.setStyle(
-                TableStyle(
-                    [
-                        ("FONTNAME", (0, 0), (-1, -1), PDF_FONT_REGULAR),
-                        ("FONTNAME", (0, 0), (-1, 0), PDF_FONT_BOLD),
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8E8E8")),
-                        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 2.5),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 2.5),
-                        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
-                    ]
-                )
-            )
-            story.append(detail_table)
-
-        story.append(Spacer(1, 4 * mm))
         story.append(
             _paragraph(
-                "Nota: il numero di utilizzi è il totale osservato dal controller. "
-                "Non rappresenta l'ora esatta in cui un ospite ha utilizzato il voucher.",
+                "Nota: il numero di utilizzi è il totale osservato dal "
+                "controller. Non rappresenta l'ora esatta in cui un ospite "
+                "ha utilizzato il voucher.",
                 small,
             )
         )
