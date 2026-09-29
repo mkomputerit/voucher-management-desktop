@@ -3323,6 +3323,7 @@ class ModernVoucherApp(
             try:
                 metadata_by_id = self.database.voucher_local_metadata_map(
                     controller_id=int(controller_id),
+                    include_notes=bool(query),
                 )
             except Exception as exc:
                 self.logger.warning(
