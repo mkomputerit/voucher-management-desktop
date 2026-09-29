@@ -238,6 +238,13 @@ class VoucherLocalMetadataDialog(tk.Toplevel):
         except ValueError as exc:
             messagebox.showerror("Dati locali", str(exc), parent=self)
             return
+        if nominal is True and not assigned_to:
+            messagebox.showerror(
+                "Dati locali",
+                "Per un voucher nominale indicare il destinatario locale.",
+                parent=self,
+            )
+            return
         self.result = (assigned_to, notes, nominal)
         self.destroy()
 
