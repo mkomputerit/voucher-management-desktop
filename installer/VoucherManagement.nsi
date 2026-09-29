@@ -90,10 +90,11 @@ Function .onInit
   ${EndIf}
 
   StrCpy $INSTDIR "$PROGRAMFILES64\Voucher Management"
-  StrCpy $DataRoot "$COMMONAPPDATA\${PRODUCT_DATA_DIR}"
+  StrCpy $DataRoot "$COMMONPROGRAMDATA\${PRODUCT_DATA_DIR}"
   StrCpy $OperatorGroup "${PRODUCT_GROUP}"
   StrCpy $OperatorUser ""
   StrCpy $SkipShortcut "0"
+  SetRegView 64
   Call SetPowerShellPath
 
   ${GetParameters} $R0
@@ -167,9 +168,10 @@ Section "Voucher Management" SEC_MAIN
 SectionEnd
 
 Function un.onInit
-  StrCpy $DataRoot "$COMMONAPPDATA\${PRODUCT_DATA_DIR}"
+  StrCpy $DataRoot "$COMMONPROGRAMDATA\${PRODUCT_DATA_DIR}"
   StrCpy $OperatorGroup "${PRODUCT_GROUP}"
   StrCpy $PurgeData "0"
+  SetRegView 64
 
   ReadRegStr $R0 HKLM "${PRODUCT_KEY}" "DataRoot"
   ${If} $R0 != ""
