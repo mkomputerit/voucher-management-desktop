@@ -48,7 +48,8 @@ passwords and exception messages are not stored; failure detail is limited to
 the exception type.
 
 From 5.1, operators choose an unencrypted ZIP or a password-protected `.vmbk`
-for each normal manual or shutdown backup. The dialog explicitly identifies
+for each normal manual or shutdown backup. Password protection is selected by
+default, so producing a readable ZIP requires an explicit opt-out. The dialog explicitly identifies
 unencrypted copies: anyone with file access can read the database, voucher
 codes, recipients and PDFs. Selecting password protection encrypts and
 authenticates the complete portable snapshot, including the local history key.
