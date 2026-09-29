@@ -380,15 +380,20 @@ def refresh_delete_candidates(
 def evaluate_delete_candidates(
     vouchers: Sequence[ApiVoucher],
     stats_by_code: Mapping[str, PrintStats],
+    *,
+    historically_used_ids: frozenset[str] = frozenset(),
 ) -> list[DeleteBlock]:
-    """Return every voucher blocked by local/controller lifecycle policy."""
+    """Return every voucher blocked by controller or durable local lifecycle facts."""
 
     blocked: list[DeleteBlock] = []
     for voucher in vouchers:
-        result = evaluate_delete_policy(
-            voucher,
-            stats_by_code.get(voucher.code_formatted),
-        )
+        if voucher.id in historically_used_ids:
+            result = DeletePolicyResult(False, "in_use")
+        else:
+            result = evaluate_delete_policy(
+                voucher,
+                stats_by_code.get(voucher.code_formatted),
+            )
         if not result.allowed:
             blocked.append(DeleteBlock(voucher=voucher, policy=result))
     return blocked
