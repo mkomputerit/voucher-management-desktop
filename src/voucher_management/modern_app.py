@@ -1030,9 +1030,13 @@ class ModernVoucherApp(
         self.home_used_var = tk.StringVar(value="0")
         self.home_expired_var = tk.StringVar(value="0")
         self.report_total_var = tk.StringVar(value="0")
-        self.report_printed_var = tk.StringVar(value="0")
+        self.report_generated_var = tk.StringVar(value="0")
         self.report_used_var = tk.StringVar(value="0")
+        self.report_never_used_var = tk.StringVar(value="0")
+        self.report_printed_var = tk.StringVar(value="0")
         self.report_expired_var = tk.StringVar(value="0")
+        self.report_nominal_var = tk.StringVar(value="0")
+        self.report_unclassified_var = tk.StringVar(value="0")
 
         root = ttk.Frame(self, padding=0)
         root.pack(fill="both", expand=True)
@@ -1602,18 +1606,25 @@ class ModernVoucherApp(
         metrics.grid(row=2, column=0, sticky="ew")
         for column in range(4):
             metrics.columnconfigure(column, weight=1)
-        for column, (label, variable) in enumerate((
-            ("Voucher", self.report_total_var),
-            ("Stampati", self.report_printed_var),
+        report_metrics = (
+            ("Conservati", self.report_total_var),
+            ("Generati da VM", self.report_generated_var),
             ("Utilizzati", self.report_used_var),
+            ("Mai utilizzati", self.report_never_used_var),
+            ("Stampati", self.report_printed_var),
             ("Scaduti", self.report_expired_var),
-        )):
+            ("Nominali", self.report_nominal_var),
+            ("Non classificati", self.report_unclassified_var),
+        )
+        for index, (label, variable) in enumerate(report_metrics):
+            row, column = divmod(index, 4)
             card = ttk.Labelframe(metrics, text=label, padding=(16, 12))
             card.grid(
-                row=0,
+                row=row,
                 column=column,
                 sticky="nsew",
                 padx=(0 if column == 0 else 6, 0 if column == 3 else 6),
+                pady=(0 if row == 0 else 8, 0),
             )
             ttk.Label(
                 card,
@@ -1637,8 +1648,9 @@ class ModernVoucherApp(
         ttk.Label(
             actions,
             text=(
-                "Riepilogo, utilizzati, scaduti, stampati mai utilizzati, "
-                "mai stampati, nominali e storico completo."
+                "Riepilogo storico, generati dal software, mai utilizzati, "
+                "utilizzati, scaduti, stampati, nominali, non classificati "
+                "e storico completo."
             ),
             style="Muted.TLabel",
             wraplength=720,
@@ -2914,9 +2926,13 @@ class ModernVoucherApp(
             return
         totals = dataset.totals
         self.report_total_var.set(str(totals.vouchers))
-        self.report_printed_var.set(str(totals.printed_vouchers))
+        self.report_generated_var.set(str(totals.generated_vouchers))
         self.report_used_var.set(str(totals.used_vouchers))
+        self.report_never_used_var.set(str(totals.never_used_vouchers))
+        self.report_printed_var.set(str(totals.printed_vouchers))
         self.report_expired_var.set(str(totals.expired_vouchers))
+        self.report_nominal_var.set(str(totals.nominal_vouchers))
+        self.report_unclassified_var.set(str(totals.unclassified_vouchers))
 
     def _update_operator_summary(self, stats) -> None:
         if not hasattr(self, "home_to_print_var"):
