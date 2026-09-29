@@ -336,7 +336,6 @@ def build_report_dataset(
     raw_rows = database.report_voucher_rows(
         controller_id=controller_id,
         include_voucher_code=code_policy.expose_code,
-        include_personal_details=kind is not ReportKind.SUMMARY,
     )
 
     all_rows: list[ReportRow] = []
@@ -405,6 +404,24 @@ def build_report_dataset(
         all_rows.append(row)
         if _matches(kind, row):
             rows.append(row)
+
+    if kind is not ReportKind.SUMMARY and rows:
+        details = database.report_voucher_personal_details(
+            voucher_ids=[row.voucher_id for row in rows],
+        )
+        if len(details) != len(rows):
+            raise RuntimeError(
+                "Report detail rows changed while the report was being built"
+            )
+        rows = [
+            replace(
+                row,
+                controller_description=str(details[row.voucher_id]["name"] or "").strip(),
+                recipient=str(details[row.voucher_id]["assigned_to"] or "").strip(),
+                print_operators=_operators(details[row.voucher_id]["print_operators"]),
+            )
+            for row in rows
+        ]
 
     if controller_id is None:
         controller_label = "Tutto lo storico locale"
