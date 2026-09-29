@@ -463,7 +463,8 @@ class FirstRunWizard(tk.Toplevel):
                         variable=self.backup_on_close_var).pack(anchor="w", pady=(12, 8))
         ttk.Label(self.body, text=(
             "A ogni backup potrai usare questa cartella oppure sceglierne un'altra solo per quella copia. "
-            "La password è facoltativa: con password il backup è cifrato (.vmbk), senza password è un ZIP leggibile. "
+            "La protezione con password è facoltativa ma preselezionata: lasciandola attiva il backup è cifrato (.vmbk); "
+            "disattivandola esplicitamente viene creato un ZIP leggibile. "
             "In chiusura potrai anche uscire senza creare una copia."
         ), wraplength=650).pack(anchor="w", pady=8)
 
