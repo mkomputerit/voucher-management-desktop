@@ -984,12 +984,25 @@ COMMIT;
             return
 
         placeholders = ",".join("?" for _ in ids)
-        params = ("APPLICATION", int(bool(is_nominal)), int(controller_id), *ids)
+        nominal = int(bool(is_nominal))
+        params = (
+            "APPLICATION",
+            nominal,
+            nominal,
+            int(controller_id),
+            *ids,
+        )
 
         def write(db: sqlite3.Connection) -> None:
             cursor = db.execute(
                 f"""UPDATE vouchers
-                    SET origin=?, is_nominal=?
+                    SET origin=?,
+                        is_nominal=?,
+                        nominality_redacted=0,
+                        assigned_to=CASE
+                            WHEN ?=1 AND TRIM(assigned_to)='' THEN name
+                            ELSE assigned_to
+                        END
                     WHERE controller_id=? AND unifi_id IN ({placeholders})""",
                 params,
             )
