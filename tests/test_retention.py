@@ -176,6 +176,46 @@ def test_candidates_require_old_absent_unused_unprinted_rows(tmp_path):
         database.close()
 
 
+def test_historically_used_voucher_never_becomes_retention_candidate_after_counter_reset(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="used-then-reset",
+            code="1919191919",
+            uses=1,
+        )
+        database.upsert_voucher(
+            controller_id=controller,
+            unifi_id="used-then-reset",
+            code="1919191919",
+            name="Guest used-then-reset",
+            created_at=OLD,
+            imported_at=OLD,
+            authorized_guest_count=0,
+            last_synced_at=NOW,
+        )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET present_on_controller=0 WHERE id=?",
+                (voucher_id,),
+            )
+
+        row = database.connection.execute(
+            "SELECT authorized_guest_count, ever_used FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["authorized_guest_count"] == 0
+        assert row["ever_used"] == 1
+        assert all(
+            candidate.voucher_id != voucher_id
+            for candidate in retention_candidates(database, now=NOW)
+        )
+    finally:
+        database.close()
+
+
 def test_expiry_is_conservative_age_basis_when_present(tmp_path):
     database, controller = _database(tmp_path)
     try:
