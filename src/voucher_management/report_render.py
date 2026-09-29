@@ -28,7 +28,7 @@ from .pdf_fonts import (
     validate_pdf_text_support,
 )
 from .report_policy import voucher_code_policy
-from .reporting import ReportDataset
+from .reporting import ReportDataset, ReportKind
 
 
 def _validate_dataset_policy(dataset: ReportDataset) -> None:
@@ -115,60 +115,171 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
     ]
 
 
-def _detail_headers(dataset: ReportDataset) -> list[str]:
-    headers = ["Controller"]
+def _nominal_label(row) -> str:
+    if row.is_nominal is True:
+        return "Sì"
+    if row.is_nominal is False:
+        return "No"
+    return "Non classificato"
+
+
+def _historical_use_label(row) -> str:
+    return "Utilizzato" if row.ever_used else "Mai osservato"
+
+
+def _report_note(kind: ReportKind) -> str:
+    return {
+        ReportKind.SUMMARY: (
+            "Riepilogo aggregato di tutto lo storico locale conservato."
+        ),
+        ReportKind.GENERATED: (
+            "Solo voucher la cui creazione è stata attribuita con certezza "
+            "a Voucher Management."
+        ),
+        ReportKind.GENERATED_UNUSED: (
+            "Voucher creati con certezza da Voucher Management per i quali "
+            "non è mai stato osservato un utilizzo positivo."
+        ),
+        ReportKind.USED: (
+            "Voucher per i quali almeno una sincronizzazione ha osservato "
+            "un utilizzo positivo."
+        ),
+        ReportKind.EXPIRED: (
+            "Voucher scaduti secondo lo stato o la scadenza conservata "
+            "nello storico locale."
+        ),
+        ReportKind.PRINTED: (
+            "Voucher con almeno una stampa fisica registrata localmente."
+        ),
+        ReportKind.PRINTED_UNUSED: (
+            "Voucher stampati localmente per i quali non è mai stato "
+            "osservato un utilizzo positivo."
+        ),
+        ReportKind.NEVER_PRINTED: (
+            "Voucher senza alcuna stampa fisica registrata localmente."
+        ),
+        ReportKind.NOMINAL: (
+            "Solo voucher marcati esplicitamente come Voucher nominale "
+            "durante una creazione certa."
+        ),
+        ReportKind.FULL_HISTORY: (
+            "Dettaglio completo dei voucher conservati nello storico locale."
+        ),
+    }[kind]
+
+
+def _detail_columns(dataset: ReportDataset):
+    columns = [("Controller", 0.85, lambda row: row.controller_name)]
     if dataset.code_exposed:
-        headers.append("Voucher")
-    headers.extend(
-        [
-            "Destinatario",
-            "Origine",
-            "Nominale",
-            "Creazione controller",
-            "Prima acquisizione",
-            "Scadenza",
-            "Uso storico",
-            "Utilizzi (ultimo)",
-            "Stampe",
-            "Copie",
-            "Ristampe",
-            "Operatori",
-            "Stato",
-        ]
+        columns.append(("Voucher", 0.85, lambda row: row.code))
+
+    recipient = ("Destinatario", 1.45, lambda row: row.recipient or "—")
+    origin = ("Origine", 1.0, lambda row: _origin_label(row.origin))
+    nominal = ("Nominale", 0.82, _nominal_label)
+    created = (
+        "Creazione",
+        0.95,
+        lambda row: _display_time(row.created_at),
     )
-    return headers
+    imported = (
+        "Prima acquisizione",
+        0.95,
+        lambda row: _display_time(row.imported_at),
+    )
+    expires = (
+        "Scadenza",
+        0.95,
+        lambda row: _display_time(row.expires_at),
+    )
+    historical_use = ("Uso storico", 0.82, _historical_use_label)
+    current_uses = (
+        "Utilizzi (ultimo)",
+        0.68,
+        lambda row: str(row.authorized_guest_count),
+    )
+    prints = ("Stampe", 0.52, lambda row: str(row.print_jobs))
+    copies = ("Copie", 0.52, lambda row: str(row.physical_copies))
+    reprints = ("Ristampe", 0.58, lambda row: str(row.reprint_jobs))
+    first_print = (
+        "Prima stampa",
+        0.95,
+        lambda row: _display_time(row.first_printed_at),
+    )
+    last_print = (
+        "Ultima stampa",
+        0.95,
+        lambda row: _display_time(row.last_printed_at),
+    )
+    operators = (
+        "Operatori",
+        1.05,
+        lambda row: ", ".join(row.print_operators) or "—",
+    )
+    status = ("Stato", 0.75, lambda row: row.status)
+
+    by_kind = {
+        ReportKind.SUMMARY: (),
+        ReportKind.GENERATED: (
+            recipient, nominal, created, expires,
+            historical_use, prints, status,
+        ),
+        ReportKind.GENERATED_UNUSED: (
+            recipient, nominal, created, expires, prints, status,
+        ),
+        ReportKind.USED: (
+            recipient, origin, nominal, created, expires,
+            historical_use, current_uses, prints, status,
+        ),
+        ReportKind.EXPIRED: (
+            recipient, origin, nominal, expires,
+            historical_use, prints, status,
+        ),
+        ReportKind.PRINTED: (
+            recipient, origin, nominal, first_print, last_print,
+            copies, reprints, operators, historical_use, status,
+        ),
+        ReportKind.PRINTED_UNUSED: (
+            recipient, origin, nominal, first_print, last_print,
+            copies, reprints, operators, status,
+        ),
+        ReportKind.NEVER_PRINTED: (
+            recipient, origin, nominal, created, expires,
+            historical_use, status,
+        ),
+        ReportKind.NOMINAL: (
+            recipient, origin, created, expires,
+            historical_use, current_uses, prints, status,
+        ),
+        ReportKind.FULL_HISTORY: (
+            recipient, origin, nominal, created, imported, expires,
+            historical_use, current_uses, prints, copies,
+            reprints, operators, status,
+        ),
+    }
+
+    selected = by_kind[dataset.kind]
+    # Operational-handoff policy tests can construct a code-bearing SUMMARY
+    # dataset even though the normal UI never does. Keep such datasets
+    # renderable without changing the ordinary aggregate-only summary.
+    if dataset.kind is ReportKind.SUMMARY and dataset.code_exposed:
+        selected = by_kind[ReportKind.FULL_HISTORY]
+    columns.extend(selected)
+    return tuple(columns)
+
+
+def _detail_headers(dataset: ReportDataset) -> list[str]:
+    return [header for header, _weight, _getter in _detail_columns(dataset)]
 
 
 def _detail_row(dataset: ReportDataset, row) -> list[str]:
-    values = [row.controller_name]
-    if dataset.code_exposed:
-        values.append(row.code)
-    nominal = (
-        "Sì"
-        if row.is_nominal is True
-        else "No"
-        if row.is_nominal is False
-        else "Non classificato"
-    )
-    values.extend(
-        [
-            row.recipient or "—",
-            _origin_label(row.origin),
-            nominal,
-            _display_time(row.created_at),
-            _display_time(row.imported_at),
-            _display_time(row.expires_at),
-            "Utilizzato" if row.ever_used else "Mai osservato",
-            str(row.authorized_guest_count),
-            str(row.print_jobs),
-            str(row.physical_copies),
-            str(row.reprint_jobs),
-            ", ".join(row.print_operators) or "—",
-            row.status,
-        ]
-    )
-    return values
+    return [
+        str(getter(row))
+        for _header, _weight, getter in _detail_columns(dataset)
+    ]
 
+
+def _detail_weights(dataset: ReportDataset) -> list[float]:
+    return [weight for _header, weight, _getter in _detail_columns(dataset)]
 
 def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
     """Write an Excel-friendly CSV atomically from a sanitized dataset."""
@@ -189,125 +300,60 @@ def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
             writer.writerow(
                 [_csv_cell("Ambito"), _csv_cell(dataset.controller_label)]
             )
+            writer.writerow(
+                [_csv_cell("Criterio"), _csv_cell(_report_note(dataset.kind))]
+            )
             writer.writerow([])
             writer.writerow([_csv_cell("Riepilogo"), _csv_cell("Valore")])
             for summary_row in _summary_rows(dataset):
                 writer.writerow([_csv_cell(value) for value in summary_row])
-            writer.writerow([])
-            writer.writerow(
-                [_csv_cell(value) for value in _detail_headers(dataset)]
-            )
+            headers = _detail_headers(dataset)
+        if headers:
+            rows = [
+                [_paragraph(value, small) for value in headers]
+            ]
             for row in dataset.rows:
-                writer.writerow(
-                    [_csv_cell(value) for value in _detail_row(dataset, row)]
+                rows.append(
+                    [
+                        _paragraph(value, small)
+                        for value in _detail_row(dataset, row)
+                    ]
                 )
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temp_path, output_path)
-    finally:
-        temp_path.unlink(missing_ok=True)
 
-
-def render_report_pdf(
-    dataset: ReportDataset,
-    output_path: Path,
-    *,
-    installation_name: str = "",
-) -> None:
-    """Render a printable A4 landscape report atomically.
-
-    The renderer accepts only ReportDataset, whose voucher-code field has
-    already crossed report_policy. It has no database/API access and therefore
-    cannot bypass the reporting credential boundary.
-    """
-
-    _validate_dataset_policy(dataset)
-    ensure_pdf_fonts_registered()
-    output_path = Path(output_path)
-
-    text_values = [
-        dataset.title,
-        dataset.controller_label,
-        installation_name,
-        *(
-            value
-            for row in dataset.rows
-            for value in (
-                row.controller_name,
-                row.recipient,
-                _origin_label(row.origin),
-                "Sì" if row.is_nominal is True else "No" if row.is_nominal is False else "Non classificato",
-                row.status,
-                ", ".join(row.print_operators),
-                row.code,
-            )
-        ),
-    ]
-    validate_pdf_text_support(text_values)
-
-    handle, temp_path = _atomic_target(output_path, ".pdf.tmp")
-    os.close(handle)
-
-    page_width, _page_height = landscape(A4)
-    regular = ParagraphStyle(
-        "ReportRegular",
-        fontName=PDF_FONT_REGULAR,
-        fontSize=7,
-        leading=9,
-        textColor=colors.black,
-    )
-    small = ParagraphStyle(
-        "ReportSmall",
-        parent=regular,
-        fontSize=6.2,
-        leading=7.6,
-    )
-    title_style = ParagraphStyle(
-        "ReportTitle",
-        parent=regular,
-        fontName=PDF_FONT_BOLD,
-        fontSize=16,
-        leading=19,
-        spaceAfter=4 * mm,
-    )
-    subtitle_style = ParagraphStyle(
-        "ReportSubtitle",
-        parent=regular,
-        fontSize=8,
-        leading=10,
-        textColor=colors.HexColor("#555555"),
-    )
-
-    try:
-        doc = SimpleDocTemplate(
-            str(temp_path),
-            pagesize=landscape(A4),
-            leftMargin=10 * mm,
-            rightMargin=10 * mm,
-            topMargin=10 * mm,
-            bottomMargin=10 * mm,
-            title=dataset.title,
-            author="Voucher Management",
-        )
-
-        story = []
-        if installation_name.strip():
-            story.append(
-                _paragraph(
-                    installation_name.strip(),
-                    subtitle_style,
+            if len(rows) == 1:
+                story.append(
+                    _paragraph(
+                        "Nessun voucher corrisponde ai criteri del report.",
+                        regular,
+                    )
                 )
-            )
-        story.append(_paragraph(dataset.title, title_style))
-        story.append(
-            _paragraph(
-                (
-                    f"Generato: {_display_time(dataset.generated_at)}"
-                    f"  |  Ambito: {dataset.controller_label}"
-                ),
-                subtitle_style,
-            )
-        )
+            else:
+                usable = page_width - 20 * mm
+                weights = _detail_weights(dataset)
+                scale = usable / sum(weights)
+                detail_table = Table(
+                    rows,
+                    colWidths=[weight * scale for weight in weights],
+                    repeatRows=1,
+                    hAlign="LEFT",
+                )
+                detail_table.setStyle(
+                    TableStyle(
+                        [
+                            ("FONTNAME", (0, 0), (-1, -1), PDF_FONT_REGULAR),
+                            ("FONTNAME", (0, 0), (-1, 0), PDF_FONT_BOLD),
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8E8E8")),
+                            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 2.5),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 2.5),
+                            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                        ]
+                    )
+                )
+                story.append(detail_table)
+
         story.append(Spacer(1, 4 * mm))
 
         summary = [
