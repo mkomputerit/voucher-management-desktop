@@ -807,3 +807,58 @@ def test_unprinted_row_status_describes_evidence_not_absolute_history(tmp_path):
         assert row.status == "Senza stampe registrate"
     finally:
         db.close()
+
+
+def test_report_totals_count_distinct_print_jobs_not_voucher_relations(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        first = _voucher(db, controller, "print-a", "1111122222")
+        second = _voucher(db, controller, "print-b", "3333344444")
+
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="shared-job-1",
+            codes=["11111-22222", "33333-44444"],
+            output_file="batch.pdf",
+            document_copies=1,
+            printed_at="2026-09-10T10:00:00+00:00",
+            windows_user="PC\\alice",
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="shared-job-2",
+            codes=["11111-22222", "33333-44444"],
+            output_file="batch-reprint.pdf",
+            document_copies=1,
+            printed_at="2026-09-11T10:00:00+00:00",
+            windows_user="PC\\alice",
+        )
+
+        summary = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+        )
+        assert summary.totals.vouchers == 2
+        assert summary.totals.printed_vouchers == 2
+        assert summary.totals.print_jobs == 2
+        assert summary.totals.reprint_jobs == 1
+        assert summary.totals.physical_copies == 4
+        assert summary.totals.reprint_copies == 2
+
+        full = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+        by_id = {row.voucher_id: row for row in full.rows}
+        assert by_id[first].print_jobs == 2
+        assert by_id[second].print_jobs == 2
+        assert by_id[first].reprint_jobs == 1
+        assert by_id[second].reprint_jobs == 1
+        # Per-voucher detail remains per-voucher; only aggregate "job" totals
+        # are deduplicated at the document submission level.
+        assert full.totals.print_jobs == 2
+        assert full.totals.reprint_jobs == 1
+    finally:
+        db.close()
