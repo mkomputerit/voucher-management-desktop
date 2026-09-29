@@ -1703,7 +1703,8 @@ class ModernVoucherApp(
             privacy,
             text=(
                 "I report ordinari leggono i dati amministrativi dall'archivio "
-                "locale e non espongono i codici voucher in chiaro."
+                "locale e non espongono i codici voucher in chiaro. Descrizione "
+                "UniFi e destinatario locale restano informazioni distinte."
             ),
             style="Muted.TLabel",
             wraplength=760,
@@ -2995,12 +2996,15 @@ class ModernVoucherApp(
             self.report_nominal_var.set(str(totals.nominal_vouchers))
             self.report_unclassified_var.set(str(totals.unclassified_vouchers))
             self.report_data_quality_var.set(
+                f"Non nominali {totals.non_nominal_vouchers} • "
                 "Dati non determinabili: "
                 f"uso {totals.usage_unknown_vouchers} • "
                 f"origine {totals.unknown_origin_vouchers} • "
-                f"nominalità {totals.unclassified_vouchers} • "
+                f"nominalità non classificata {totals.unclassified_vouchers} • "
                 f"rimossa per privacy {totals.redacted_nominality_vouchers} • "
-                f"osservazioni controller: {audit_time_label(dataset.data_from)} - {audit_time_label(dataset.data_as_of)}"
+                "ultime osservazioni per voucher: "
+                f"{audit_time_label(dataset.data_from)} - "
+                f"{audit_time_label(dataset.data_as_of)}"
             )
 
         def failed(exc: Exception) -> None:
