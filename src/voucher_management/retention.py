@@ -353,6 +353,7 @@ def archive_retention_candidates(
                    WHERE v.id=?
                      AND v.archived_at IS NULL
                      AND v.present_on_controller=0
+                     AND v.usage_observed=1
                      AND v.ever_used=0
                      AND v.authorized_guest_count=0
                      AND NOT EXISTS (
