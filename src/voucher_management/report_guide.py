@@ -10,7 +10,8 @@ REPORT_GUIDE = {
     ReportKind.PRINTED: ("Quali voucher hanno stampe registrate?", "Stampe registrate nell'archivio locale, comprese le evidenze importate. Aprire o salvare un PDF non registra una stampa voucher."),
     ReportKind.PRINTED_UNUSED: ("Quali stampati non risultano utilizzati?", "Richiede stampa e dati di utilizzo sulla stessa identità voucher. Le stampe storiche senza collegamento verificato al controller restano escluse."),
     ReportKind.NEVER_PRINTED: ("Quali voucher non hanno stampe registrate?", "Nessuna stampa associata a queste registrazioni locali. Non dimostra che il voucher non sia stato stampato altrove o prima dell'importazione."),
-    ReportKind.NOMINAL: ("Quali voucher sono nominali?", "Solo voucher con il flag Voucher nominale. Il nome del destinatario non determina la classificazione; i vecchi voucher restano non classificati."),
+    ReportKind.NOMINAL: ("Quali voucher sono nominali?", "Solo voucher con classificazione locale esplicita come nominali. La descrizione UniFi non determina la classificazione."),
+    ReportKind.NON_NOMINAL: ("Quali voucher sono non nominali?", "Solo voucher classificati localmente come non nominali. I voucher non classificati e quelli con nominalità rimossa per privacy restano separati."),
     ReportKind.FULL_HISTORY: ("Devo ricostruire lo storico", "Dettaglio amministrativo conservato, inclusi dati importati e archiviati. Registrazioni con nomi uguali non sono necessariamente lo stesso voucher."),
     ReportKind.UNCLASSIFIED: ("Verifica dati: nominalità mancante", "Voucher non ancora classificati come nominali o non nominali."),
     ReportKind.USAGE_UNKNOWN: ("Verifica dati: utilizzo sconosciuto", "Non ci sono dati sufficienti per stabilire l'utilizzo. Non vanno contati come inutilizzati. Sincronizzare aggiorna i voucher ancora identificabili sul controller."),
@@ -21,5 +22,6 @@ REPORT_GUIDE = {
 HISTORY_NOTICE = (
     "I report utilizzano lo storico salvato nel software e sono disponibili anche senza "
     "connessione al controller. Sincronizza con UniFi per aggiornare i dati di utilizzo. "
-    "La connessione non comporta un aggiornamento continuo."
+    "La connessione non comporta un aggiornamento continuo. Descrizione UniFi e "
+    "destinatario locale restano dati distinti e non vengono dedotti l'uno dall'altro."
 )
