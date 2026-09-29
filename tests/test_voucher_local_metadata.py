@@ -276,3 +276,30 @@ def test_nominal_local_metadata_requires_recipient(tmp_path):
         assert metadata.assigned_to == ""
     finally:
         database.close()
+
+
+def test_metadata_map_omits_notes_unless_search_explicitly_requests_them(tmp_path):
+    database, controller_id = _database(tmp_path)
+    database.update_voucher_local_metadata(
+        controller_id=controller_id,
+        unifi_id="voucher-1",
+        assigned_to="Pinco Pallino",
+        notes="Nota riservata ricercabile",
+        is_nominal=True,
+        updated_at=NOW,
+        windows_user="operator",
+    )
+    try:
+        ordinary = database.voucher_local_metadata_map(
+            controller_id=controller_id,
+        )
+        searched = database.voucher_local_metadata_map(
+            controller_id=controller_id,
+            include_notes=True,
+        )
+        assert ordinary["voucher-1"].notes == ""
+        assert ordinary["voucher-1"].controller_description == ""
+        assert searched["voucher-1"].notes == "Nota riservata ricercabile"
+        assert searched["voucher-1"].controller_description == ""
+    finally:
+        database.close()
