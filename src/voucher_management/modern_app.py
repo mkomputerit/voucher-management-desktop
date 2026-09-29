@@ -2921,6 +2921,23 @@ class ModernVoucherApp(
     def _update_operator_summary(self, stats) -> None:
         if not hasattr(self, "home_to_print_var"):
             return
+
+        if not bool(getattr(self, "controller_snapshot_live", False)):
+            for variable in (
+                self.home_to_print_var,
+                self.home_active_var,
+                self.home_used_var,
+                self.home_expired_var,
+            ):
+                variable.set("—")
+            if hasattr(self, "home_recent_tree"):
+                for iid in self.home_recent_tree.get_children():
+                    self.home_recent_tree.delete(iid)
+                self._home_voucher_by_iid = {}
+            self._refresh_home_activity()
+            self._refresh_controller_workspace_status()
+            return
+
         active = 0
         expired_count = 0
         used = 0
