@@ -88,8 +88,10 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
     totals = dataset.totals
     return [
         ["Voucher nel report", str(totals.vouchers)],
-        ["Voucher utilizzati", str(totals.used_vouchers)],
-        ["Utilizzi controller osservati", str(totals.total_controller_uses)],
+        ["Generati da Voucher Management", str(totals.generated_by_app)],
+        ["Generati e mai utilizzati", str(totals.generated_never_used)],
+        ["Utilizzati almeno una volta", str(totals.used_vouchers)],
+        ["Utilizzi controller (ultimo valore osservato)", str(totals.total_controller_uses)],
         ["Voucher scaduti", str(totals.expired_vouchers)],
         ["Voucher stampati", str(totals.printed_vouchers)],
         ["Job di stampa", str(totals.print_jobs)],
@@ -99,6 +101,8 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Stampati mai utilizzati", str(totals.printed_never_used)],
         ["Mai stampati", str(totals.never_printed)],
         ["Voucher nominali", str(totals.nominal_vouchers)],
+        ["Voucher non nominali", str(totals.non_nominal_vouchers)],
+        ["Nominalità non classificata", str(totals.unclassified_nominality)],
     ]
 
 
@@ -109,10 +113,13 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
     headers.extend(
         [
             "Destinatario",
+            "Origine",
+            "Nominale",
             "Creazione controller",
             "Prima acquisizione",
             "Scadenza",
-            "Utilizzi",
+            "Uso storico",
+            "Utilizzi (ultimo)",
             "Stampe",
             "Copie",
             "Ristampe",
@@ -127,12 +134,22 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
     values = [row.controller_name]
     if dataset.code_exposed:
         values.append(row.code)
+    nominal = (
+        "Sì"
+        if row.is_nominal is True
+        else "No"
+        if row.is_nominal is False
+        else "Non classificato"
+    )
     values.extend(
         [
             row.recipient or "—",
+            "Voucher Management" if row.created_by_app is True else "Non attribuita",
+            nominal,
             _display_time(row.created_at),
             _display_time(row.imported_at),
             _display_time(row.expires_at),
+            "Utilizzato" if row.ever_used else "Mai osservato",
             str(row.authorized_guest_count),
             str(row.print_jobs),
             str(row.physical_copies),
@@ -209,6 +226,8 @@ def render_report_pdf(
             for value in (
                 row.controller_name,
                 row.recipient,
+                "Voucher Management" if row.created_by_app is True else "Non attribuita",
+                "Sì" if row.is_nominal is True else "No" if row.is_nominal is False else "Non classificato",
                 row.status,
                 ", ".join(row.print_operators),
                 row.code,
@@ -333,9 +352,15 @@ def render_report_pdf(
         else:
             usable = page_width - 20 * mm
             if dataset.code_exposed:
-                weights = [0.9, 0.9, 1.45, 0.9, 0.9, 0.9, 0.48, 0.48, 0.48, 0.52, 1.0, 0.72]
+                weights = [
+                    0.8, 0.8, 1.3, 0.9, 0.8, 0.8, 0.8, 0.8,
+                    0.72, 0.62, 0.5, 0.5, 0.5, 0.9, 0.7,
+                ]
             else:
-                weights = [0.9, 1.5, 0.9, 0.9, 0.9, 0.48, 0.48, 0.48, 0.52, 1.0, 0.72]
+                weights = [
+                    0.8, 1.35, 0.9, 0.8, 0.8, 0.8, 0.8,
+                    0.72, 0.62, 0.5, 0.5, 0.5, 0.9, 0.7,
+                ]
             scale = usable / sum(weights)
             detail_table = Table(
                 rows,
