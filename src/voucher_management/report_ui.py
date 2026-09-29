@@ -12,12 +12,16 @@ from .reporting import ReportKind, build_report_dataset
 
 
 REPORT_CHOICES = (
-    ("Riepilogo", ReportKind.SUMMARY),
-    ("Voucher utilizzati", ReportKind.USED),
-    ("Voucher scaduti", ReportKind.EXPIRED),
+    ("Riepilogo storico", ReportKind.SUMMARY),
+    ("Generati da Voucher Management", ReportKind.GENERATED),
+    ("Generati e mai utilizzati", ReportKind.GENERATED_UNUSED),
+    ("Utilizzati almeno una volta", ReportKind.USED),
+    ("Scaduti", ReportKind.EXPIRED),
+    ("Stampati", ReportKind.PRINTED),
     ("Stampati mai utilizzati", ReportKind.PRINTED_UNUSED),
     ("Mai stampati", ReportKind.NEVER_PRINTED),
     ("Nominali", ReportKind.NOMINAL),
+    ("Non classificati", ReportKind.UNCLASSIFIED),
     ("Storico completo", ReportKind.FULL_HISTORY),
 )
 REPORT_KIND_BY_LABEL = dict(REPORT_CHOICES)
@@ -36,13 +40,7 @@ class ReportDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._close)
 
         self.kind_var = tk.StringVar(value=REPORT_CHOICES[0][0])
-        self.scope_var = tk.StringVar(
-            value=(
-                "Controller attivo"
-                if getattr(app, "active_controller_id", None) is not None
-                else "Tutti i controller"
-            )
-        )
+        self.scope_var = tk.StringVar(value="Tutto lo storico locale")
         self.format_var = tk.StringVar(value="PDF")
 
         shell = ttk.Frame(self, padding=20)
@@ -55,8 +53,9 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(
             shell,
             text=(
-                "I report amministrativi sono calcolati dallo storico SQLite "
-                "e non includono il codice voucher in chiaro."
+                "I report amministrativi leggono lo storico locale conservato "
+                "da Voucher Management e non dipendono dalla connessione corrente "
+                "alla controller. I codici voucher non sono esportati in chiaro."
             ),
             style="Muted.TLabel",
             wraplength=520,
@@ -84,12 +83,10 @@ class ReportDialog(tk.Toplevel):
             grid,
             textvariable=self.scope_var,
             state="readonly",
-            values=("Controller attivo", "Tutti i controller"),
+            values=("Tutto lo storico locale", "Controller attivo"),
             width=30,
         )
         self.scope_combo.grid(row=1, column=1, sticky="ew", pady=7)
-        if getattr(app, "active_controller_id", None) is None:
-            self.scope_var.set("Tutti i controller")
 
         ttk.Label(grid, text="Formato").grid(
             row=2, column=0, sticky="w", pady=7, padx=(0, 16)
@@ -108,8 +105,9 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(
             shell,
             text=(
-                "Nota: “Utilizzi” indica il totale osservato dal controller. "
-                "Non viene presentato come ora esatta di utilizzo."
+                "Nota: “utilizzato” significa che almeno un utilizzo è stato "
+                "osservato nello storico locale. La nominalità è una "
+                "classificazione esplicita di Voucher Management."
             ),
             style="Muted.TLabel",
             wraplength=520,
@@ -174,7 +172,7 @@ class ReportDialog(tk.Toplevel):
             if controller_id is None:
                 messagebox.showinfo(
                     "Report",
-                    "Nessun controller attivo. Selezionare tutti i controller "
+                    "Nessun controller attivo. Usare “Tutto lo storico locale” "
                     "oppure connettersi a un controller.",
                     parent=self,
                 )
