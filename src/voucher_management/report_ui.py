@@ -22,6 +22,7 @@ REPORT_CHOICES = (
     ("Mai stampati", ReportKind.NEVER_PRINTED),
     ("Nominali", ReportKind.NOMINAL),
     ("Non classificati", ReportKind.UNCLASSIFIED),
+    ("Uso non determinabile", ReportKind.USAGE_UNKNOWN),
     ("Storico completo", ReportKind.FULL_HISTORY),
 )
 REPORT_KIND_BY_LABEL = dict(REPORT_CHOICES)
@@ -105,9 +106,10 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(
             shell,
             text=(
-                "Nota: “utilizzato” significa che almeno un utilizzo è stato "
-                "osservato nello storico locale. La nominalità è una "
-                "classificazione esplicita di Voucher Management."
+                "Nota: “mai utilizzato” richiede almeno un'osservazione del "
+                "dato d'uso. Se tale evidenza manca, il voucher resta in "
+                "“Uso non determinabile”. La nominalità è una classificazione "
+                "esplicita di Voucher Management."
             ),
             style="Muted.TLabel",
             wraplength=520,
