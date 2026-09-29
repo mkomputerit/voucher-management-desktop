@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Iterable
@@ -24,6 +24,7 @@ class ReportKind(str, Enum):
     PRINTED_UNUSED = "printed_unused"
     NEVER_PRINTED = "never_printed"
     NOMINAL = "nominal"
+    NON_NOMINAL = "non_nominal"
     UNCLASSIFIED = "unclassified"
     USAGE_UNKNOWN = "usage_unknown"
     ORIGIN_UNKNOWN = "origin_unknown"
@@ -41,6 +42,7 @@ REPORT_TITLES = {
     ReportKind.PRINTED_UNUSED: "Stampati - nessun utilizzo rilevato",
     ReportKind.NEVER_PRINTED: "Voucher senza stampe registrate",
     ReportKind.NOMINAL: "Voucher nominali",
+    ReportKind.NON_NOMINAL: "Voucher non nominali",
     ReportKind.UNCLASSIFIED: "Voucher non classificati",
     ReportKind.USAGE_UNKNOWN: "Voucher con utilizzo non determinabile",
     ReportKind.ORIGIN_UNKNOWN: "Voucher con origine creazione non determinabile",
@@ -106,6 +108,7 @@ class ReportRow:
     is_nominal: bool | None
     last_synced_at: str = ""
     nominality_redacted: bool = False
+    controller_description: str = ""
 
 
 @dataclass(frozen=True)
@@ -146,6 +149,26 @@ def _parse_time(value: object) -> datetime | None:
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
+
+
+def _time_bounds(values: Iterable[str]) -> tuple[str, str]:
+    """Return chronological ISO bounds without relying on lexicographic offsets."""
+
+    parsed: list[tuple[datetime, str]] = []
+    for value in values:
+        original = str(value or "").strip()
+        moment = _parse_time(original)
+        if moment is None:
+            continue
+        if moment.tzinfo is None:
+            normalized = moment.replace(tzinfo=timezone.utc)
+        else:
+            normalized = moment.astimezone(timezone.utc)
+        parsed.append((normalized, original))
+    if not parsed:
+        return "", ""
+    parsed.sort(key=lambda item: item[0])
+    return parsed[0][1], parsed[-1][1]
 
 
 def _expired_at_report_time(
@@ -230,6 +253,8 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
         return row.print_jobs == 0
     if kind is ReportKind.NOMINAL:
         return row.is_nominal is True
+    if kind is ReportKind.NON_NOMINAL:
+        return row.is_nominal is False
     if kind is ReportKind.UNCLASSIFIED:
         return row.is_nominal is None and not row.nominality_redacted
     if kind is ReportKind.USAGE_UNKNOWN:
@@ -253,7 +278,11 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
         usage_unknown_vouchers=sum(
             not row.usage_observed for row in materialized
         ),
-        total_controller_uses=sum(row.authorized_guest_count for row in materialized),
+        total_controller_uses=sum(
+            row.authorized_guest_count
+            for row in materialized
+            if row.usage_observed
+        ),
         expired_vouchers=sum(row.expired for row in materialized),
         printed_vouchers=sum(row.print_jobs > 0 for row in materialized),
         print_jobs=sum(row.print_jobs for row in materialized),
@@ -327,14 +356,14 @@ def build_report_dataset(
         nominal_raw = raw["is_nominal"]
         is_nominal = None if nominal_raw is None else bool(nominal_raw)
         assigned_to = str(raw["assigned_to"] or "").strip()
-        recipient = assigned_to or str(raw["name"] or "").strip()
+        controller_description = str(raw["name"] or "").strip()
         ever_used = bool(raw["ever_used"])
         usage_observed = bool(raw["usage_observed"])
         row = ReportRow(
             voucher_id=int(raw["voucher_id"]),
             controller_name=controller_name,
             code=clear_code,
-            recipient=recipient,
+            recipient=assigned_to,
             created_at=str(raw["created_at"] or ""),
             imported_at=str(raw["imported_at"] or ""),
             expires_at=str(raw["expires_at"] or ""),
@@ -361,6 +390,7 @@ def build_report_dataset(
             is_nominal=is_nominal,
             last_synced_at="" if legacy else str(raw["last_synced_at"] or ""),
             nominality_redacted=bool(raw["nominality_redacted"]),
+            controller_description=controller_description,
         )
         if legacy:
             row = replace(row, status="Backup precedente - scadenza non verificata", expires_at="")
@@ -376,25 +406,45 @@ def build_report_dataset(
             or (next(iter(controllers)) if len(controllers) == 1 else "Controller selezionato")
         )
 
-    materialized = tuple(rows)
-    sync_times = sorted(
+    # The summary is aggregate-only by design: do not retain per-voucher
+    # personal/operator detail in the renderer input when it cannot be shown.
+    materialized = () if kind is ReportKind.SUMMARY else tuple(rows)
+    totals_source = all_rows if kind is ReportKind.SUMMARY else rows
+    data_from, data_as_of = _time_bounds(
         row.last_synced_at for row in all_rows if row.last_synced_at
     )
     unknown_origin = sum(row.origin != "APPLICATION" for row in all_rows)
     unknown_usage = sum(not row.usage_observed for row in all_rows)
-    unclassified = sum(row.is_nominal is None for row in all_rows)
-    legacy_count = sum(str(raw["controller_api_root"]).startswith("legacy-backup://") for raw in raw_rows)
+    unclassified = sum(
+        row.is_nominal is None and not row.nominality_redacted
+        for row in all_rows
+    )
+    redacted = sum(row.nominality_redacted for row in all_rows)
+    legacy_count = sum(
+        str(raw["controller_api_root"]).startswith("legacy-backup://")
+        for raw in raw_rows
+    )
     coverage_note = (
-        f"Ambito: {len(all_rows)} registrazioni locali. Informazioni mancanti: "
-        f"origine creazione {unknown_origin}, utilizzo {unknown_usage}, nominalità {unclassified}. "
+        f"Ambito: {len(all_rows)} registrazioni locali. Informazioni non determinabili: "
+        f"origine creazione {unknown_origin}, utilizzo {unknown_usage}, "
+        f"nominalità non classificata {unclassified}; nominalità rimossa per privacy {redacted}. "
         f"Registrazioni da backup precedente: {legacy_count}; la loro importazione non prova "
         "scadenza né utilizzo e non è una sincronizzazione controller. "
         "Senza stampe registrate significa senza evidenze associate a questa identità locale, "
-        "non necessariamente mai stampato. I nomi uguali non provano che due registrazioni "
-        "siano lo stesso voucher."
+        "non necessariamente mai stampato. Descrizione UniFi e destinatario locale sono "
+        "mantenuti separati: uno non prova il significato dell'altro."
     )
-    if not rows:
-        coverage_note = "Nessun risultato per i criteri scelti. Le informazioni mancanti possono escludere voucher dal report. " + coverage_note
+    if not all_rows:
+        coverage_note = (
+            "Archivio locale senza registrazioni nell'ambito scelto. "
+            + coverage_note
+        )
+    elif kind is not ReportKind.SUMMARY and not rows:
+        coverage_note = (
+            "Nessun risultato per i criteri scelti. Le informazioni non determinabili "
+            "possono escludere voucher dal report. "
+            + coverage_note
+        )
     return ReportDataset(
         kind=kind,
         purpose=purpose,
@@ -402,10 +452,10 @@ def build_report_dataset(
         generated_at=str(generated_at),
         controller_label=controller_label,
         rows=materialized,
-        totals=_totals(materialized),
+        totals=_totals(totals_source),
         code_exposed=code_exposed,
-        data_from=sync_times[0] if sync_times else "",
-        data_as_of=sync_times[-1] if sync_times else "",
+        data_from=data_from,
+        data_as_of=data_as_of,
         coverage_note=coverage_note,
     )
 
