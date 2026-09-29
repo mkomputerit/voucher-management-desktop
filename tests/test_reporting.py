@@ -88,6 +88,36 @@ def test_generated_unused_requires_application_provenance_and_no_observed_use(tm
         db.close()
 
 
+def test_missing_controller_usage_evidence_is_not_reported_as_never_used(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller, "legacy-unknown", "1212121212")
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET origin='LEGACY_APPLICATION', usage_observed=0, ever_used=0
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+
+        never_used = build_report_dataset(
+            db,
+            kind=ReportKind.GENERATED_UNUSED,
+            generated_at=NOW,
+        )
+        unknown = build_report_dataset(
+            db,
+            kind=ReportKind.USAGE_UNKNOWN,
+            generated_at=NOW,
+        )
+
+        assert never_used.rows == ()
+        assert [row.voucher_id for row in unknown.rows] == [voucher_id]
+        assert unknown.rows[0].usage_observed is False
+    finally:
+        db.close()
+
+
 def test_used_means_ever_observed_used_even_if_latest_counter_returns_zero(tmp_path):
     db, controller = _db(tmp_path)
     try:
@@ -156,6 +186,7 @@ def test_summary_exposes_local_history_totals_without_clear_codes(tmp_path):
         assert dataset.totals.generated_vouchers == 1
         assert dataset.totals.nominal_vouchers == 1
         assert dataset.totals.unclassified_vouchers == 1
+        assert dataset.totals.usage_unknown_vouchers == 0
     finally:
         db.close()
 
