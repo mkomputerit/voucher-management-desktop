@@ -309,7 +309,7 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
     )
 
 
-def build_report_dataset(
+def _build_report_dataset_snapshot(
     database: Database,
     *,
     kind: ReportKind,
@@ -477,6 +477,26 @@ def build_report_dataset(
         data_as_of=data_as_of,
         coverage_note=coverage_note,
     )
+
+
+def build_report_dataset(
+    database: Database,
+    *,
+    kind: ReportKind,
+    generated_at: str,
+    controller_id: int | None = None,
+    include_code_requested: bool = False,
+) -> ReportDataset:
+    """Build one report from a single stable SQLite read snapshot."""
+
+    with database.read_snapshot():
+        return _build_report_dataset_snapshot(
+            database,
+            kind=kind,
+            generated_at=generated_at,
+            controller_id=controller_id,
+            include_code_requested=include_code_requested,
+        )
 
 
 def build_report_dataset_from_path(
