@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import messagebox
 
+from .create_reporting_recovery import (
+    CreateReportingRecoveryError,
+    clear_pending_create_reporting,
+    load_pending_create_reporting,
+    write_pending_create_reporting,
+)
 from .dialogs import CreateDialog
 from .mutation_guard import CreateMutationGuardError
 from .sync_store import persist_create_result_to_path
@@ -32,6 +39,26 @@ class VoucherCreationMixin:
                 parent=self,
             )
             return
+
+        reporting_marker = getattr(
+            getattr(self, "paths", None),
+            "pending_create_reporting",
+            None,
+        )
+        if reporting_marker is not None:
+            try:
+                pending_reporting = load_pending_create_reporting(reporting_marker)
+            except CreateReportingRecoveryError:
+                pending_reporting = True
+            if pending_reporting:
+                messagebox.showwarning(
+                    "Creazione sospesa",
+                    "Esiste una creazione già confermata da UniFi la cui "
+                    "classificazione locale deve ancora essere riconciliata. "
+                    "Eseguire prima Sincronizza/Aggiorna.",
+                    parent=self,
+                )
+                return
 
         dialog = CreateDialog(self)
         if not dialog.result:
@@ -69,33 +96,76 @@ class VoucherCreationMixin:
                 cached,
                 params,
             )
-            if controller_id is not None and database_path is not None:
-                try:
-                    persist_create_result_to_path(
-                        database_path,
-                        controller_id=controller_id,
-                        snapshot=list(outcome.vouchers),
-                        created=list(outcome.created),
-                        snapshot_complete=outcome.refresh_error is None,
-                        is_nominal=bool(params.get("is_nominal", False)),
-                        observed_at=datetime.now(timezone.utc).isoformat(),
-                    )
-                except Exception as exc:
-                    # The controller result is already known at this point.
-                    # Never turn a confirmed remote create into a generic
-                    # "creation failed" message that could encourage a repeat.
-                    outcome = CreateOutcome(
-                        created=outcome.created,
-                        vouchers=outcome.vouchers,
-                        refresh_error=outcome.refresh_error,
-                        uncertain_error=outcome.uncertain_error,
-                        local_persistence_error=exc,
-                    )
-            return outcome
+            if (
+                controller_id is None
+                or database_path is None
+                or not outcome.created
+                or outcome.uncertain_error is not None
+            ):
+                return outcome
+
+            observed_at = datetime.now(timezone.utc).isoformat()
+            marker_path = getattr(
+                paths,
+                "pending_create_reporting",
+                database_path.with_name("pending_create_reporting.json"),
+            )
+            marker_error = None
+            try:
+                write_pending_create_reporting(
+                    marker_path,
+                    controller_id=controller_id,
+                    voucher_ids=[voucher.id for voucher in outcome.created],
+                    is_nominal=bool(params.get("is_nominal", False)),
+                    confirmed_at=observed_at,
+                )
+            except Exception as exc:
+                marker_error = exc
+
+            try:
+                persist_create_result_to_path(
+                    database_path,
+                    controller_id=controller_id,
+                    snapshot=list(outcome.vouchers),
+                    created=list(outcome.created),
+                    snapshot_complete=outcome.snapshot_complete,
+                    snapshot_observed=outcome.refresh_error is None,
+                    is_nominal=bool(params.get("is_nominal", False)),
+                    observed_at=observed_at,
+                )
+            except Exception as exc:
+                # The controller result is already confirmed. Preserve the
+                # durable reconciliation marker when available and never
+                # recast this as a failed/uncertain POST.
+                return replace(
+                    outcome,
+                    local_persistence_error=exc,
+                    recovery_marker_error=marker_error,
+                )
+
+            # SQLite now contains the same confirmed UUID/classification facts
+            # atomically. A leftover marker is redundant and may be cleared.
+            try:
+                clear_pending_create_reporting(marker_path)
+            except OSError:
+                # Reconciliation is idempotent; leaving the marker behind is
+                # safer than converting a confirmed create into a failure.
+                pass
+            return replace(outcome, recovery_marker_error=None)
 
         def completed(outcome) -> None:
             self.vouchers = list(outcome.vouchers)
-            self.controller_snapshot_live = outcome.refresh_error is None
+            self.controller_snapshot_live = bool(
+                outcome.refresh_error is None
+                and outcome.snapshot_complete
+                and not outcome.reconciliation_required
+            )
+            if self.controller_snapshot_live:
+                callback = getattr(self, "_controller_operation_succeeded", None)
+            else:
+                callback = getattr(self, "_controller_operation_stale", None)
+            if callback is not None:
+                callback()
 
             if outcome.uncertain_error is not None:
                 self.checked_ids.clear()
@@ -154,14 +224,28 @@ class VoucherCreationMixin:
                     "create_reporting_persistence_failed type=%s",
                     type(getattr(outcome, "local_persistence_error", None)).__name__,
                 )
+                marker_ok = getattr(
+                    outcome,
+                    "recovery_marker_error",
+                    None,
+                ) is None
+                recovery_detail = (
+                    "La riconciliazione è stata salvata e verrà riprovata "
+                    "al prossimo aggiornamento riuscito."
+                    if marker_ok
+                    else (
+                        "Non è stato possibile salvare neppure il marker di "
+                        "riconciliazione: non creare altri voucher e verificare "
+                        "l'archivio locale prima di proseguire."
+                    )
+                )
                 messagebox.showwarning(
                     "Voucher creati • archivio locale da verificare",
                     f"UniFi ha confermato la creazione di {len(outcome.created)} "
                     "voucher, ma la loro classificazione nello storico locale "
                     "non è stata registrata correttamente.\n\n"
-                    "Non ripetere la creazione. I voucher restano validi sulla "
-                    "controller; prima di affidarsi ai report, verificare "
-                    "l'archivio locale.",
+                    "Non ripetere la creazione. "
+                    f"{recovery_detail}",
                     parent=self,
                 )
                 return
@@ -173,6 +257,17 @@ class VoucherCreationMixin:
                     "l'aggiornamento dell'elenco non è riuscito. "
                     "Non ripetere la creazione.\n\n"
                     f"{outcome.refresh_error}",
+                    parent=self,
+                )
+                return
+
+            if outcome.reconciliation_required:
+                messagebox.showwarning(
+                    "Voucher creati • elenco da aggiornare",
+                    f"UniFi ha confermato la creazione di {len(outcome.created)} "
+                    "voucher, ma la prima rilettura non li conteneva ancora "
+                    "tutti. I voucher confermati restano visibili e selezionati. "
+                    "Eseguire Sincronizza prima di considerare la Home aggiornata.",
                     parent=self,
                 )
                 return
