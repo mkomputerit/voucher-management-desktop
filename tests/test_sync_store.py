@@ -6,6 +6,7 @@ from voucher_management.database import Database
 from voucher_management.sync_store import (
     load_local_vouchers,
     persist_connection_snapshot_to_path,
+    persist_create_result_to_path,
     persist_refresh_snapshot_to_path,
     persist_successful_snapshot,
 )
@@ -290,5 +291,82 @@ def test_worker_path_refresh_updates_snapshot(tmp_path):
             (controller,),
         ).fetchone()
         assert row["authorized_guest_count"] == 2
+    finally:
+        check.close()
+
+
+def test_create_result_persists_application_origin_and_nominal_flag(tmp_path):
+    path = tmp_path / "create-result.sqlite"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="Reception",
+        api_root="https://controller.example",
+        created_at="2026-09-29T08:00:00+00:00",
+    )
+    db.close()
+
+    created = voucher("nominal-created")
+    created.recipient = "Pinco Pallino"
+    persist_create_result_to_path(
+        path,
+        controller_id=controller,
+        snapshot=[created],
+        created=[created],
+        snapshot_complete=True,
+        is_nominal=True,
+        observed_at="2026-09-29T08:01:00+00:00",
+    )
+
+    check = Database(path)
+    try:
+        check.initialize()
+        row = check.connection.execute(
+            "SELECT origin, is_nominal FROM vouchers WHERE unifi_id=?",
+            ("nominal-created",),
+        ).fetchone()
+        assert row["origin"] == "APPLICATION"
+        assert row["is_nominal"] == 1
+    finally:
+        check.close()
+
+
+def test_partial_create_result_does_not_mark_unseen_local_rows_absent(tmp_path):
+    path = tmp_path / "partial-create.sqlite"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(name="A", api_root="https://a.example", created_at="t")
+    persist_successful_snapshot(
+        db,
+        controller_id=controller,
+        vouchers=[voucher("existing")],
+        observed_at="2026-09-29T08:00:00+00:00",
+        sync_uuid="before-create",
+    )
+    db.close()
+
+    created = voucher("created")
+    persist_create_result_to_path(
+        path,
+        controller_id=controller,
+        snapshot=[voucher("existing"), created],
+        created=[created],
+        snapshot_complete=False,
+        is_nominal=False,
+        observed_at="2026-09-29T08:05:00+00:00",
+    )
+
+    check = Database(path)
+    try:
+        check.initialize()
+        rows = {
+            row["unifi_id"]: row
+            for row in check.connection.execute(
+                "SELECT unifi_id, present_on_controller, origin, is_nominal FROM vouchers"
+            )
+        }
+        assert rows["existing"]["present_on_controller"] == 1
+        assert rows["created"]["origin"] == "APPLICATION"
+        assert rows["created"]["is_nominal"] == 0
     finally:
         check.close()
