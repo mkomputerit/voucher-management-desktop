@@ -184,6 +184,7 @@ def _controller_status_color_key(status_key: str) -> str:
         "connected": "green",
         "syncing": "blue",
         "error": "red",
+        "stale": "orange",
         "local": "orange",
         "unconfigured": "orange",
     }.get(status_key, "red")
@@ -212,6 +213,12 @@ def _controller_status_style_names(
             "SidebarError.TLabel",
             "DisconnectedDot.TLabel",
             "SidebarDisconnectedDot.TLabel",
+        ),
+        "stale": (
+            "Warning.Status.TLabel",
+            "SidebarWarning.TLabel",
+            "WarningDot.TLabel",
+            "SidebarWarningDot.TLabel",
         ),
         "local": (
             "Warning.Status.TLabel",
@@ -989,6 +996,8 @@ class ModernVoucherApp(
         self.after(80, self._show_initial_window)
 
         self._controller_status_failed = False
+        self._controller_status_stale = False
+        self._archive_status_failed = False
         self._controller_busy_label = ""
         self.workspace_title_var = tk.StringVar(value="Home")
         self.workspace_subtitle_var = tk.StringVar(
@@ -2453,6 +2462,8 @@ class ModernVoucherApp(
             last_successful_sync_at=last_sync,
             busy_label=self._controller_busy_label,
             failed=self._controller_status_failed,
+            stale=self._controller_status_stale,
+            archive_failed=self._archive_status_failed,
         )
         friendly_sync = audit_time_label(last_sync) if last_sync else "Mai"
         self.controller_health_var.set(status.title)
@@ -2493,7 +2504,7 @@ class ModernVoucherApp(
             if dot is not None:
                 self._paint_status_dot(dot, status.key)
 
-        if status.key == "connected":
+        if status.key in {"connected", "stale"} and self.client is not None:
             self.home_sync_action_var.set("Sincronizza")
         elif status.key == "unconfigured":
             self.home_sync_action_var.set("Configura controller")
@@ -2544,14 +2555,24 @@ class ModernVoucherApp(
 
     def _controller_operation_failed(self) -> None:
         self._controller_status_failed = True
+        self._controller_status_stale = False
         self.controller_snapshot_live = False
         self._refresh_controller_workspace_status()
         populate = getattr(self, "populate", None)
         if callable(populate):
             populate()
 
+    def _controller_operation_stale(self, *, archive_failed: bool = False) -> None:
+        self._controller_status_failed = False
+        self._controller_status_stale = True
+        if archive_failed:
+            self._archive_status_failed = True
+        self._refresh_controller_workspace_status()
+
     def _controller_operation_succeeded(self) -> None:
         self._controller_status_failed = False
+        self._controller_status_stale = False
+        self._archive_status_failed = False
         self._refresh_controller_workspace_status()
 
     def _set_background_busy(self, busy: bool, label: str = "") -> None:
