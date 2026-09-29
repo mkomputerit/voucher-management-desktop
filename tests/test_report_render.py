@@ -27,6 +27,10 @@ def _dataset(*, code="") -> ReportDataset:
         code=code,
         recipient="Mario & Lucia <ospiti>",
         assigned_to="",
+        created_by_app=True,
+        is_nominal=True,
+        classification_updated_at="2026-09-01T09:06:00+00:00",
+        ever_used=True,
         created_at="2026-09-01T09:00:00+00:00",
         imported_at="2026-09-01T09:05:00+00:00",
         expires_at="2026-10-01T09:00:00+00:00",
@@ -45,6 +49,8 @@ def _dataset(*, code="") -> ReportDataset:
     )
     totals = ReportTotals(
         vouchers=1,
+        generated_by_app=1,
+        generated_never_used=0,
         used_vouchers=1,
         total_controller_uses=2,
         expired_vouchers=0,
@@ -55,7 +61,9 @@ def _dataset(*, code="") -> ReportDataset:
         reprint_copies=2,
         printed_never_used=0,
         never_printed=0,
-        nominal_vouchers=0,
+        nominal_vouchers=1,
+        non_nominal_vouchers=0,
+        unclassified_nominality=0,
     )
     return ReportDataset(
         kind=ReportKind.SUMMARY,
@@ -78,7 +86,7 @@ def test_csv_report_omits_voucher_column_when_policy_hides_code(tmp_path: Path):
     assert "Voucher;" not in payload
     assert "12345-67890" not in payload
     assert "Mario & Lucia <ospiti>" in payload
-    assert "Utilizzi controller osservati;2" in payload
+    assert "Utilizzi controller (ultimo valore osservato);2" in payload
 
 
 def test_renderer_rejects_clear_code_for_summary_purpose(tmp_path: Path):
@@ -129,6 +137,8 @@ def test_empty_pdf_report_is_still_printable(tmp_path: Path):
         rows=(),
         totals=ReportTotals(
             vouchers=0,
+            generated_by_app=0,
+            generated_never_used=0,
             used_vouchers=0,
             total_controller_uses=0,
             expired_vouchers=0,
@@ -140,6 +150,8 @@ def test_empty_pdf_report_is_still_printable(tmp_path: Path):
             printed_never_used=0,
             never_printed=0,
             nominal_vouchers=0,
+            non_nominal_vouchers=0,
+            unclassified_nominality=0,
         ),
         code_exposed=False,
     )
