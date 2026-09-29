@@ -1482,6 +1482,7 @@ COMMIT;
                     v.expired,
                     v.present_on_controller,
                     v.archived_at,
+                    v.last_seen_at,
                     v.last_synced_at,
                     COUNT(vp.id) AS print_jobs,
                     COALESCE(SUM(vp.physical_copies), 0) AS physical_copies,
