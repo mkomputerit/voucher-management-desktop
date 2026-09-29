@@ -13,10 +13,15 @@
   classification and a monotonic ever-used fact. Existing rows migrate as
   unknown/unclassified instead of receiving guessed classifications.
 - Rebuild administrative report semantics around durable facts: add generated
-  by Voucher Management, generated-and-never-used, printed, nominal and
-  unclassified views; make used/never-used historical rather than dependent on
-  only the latest controller counter; preserve legacy generation provenance
-  only when verified migration evidence exists.
+  by Voucher Management, generated-and-never-used, printed, nominal,
+  unclassified and usage-indeterminate views; make used/never-used historical
+  rather than dependent on only the latest controller counter; preserve legacy
+  generation provenance only when verified migration evidence exists.
+- Distinguish "mai utilizzato" from missing usage evidence, keep ever-used
+  monotonic across later controller counter resets, and make deletion/retention
+  fail closed when durable history says a voucher was used or its usage cannot
+  be established. A confirmed UniFi create is also never reported as failed
+  merely because local reporting persistence fails afterward.
 
 - Print only the recipient value inside each cut voucher, without the
   "Destinatario:" prefix.
