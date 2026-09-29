@@ -1243,3 +1243,38 @@ def test_privacy_redacted_report_never_exports_stale_local_recipient(tmp_path):
         assert dataset.rows[0].controller_description == "Descrizione UniFi non locale"
     finally:
         db.close()
+
+
+def test_archived_report_defensively_hides_stale_personal_text(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "archived-stale-text",
+            "8484848484",
+            name="Nome rimasto per errore",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET assigned_to=?, archived_at=?, nominality_redacted=1
+                   WHERE id=?""",
+                (
+                    "Destinatario rimasto per errore",
+                    "2026-09-20T10:00:00+00:00",
+                    voucher_id,
+                ),
+            )
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+        row = next(row for row in dataset.rows if row.voucher_id == voucher_id)
+        assert row.status == "Archiviato"
+        assert row.recipient == ""
+        assert row.controller_description == ""
+    finally:
+        db.close()
