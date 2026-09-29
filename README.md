@@ -218,10 +218,12 @@ Da stampare / Attivi / Utilizzati / Scaduti metrics and recent-voucher list stay
 empty until the controller has been read successfully in the current session.
 "Da stampare" combines that fresh controller population with the local physical-print
 audit. Report is the historical counterpart: it defaults to the full local archive
-and does not require an active controller connection. New voucher creation also
-offers a local "Voucher nominale" flag; it is never sent to UniFi. Existing rows
-from older versions remain explicitly unclassified rather than being inferred
-from recipient text.
+and does not require an active controller connection. Voucher origin is recorded
+as Voucher Management, Controller / external, imported legacy history, or
+undetermined for pre-5.1 historical rows. New voucher creation also offers a
+local "Voucher nominale" flag; it is never sent to UniFi. Existing rows from
+older versions remain explicitly unclassified rather than being inferred from
+recipient text.
 
 Home shows the last verified successful backup recorded locally and provides a
 manual backup action. A failed attempt does not replace that timestamp. After a
