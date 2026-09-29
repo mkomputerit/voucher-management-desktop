@@ -118,7 +118,7 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
             "Creazione controller",
             "Prima acquisizione",
             "Scadenza",
-            "Mai usato",
+            "Utilizzato",
             "Utilizzi",
             "Stampe",
             "Copie",
