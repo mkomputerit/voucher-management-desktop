@@ -122,7 +122,7 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
             "Data creazione / evidenza",
             "Prima acquisizione",
             "Scadenza",
-            "Ultima osservazione controller",
+            "Ultima presenza osservata",
             "Dato uso",
             "Utilizzato",
             "Guest autorizzati",
@@ -146,7 +146,7 @@ _DETAIL_COLUMN_WEIGHTS = {
     "Data creazione / evidenza": 0.68,
     "Prima acquisizione": 0.68,
     "Scadenza": 0.68,
-    "Ultima osservazione controller": 0.72,
+    "Ultima presenza osservata": 0.72,
     "Dato uso": 0.66,
     "Utilizzato": 0.46,
     "Guest autorizzati": 0.40,
@@ -181,7 +181,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
             _display_time(row.created_at),
             _display_time(row.imported_at),
             _display_time(row.expires_at),
-            _display_time(row.last_synced_at),
+            _display_time(row.last_seen_at),
             "Osservato" if row.usage_observed else "Non disponibile",
             (
                 "Sì"
@@ -220,13 +220,13 @@ def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
             )
             writer.writerow(
                 [
-                    _csv_cell("Ultima osservazione per voucher - più vecchia"),
+                    _csv_cell("Ultima presenza osservata per voucher - più vecchia"),
                     _csv_cell(_display_time(dataset.data_from)),
                 ]
             )
             writer.writerow(
                 [
-                    _csv_cell("Ultima osservazione per voucher - più recente"),
+                    _csv_cell("Ultima presenza osservata per voucher - più recente"),
                     _csv_cell(_display_time(dataset.data_as_of)),
                 ]
             )
@@ -351,7 +351,7 @@ def render_report_pdf(
                 (
                     f"Generato: {_display_time(dataset.generated_at)}"
                     f"  |  Ambito: {dataset.controller_label}"
-                    f"  |  Ultime osservazioni per voucher: {_display_time(dataset.data_from)} - {_display_time(dataset.data_as_of)}"
+                    f"  |  Ultime presenze osservate per voucher: {_display_time(dataset.data_from)} - {_display_time(dataset.data_as_of)}"
                 ),
                 subtitle_style,
             )
