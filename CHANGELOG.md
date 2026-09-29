@@ -8,8 +8,9 @@
   optional shutdown proposal; expose these preferences in Settings > Backup.
 - Show the last verified successful backup in Home with a manual backup action.
 - Offer per-copy destination and optional password protection for manual and
-  shutdown backups. ZIP copies are explicitly identified as unencrypted;
-  .vmbk copies retain authenticated encryption. Closing also offers skip/cancel,
+  shutdown backups. Protection is selected by default; creating a readable ZIP
+  requires an explicit opt-out, while .vmbk copies retain authenticated encryption.
+  Closing also offers skip/cancel,
   and a one-off directory override never updates the saved default.
 - Clear machine-specific backup destinations from portable settings and retain
   validated restore compatibility for both ZIP and .vmbk files.
