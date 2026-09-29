@@ -2,6 +2,22 @@
 
 ## 5.1.0 - Unreleased
 
+- Separate the two product cores explicitly: Home is now a live UniFi
+  operational view whose counters stay blank until a successful controller
+  snapshot in the current session, while Report is the durable local-history
+  workspace and defaults to the complete SQLite archive.
+- Add an explicit **Voucher nominale** flag to voucher creation. The choice is
+  local reporting metadata and is never sent to UniFi; recipient text is no
+  longer used to infer nominal status.
+- Upgrade SQLite to schema 3 with durable voucher provenance, tri-state nominal
+  classification and a monotonic ever-used fact. Existing rows migrate as
+  unknown/unclassified instead of receiving guessed classifications.
+- Rebuild administrative report semantics around durable facts: add generated
+  by Voucher Management, generated-and-never-used, printed, nominal and
+  unclassified views; make used/never-used historical rather than dependent on
+  only the latest controller counter; preserve legacy generation provenance
+  only when verified migration evidence exists.
+
 - Print only the recipient value inside each cut voucher, without the
   "Destinatario:" prefix.
 - Complete first-run setup with a backup step for the default folder and the
