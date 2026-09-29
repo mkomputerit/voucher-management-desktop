@@ -229,6 +229,67 @@ def persist_refresh_snapshot_to_path(
         database.close()
 
 
+def persist_create_result_to_path(
+    database_path: Path,
+    *,
+    controller_id: int,
+    snapshot: list[ApiVoucher],
+    created: list[ApiVoucher],
+    snapshot_complete: bool,
+    is_nominal: bool,
+    observed_at: str,
+) -> None:
+    """Persist a create result without inventing controller facts.
+
+    A successful follow-up GET is a complete controller snapshot and can use the
+    normal synchronization path. If creation succeeded but that GET failed,
+    only the vouchers returned by the successful POST are upserted; absence of
+    any other voucher is deliberately not inferred.
+    """
+
+    database = Database(Path(database_path))
+    try:
+        database.initialize()
+        if snapshot_complete:
+            persist_successful_snapshot(
+                database,
+                controller_id=int(controller_id),
+                vouchers=list(snapshot),
+                observed_at=observed_at,
+            )
+        elif created:
+            with database.transaction() as tx:
+                for voucher in created:
+                    database.upsert_voucher(
+                        controller_id=int(controller_id),
+                        unifi_id=voucher.id,
+                        code=voucher.code,
+                        name=voucher.recipient,
+                        created_at=_iso_from_epoch(voucher.create_time),
+                        imported_at=observed_at,
+                        duration_minutes=voucher.duration_minutes,
+                        authorized_guest_limit=voucher.quota or None,
+                        authorized_guest_count=voucher.used,
+                        activated_at=_iso_from_epoch(voucher.start_time),
+                        expires_at=_iso_from_epoch(voucher.end_time),
+                        expired=voucher.status == "EXPIRED",
+                        data_limit_mb=voucher.data_mb,
+                        download_limit_kbps=voucher.down_kbps,
+                        upload_limit_kbps=voucher.up_kbps,
+                        last_synced_at=observed_at,
+                        connection=tx,
+                    )
+
+        if created:
+            database.mark_application_created_vouchers(
+                controller_id=int(controller_id),
+                unifi_ids=[voucher.id for voucher in created],
+                is_nominal=bool(is_nominal),
+            )
+    finally:
+        database.close()
+
+
 def _epoch_from_iso(value: str | None) -> int:
     """Convert persisted UTC text back to the ApiVoucher compatibility shape."""
 
