@@ -131,7 +131,7 @@ Section "Voucher Management" SEC_MAIN
   SetOutPath "$PLUGINSDIR\payload"
   File /r "${PAYLOAD_DIR}\*"
 
-  StrCpy $R2 '$\"$PowerShellPath$\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $\"$PLUGINSDIR\payload\Install-VoucherManagement.ps1$\" -SourcePath $\"$PLUGINSDIR\payload$\" -InstallRoot $\"$INSTDIR$\" -DataRoot $\"$DataRoot$\" -OperatorGroup $\"$OperatorGroup$\"'
+  StrCpy $R2 '$\"$PowerShellPath$\" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $\"$PLUGINSDIR\payload\Install-VoucherManagement.ps1$\" -SourcePath $\"$PLUGINSDIR\payload$\" -InstallRoot $\"$INSTDIR$\" -DataRoot $\"$DataRoot$\" -OperatorGroup $\"$OperatorGroup$\"'
 
   ${If} $OperatorUser != ""
     StrCpy $R2 '$R2 -OperatorUser $\"$OperatorUser$\"'
@@ -142,8 +142,7 @@ Section "Voucher Management" SEC_MAIN
   ${EndIf}
 
   DetailPrint "Configurazione installazione condivisa..."
-  nsExec::ExecToLog $R2
-  Pop $R3
+  ExecWait $R2 $R3
   ${If} $R3 != "0"
     MessageBox MB_ICONSTOP|MB_OK "Installazione non riuscita durante la configurazione di Windows. Codice: $R3.$\r$\n$\r$\nChiudere Voucher Management se è in esecuzione e riprovare come amministratore."
     Abort
@@ -233,15 +232,14 @@ Function un.PurgePageLeave
 FunctionEnd
 
 Section "Uninstall"
-  StrCpy $R2 '$\"$PowerShellPath$\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $\"$INSTDIR\Uninstall-VoucherManagement.ps1$\" -InstallRoot $\"$INSTDIR$\" -DataRoot $\"$DataRoot$\" -OperatorGroup $\"$OperatorGroup$\" -SkipShortcut -KeepProgramFiles'
+  StrCpy $R2 '$\"$PowerShellPath$\" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $\"$INSTDIR\Uninstall-VoucherManagement.ps1$\" -InstallRoot $\"$INSTDIR$\" -DataRoot $\"$DataRoot$\" -OperatorGroup $\"$OperatorGroup$\" -SkipShortcut -KeepProgramFiles'
 
   ${If} $PurgeData == "1"
     StrCpy $R2 '$R2 -RemoveData'
   ${EndIf}
 
   DetailPrint "Verifica chiusura applicazione e dati..."
-  nsExec::ExecToLog $R2
-  Pop $R3
+  ExecWait $R2 $R3
   ${If} $R3 != "0"
     MessageBox MB_ICONSTOP|MB_OK "Disinstallazione interrotta. Chiudere Voucher Management e riprovare. Codice: $R3."
     Abort
