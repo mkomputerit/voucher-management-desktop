@@ -25,26 +25,30 @@ class ReportKind(str, Enum):
     NOMINAL = "nominal"
     UNCLASSIFIED = "unclassified"
     USAGE_UNKNOWN = "usage_unknown"
+    ORIGIN_UNKNOWN = "origin_unknown"
+    NOMINALITY_REDACTED = "nominality_redacted"
     FULL_HISTORY = "full_history"
 
 
 REPORT_TITLES = {
     ReportKind.SUMMARY: "Riepilogo storico voucher",
-    ReportKind.GENERATED: "Voucher generati da Voucher Management",
-    ReportKind.GENERATED_UNUSED: "Voucher generati e mai utilizzati",
+    ReportKind.GENERATED: "Creazione Voucher Management confermata",
+    ReportKind.GENERATED_UNUSED: "Creazione VM confermata e mai osservata utilizzata",
     ReportKind.USED: "Voucher utilizzati",
     ReportKind.EXPIRED: "Voucher scaduti",
     ReportKind.PRINTED: "Voucher stampati",
-    ReportKind.PRINTED_UNUSED: "Voucher stampati mai utilizzati",
+    ReportKind.PRINTED_UNUSED: "Voucher stampati mai osservati utilizzati",
     ReportKind.NEVER_PRINTED: "Voucher mai stampati",
     ReportKind.NOMINAL: "Voucher nominali",
     ReportKind.UNCLASSIFIED: "Voucher non classificati",
     ReportKind.USAGE_UNKNOWN: "Voucher con utilizzo non determinabile",
+    ReportKind.ORIGIN_UNKNOWN: "Voucher con origine creazione non determinabile",
+    ReportKind.NOMINALITY_REDACTED: "Nominalità rimossa per privacy",
     ReportKind.FULL_HISTORY: "Storico completo voucher",
 }
 
 
-APPLICATION_ORIGINS = frozenset({"APPLICATION", "LEGACY_APPLICATION"})
+APPLICATION_ORIGINS = frozenset({"APPLICATION"})
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,8 @@ class ReportTotals:
     nominal_vouchers: int
     non_nominal_vouchers: int
     unclassified_vouchers: int
+    unknown_origin_vouchers: int = 0
+    redacted_nominality_vouchers: int = 0
 
 
 @dataclass(frozen=True)
@@ -97,6 +103,8 @@ class ReportRow:
     status: str
     origin: str
     is_nominal: bool | None
+    last_synced_at: str = ""
+    nominality_redacted: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,6 +119,8 @@ class ReportDataset:
     rows: tuple[ReportRow, ...]
     totals: ReportTotals
     code_exposed: bool
+    data_from: str = ""
+    data_as_of: str = ""
 
 
 def _purpose_for_kind(kind: ReportKind) -> ReportPurpose:
@@ -179,13 +189,15 @@ def _status(
 def origin_label(origin: str) -> str:
     return {
         "APPLICATION": "Voucher Management",
-        "LEGACY_APPLICATION": "Voucher Management (storico)",
+        "LEGACY_APPLICATION": "Evidenza legacy (creazione non provata)",
         "CONTROLLER": "Controller / esterno",
         "UNKNOWN": "Non determinata",
     }.get(str(origin or "").strip(), "Non determinata")
 
 
-def nominal_label(value: bool | None) -> str:
+def nominal_label(value: bool | None, *, redacted: bool = False) -> str:
+    if redacted:
+        return "Rimossa per privacy"
     if value is True:
         return "Sì"
     if value is False:
@@ -217,9 +229,13 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind is ReportKind.NOMINAL:
         return row.is_nominal is True
     if kind is ReportKind.UNCLASSIFIED:
-        return row.is_nominal is None
+        return row.is_nominal is None and not row.nominality_redacted
     if kind is ReportKind.USAGE_UNKNOWN:
         return not row.usage_observed
+    if kind is ReportKind.ORIGIN_UNKNOWN:
+        return row.origin != "APPLICATION"
+    if kind is ReportKind.NOMINALITY_REDACTED:
+        return row.nominality_redacted
     raise ValueError(f"Unsupported report kind: {kind}")
 
 
@@ -249,7 +265,16 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
         never_printed=sum(row.print_jobs == 0 for row in materialized),
         nominal_vouchers=sum(row.is_nominal is True for row in materialized),
         non_nominal_vouchers=sum(row.is_nominal is False for row in materialized),
-        unclassified_vouchers=sum(row.is_nominal is None for row in materialized),
+        unclassified_vouchers=sum(
+            row.is_nominal is None and not row.nominality_redacted
+            for row in materialized
+        ),
+        unknown_origin_vouchers=sum(
+            row.origin != "APPLICATION" for row in materialized
+        ),
+        redacted_nominality_vouchers=sum(
+            row.nominality_redacted for row in materialized
+        ),
     )
 
 
@@ -263,9 +288,10 @@ def build_report_dataset(
 ) -> ReportDataset:
     """Build historical reports from facts Voucher Management actually retained.
 
-    "Used" means at least one use was observed in the retained controller
-    history. "Never used" is emitted only when usage was actually observed and
-    remained zero; rows without controller usage evidence stay explicitly
+    "Used" means at least one positive authorized-guest count was observed in
+    the retained controller history. Negative views mean only "never observed
+    used" through the row's last controller observation; rows without controller
+    usage evidence stay explicitly
     indeterminate. Print facts come exclusively from the local physical-print
     audit. Nominality and creation provenance are application-owned classifications;
     they are never inferred from a recipient string.
@@ -329,6 +355,8 @@ def build_report_dataset(
             ),
             origin=str(raw["origin"] or "UNKNOWN"),
             is_nominal=is_nominal,
+            last_synced_at=str(raw["last_synced_at"] or ""),
+            nominality_redacted=bool(raw["nominality_redacted"]),
         )
         if _matches(kind, row):
             rows.append(row)
@@ -342,6 +370,9 @@ def build_report_dataset(
         )
 
     materialized = tuple(rows)
+    sync_times = sorted(
+        row.last_synced_at for row in materialized if row.last_synced_at
+    )
     return ReportDataset(
         kind=kind,
         purpose=purpose,
@@ -351,4 +382,6 @@ def build_report_dataset(
         rows=materialized,
         totals=_totals(materialized),
         code_exposed=code_exposed,
+        data_from=sync_times[0] if sync_times else "",
+        data_as_of=sync_times[-1] if sync_times else "",
     )
