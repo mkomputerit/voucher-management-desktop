@@ -222,9 +222,20 @@ class BackupService:
             "pending_create",
             self.paths.data / "pending_create_guard",
         )
+        reporting_pending = getattr(
+            self.paths,
+            "pending_create_reporting",
+            self.paths.data / "pending_create_reporting.json",
+        )
         if Path(pending).exists():
             raise BackupError(
                 "Esiste una creazione voucher con esito ancora da verificare. "
+                "Sincronizzare l'elenco prima di creare o ripristinare un backup."
+            )
+        if Path(reporting_pending).exists():
+            raise BackupError(
+                "Esiste una creazione già confermata da UniFi la cui "
+                "classificazione report deve ancora essere riconciliata. "
                 "Sincronizzare l'elenco prima di creare o ripristinare un backup."
             )
 
@@ -539,6 +550,8 @@ class BackupService:
                     "pending_print_audit.json",
                     "pending_print_audit.json.tmp",
                     "pending_create_guard",
+                    "pending_create_reporting.json",
+                    "pending_create_reporting.json.tmp",
                 }:
                     # Lock/guard files describe live process state and are never
                     # portable application data.
