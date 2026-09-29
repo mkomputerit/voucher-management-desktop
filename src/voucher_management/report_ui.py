@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .report_render import render_report_csv, render_report_pdf
-from .reporting import ReportKind, build_report_dataset
+from .reporting import REPORT_DESCRIPTIONS, ReportKind, build_report_dataset
 
 
 REPORT_CHOICES = (
@@ -41,6 +41,9 @@ class ReportDialog(tk.Toplevel):
         self.kind_var = tk.StringVar(value=REPORT_CHOICES[0][0])
         self.scope_var = tk.StringVar(value="Tutto lo storico locale")
         self.format_var = tk.StringVar(value="PDF")
+        self.criteria_var = tk.StringVar(
+            value=REPORT_DESCRIPTIONS[ReportKind.SUMMARY]
+        )
 
         shell = ttk.Frame(self, padding=20)
         shell.pack(fill="both", expand=True)
@@ -74,6 +77,10 @@ class ReportDialog(tk.Toplevel):
             width=30,
         )
         self.kind_combo.grid(row=0, column=1, sticky="ew", pady=7)
+        self.kind_combo.bind(
+            "<<ComboboxSelected>>",
+            self._report_kind_changed,
+        )
 
         ttk.Label(grid, text="Ambito").grid(
             row=1, column=0, sticky="w", pady=7, padx=(0, 16)
@@ -103,8 +110,15 @@ class ReportDialog(tk.Toplevel):
 
         ttk.Label(
             shell,
+            textvariable=self.criteria_var,
+            style="Muted.TLabel",
+            wraplength=520,
+        ).pack(anchor="w", pady=(14, 0))
+
+        ttk.Label(
+            shell,
             text=(
-                "Nota: “Utilizzi” indica il totale osservato dal controller. "
+                "Nota: “Utilizzi” indica l'ultimo totale osservato dal controller. "
                 "Non viene presentato come ora esatta di utilizzo."
             ),
             style="Muted.TLabel",
@@ -134,6 +148,11 @@ class ReportDialog(tk.Toplevel):
         height = max(360, self.winfo_reqheight() + 30)
         self.geometry(f"{width}x{height}")
         self.resizable(True, False)
+
+    def _report_kind_changed(self, _event=None) -> None:
+        kind = REPORT_KIND_BY_LABEL[self.kind_var.get()]
+        self.criteria_var.set(REPORT_DESCRIPTIONS[kind])
+
 
     def _close(self) -> None:
         """Do not destroy Tk widgets while a renderer callback is pending."""
