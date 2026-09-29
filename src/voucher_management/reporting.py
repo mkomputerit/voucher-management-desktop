@@ -24,6 +24,7 @@ class ReportKind(str, Enum):
     NEVER_PRINTED = "never_printed"
     NOMINAL = "nominal"
     UNCLASSIFIED = "unclassified"
+    USAGE_UNKNOWN = "usage_unknown"
     FULL_HISTORY = "full_history"
 
 
@@ -38,6 +39,7 @@ REPORT_TITLES = {
     ReportKind.NEVER_PRINTED: "Voucher mai stampati",
     ReportKind.NOMINAL: "Voucher nominali",
     ReportKind.UNCLASSIFIED: "Voucher non classificati",
+    ReportKind.USAGE_UNKNOWN: "Voucher con utilizzo non determinabile",
     ReportKind.FULL_HISTORY: "Storico completo voucher",
 }
 
@@ -53,6 +55,7 @@ class ReportTotals:
     generated_vouchers: int
     used_vouchers: int
     never_used_vouchers: int
+    usage_unknown_vouchers: int
     total_controller_uses: int
     expired_vouchers: int
     printed_vouchers: int
@@ -80,6 +83,7 @@ class ReportRow:
     expires_at: str
     authorized_guest_count: int
     ever_used: bool
+    usage_observed: bool
     print_jobs: int
     physical_copies: int
     reprint_jobs: int
@@ -195,7 +199,11 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind is ReportKind.GENERATED:
         return row.origin in APPLICATION_ORIGINS
     if kind is ReportKind.GENERATED_UNUSED:
-        return row.origin in APPLICATION_ORIGINS and not row.ever_used
+        return (
+            row.origin in APPLICATION_ORIGINS
+            and row.usage_observed
+            and not row.ever_used
+        )
     if kind is ReportKind.USED:
         return row.ever_used
     if kind is ReportKind.EXPIRED:
@@ -203,13 +211,15 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind is ReportKind.PRINTED:
         return row.print_jobs > 0
     if kind is ReportKind.PRINTED_UNUSED:
-        return row.print_jobs > 0 and not row.ever_used
+        return row.print_jobs > 0 and row.usage_observed and not row.ever_used
     if kind is ReportKind.NEVER_PRINTED:
         return row.print_jobs == 0
     if kind is ReportKind.NOMINAL:
         return row.is_nominal is True
     if kind is ReportKind.UNCLASSIFIED:
         return row.is_nominal is None
+    if kind is ReportKind.USAGE_UNKNOWN:
+        return not row.usage_observed
     raise ValueError(f"Unsupported report kind: {kind}")
 
 
@@ -219,7 +229,12 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
         vouchers=len(materialized),
         generated_vouchers=sum(row.origin in APPLICATION_ORIGINS for row in materialized),
         used_vouchers=sum(row.ever_used for row in materialized),
-        never_used_vouchers=sum(not row.ever_used for row in materialized),
+        never_used_vouchers=sum(
+            row.usage_observed and not row.ever_used for row in materialized
+        ),
+        usage_unknown_vouchers=sum(
+            not row.usage_observed for row in materialized
+        ),
         total_controller_uses=sum(row.authorized_guest_count for row in materialized),
         expired_vouchers=sum(row.expired for row in materialized),
         printed_vouchers=sum(row.print_jobs > 0 for row in materialized),
@@ -246,8 +261,10 @@ def build_report_dataset(
     """Build historical reports from facts Voucher Management actually retained.
 
     "Used" means at least one use was observed in the retained controller
-    history. Print facts come exclusively from the local physical-print audit.
-    Nominality and creation provenance are application-owned classifications;
+    history. "Never used" is emitted only when usage was actually observed and
+    remained zero; rows without controller usage evidence stay explicitly
+    indeterminate. Print facts come exclusively from the local physical-print
+    audit. Nominality and creation provenance are application-owned classifications;
     they are never inferred from a recipient string.
     """
 
@@ -279,6 +296,7 @@ def build_report_dataset(
         assigned_to = str(raw["assigned_to"] or "").strip()
         recipient = assigned_to or str(raw["name"] or "").strip()
         ever_used = bool(raw["ever_used"])
+        usage_observed = bool(raw["usage_observed"])
         row = ReportRow(
             voucher_id=int(raw["voucher_id"]),
             controller_name=controller_name,
@@ -289,6 +307,7 @@ def build_report_dataset(
             expires_at=str(raw["expires_at"] or ""),
             authorized_guest_count=int(raw["authorized_guest_count"] or 0),
             ever_used=ever_used,
+            usage_observed=usage_observed,
             print_jobs=print_jobs,
             physical_copies=int(raw["physical_copies"] or 0),
             reprint_jobs=int(raw["reprint_jobs"] or 0),
