@@ -742,7 +742,8 @@ def _repair_minimized_legacy_vouchers(
             voucher_id = int(row["id"])
             db.execute(
                 """UPDATE vouchers
-                   SET code=?, name='', assigned_to='', notes=''
+                   SET code=?, name='', assigned_to='', notes='',
+                       is_nominal=NULL, classification_updated_at=NULL
                    WHERE id=?""",
                 (f"ARCHIVED-{voucher_id}", voucher_id),
             )
