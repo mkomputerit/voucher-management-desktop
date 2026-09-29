@@ -26,11 +26,11 @@ def _dataset(*, code="") -> ReportDataset:
         controller_name="Sala & Test <Nord>",
         code=code,
         recipient="Mario & Lucia <ospiti>",
-        assigned_to="",
         created_at="2026-09-01T09:00:00+00:00",
         imported_at="2026-09-01T09:05:00+00:00",
         expires_at="2026-10-01T09:00:00+00:00",
         authorized_guest_count=2,
+        ever_used=True,
         print_jobs=2,
         physical_copies=3,
         reprint_jobs=1,
@@ -42,10 +42,14 @@ def _dataset(*, code="") -> ReportDataset:
         present_on_controller=True,
         archived_at="",
         status="Utilizzato",
+        origin="APPLICATION",
+        is_nominal=True,
     )
     totals = ReportTotals(
         vouchers=1,
+        generated_vouchers=1,
         used_vouchers=1,
+        never_used_vouchers=0,
         total_controller_uses=2,
         expired_vouchers=0,
         printed_vouchers=1,
@@ -55,7 +59,9 @@ def _dataset(*, code="") -> ReportDataset:
         reprint_copies=2,
         printed_never_used=0,
         never_printed=0,
-        nominal_vouchers=0,
+        nominal_vouchers=1,
+        non_nominal_vouchers=0,
+        unclassified_vouchers=0,
     )
     return ReportDataset(
         kind=ReportKind.SUMMARY,
@@ -129,7 +135,9 @@ def test_empty_pdf_report_is_still_printable(tmp_path: Path):
         rows=(),
         totals=ReportTotals(
             vouchers=0,
+            generated_vouchers=0,
             used_vouchers=0,
+            never_used_vouchers=0,
             total_controller_uses=0,
             expired_vouchers=0,
             printed_vouchers=0,
@@ -140,6 +148,8 @@ def test_empty_pdf_report_is_still_printable(tmp_path: Path):
             printed_never_used=0,
             never_printed=0,
             nominal_vouchers=0,
+            non_nominal_vouchers=0,
+            unclassified_vouchers=0,
         ),
         code_exposed=False,
     )
