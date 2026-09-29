@@ -8,7 +8,11 @@ import pytest
 
 from voucher_management.database import Database
 from voucher_management.report_policy import ReportPurpose
-from voucher_management.reporting import ReportKind, build_report_dataset
+from voucher_management.reporting import (
+    ReportKind,
+    build_report_dataset,
+    validate_report_dataset_consistency,
+)
 from voucher_management.sync_store import persist_successful_snapshot
 from voucher_management.unifi_api import ApiVoucher
 
@@ -1133,5 +1137,49 @@ def test_summary_classification_partitions_cover_scope_exactly_once(tmp_path):
 
         assert used > 0
         assert unused > 0
+    finally:
+        db.close()
+
+
+def test_report_consistency_guard_rejects_overlapping_usage_partition(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        _voucher(db, controller, "guard-row", "5151515151")
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+        )
+        from dataclasses import replace
+
+        broken = replace(
+            dataset,
+            totals=replace(
+                dataset.totals,
+                used_vouchers=1,
+                never_used_vouchers=1,
+                usage_unknown_vouchers=0,
+            ),
+        )
+        with pytest.raises(RuntimeError, match="usage"):
+            validate_report_dataset_consistency(broken)
+    finally:
+        db.close()
+
+
+def test_report_consistency_guard_rejects_detail_count_mismatch(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        _voucher(db, controller, "guard-detail", "6161616161")
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+        from dataclasses import replace
+
+        broken = replace(dataset, rows=())
+        with pytest.raises(RuntimeError, match="row count"):
+            validate_report_dataset_consistency(broken)
     finally:
         db.close()
