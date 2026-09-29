@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from pathlib import Path
 from tkinter import messagebox
 
+from .sync_store import persist_refresh_snapshot_to_path
 from .unifi_api import UniFiClient
 from .workflows import (
     delete_vouchers_and_refresh,
@@ -113,11 +116,55 @@ class VoucherDeletionMixin:
             return
 
         cached = list(self.vouchers)
+        controller_id = getattr(self, "active_controller_id", None)
+        database_path = (
+            Path(self.paths.database)
+            if controller_id is not None
+            else None
+        )
 
-        def completed(outcome) -> None:
+        def worker():
+            outcome = delete_vouchers_and_refresh(
+                client,
+                cached,
+                current,
+            )
+            persistence_error = None
+            if (
+                outcome.refresh_error is None
+                and controller_id is not None
+                and database_path is not None
+            ):
+                try:
+                    persist_refresh_snapshot_to_path(
+                        database_path,
+                        controller_id=controller_id,
+                        vouchers=list(outcome.vouchers),
+                        observed_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                except Exception as exc:
+                    persistence_error = exc
+            return outcome, persistence_error
+
+        def completed(result) -> None:
+            outcome, persistence_error = result
             self.checked_ids.clear()
             self.vouchers = list(outcome.vouchers)
+            self.controller_snapshot_fresh = outcome.refresh_error is None
             self.populate()
+
+            if persistence_error is not None:
+                self.logger.error(
+                    "delete_snapshot_persistence_failed type=%s",
+                    type(persistence_error).__name__,
+                )
+                messagebox.showwarning(
+                    "Storico locale non aggiornato",
+                    "Il Controller è stato aggiornato, ma la fotografia locale "
+                    "per la reportistica non è stata salvata. Ripetere una "
+                    "sincronizzazione prima di usare i report.",
+                    parent=self,
+                )
 
             if outcome.refresh_error is not None:
                 messagebox.showwarning(
@@ -143,11 +190,7 @@ class VoucherDeletionMixin:
 
         self._run_network_task(
             "Eliminazione voucher…",
-            lambda: delete_vouchers_and_refresh(
-                client,
-                cached,
-                current,
-            ),
+            worker,
             completed,
             failed,
         )
@@ -159,10 +202,39 @@ class VoucherDeletionMixin:
     ) -> None:
         """Refresh after a possible partial delete, still outside Tk."""
 
-        def refreshed(vouchers) -> None:
+        controller_id = getattr(self, "active_controller_id", None)
+        database_path = (
+            Path(self.paths.database)
+            if controller_id is not None
+            else None
+        )
+
+        def refresh_worker():
+            vouchers = list(client.list_vouchers())
+            persistence_error = None
+            if controller_id is not None and database_path is not None:
+                try:
+                    persist_refresh_snapshot_to_path(
+                        database_path,
+                        controller_id=controller_id,
+                        vouchers=vouchers,
+                        observed_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                except Exception as exc:
+                    persistence_error = exc
+            return vouchers, persistence_error
+
+        def refreshed(result) -> None:
+            vouchers, persistence_error = result
             self.vouchers = list(vouchers)
+            self.controller_snapshot_fresh = True
             self.checked_ids.clear()
             self.populate()
+            if persistence_error is not None:
+                self.logger.error(
+                    "delete_recovery_persistence_failed type=%s",
+                    type(persistence_error).__name__,
+                )
             self._show_network_error(
                 "Eliminazione",
                 delete_error,
@@ -176,7 +248,7 @@ class VoucherDeletionMixin:
 
         self._run_network_task(
             "Aggiornamento dopo errore…",
-            client.list_vouchers,
+            refresh_worker,
             refreshed,
             refresh_failed,
         )
