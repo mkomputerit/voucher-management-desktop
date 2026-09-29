@@ -71,7 +71,7 @@ class ReportRow:
     code: str
     recipient: str
     assigned_to: str
-    created_by_app: bool | None
+    origin: str | None
     is_nominal: bool | None
     classification_updated_at: str
     ever_used: bool
@@ -183,9 +183,9 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind in {ReportKind.SUMMARY, ReportKind.FULL_HISTORY}:
         return True
     if kind is ReportKind.GENERATED:
-        return row.created_by_app is True
+        return row.origin == "APPLICATION"
     if kind is ReportKind.GENERATED_UNUSED:
-        return row.created_by_app is True and not row.ever_used
+        return row.origin == "APPLICATION" and not row.ever_used
     if kind is ReportKind.USED:
         return row.ever_used
     if kind is ReportKind.EXPIRED:
@@ -205,9 +205,9 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
     materialized = tuple(rows)
     return ReportTotals(
         vouchers=len(materialized),
-        generated_by_app=sum(row.created_by_app is True for row in materialized),
+        generated_by_app=sum(row.origin == "APPLICATION" for row in materialized),
         generated_never_used=sum(
-            row.created_by_app is True and not row.ever_used
+            row.origin == "APPLICATION" and not row.ever_used
             for row in materialized
         ),
         used_vouchers=sum(row.ever_used for row in materialized),
@@ -287,7 +287,11 @@ def build_report_dataset(
             code=clear_code,
             recipient=recipient,
             assigned_to=assigned_to,
-            created_by_app=_nullable_bool(raw["created_by_app"]),
+            origin=(
+                str(raw["origin"]).strip().upper()
+                if raw["origin"] is not None
+                else None
+            ),
             is_nominal=_nullable_bool(raw["is_nominal"]),
             classification_updated_at=str(
                 raw["classification_updated_at"] or ""
