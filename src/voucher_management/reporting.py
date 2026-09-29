@@ -561,12 +561,16 @@ def _build_report_dataset_snapshot(
         rows = [
             replace(
                 row,
-                controller_description=str(
-                    details[row.voucher_id]["name"] or ""
-                ).strip(),
+                controller_description=(
+                    ""
+                    if row.archived_at
+                    else str(
+                        details[row.voucher_id]["name"] or ""
+                    ).strip()
+                ),
                 recipient=(
                     ""
-                    if row.nominality_redacted
+                    if row.nominality_redacted or row.archived_at
                     else str(
                         details[row.voucher_id]["assigned_to"] or ""
                     ).strip()
