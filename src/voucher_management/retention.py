@@ -174,6 +174,9 @@ def _candidate_rows(
              AND v.usage_observed=1
              AND v.ever_used=0
              AND v.authorized_guest_count=0
+             AND v.expired=1
+             AND v.expires_at IS NOT NULL
+             AND julianday(v.last_seen_at) >= julianday(v.expires_at)
              AND NOT EXISTS (
                  SELECT 1 FROM voucher_prints AS vp WHERE vp.voucher_id=v.id
              )
@@ -356,6 +359,9 @@ def archive_retention_candidates(
                      AND v.usage_observed=1
                      AND v.ever_used=0
                      AND v.authorized_guest_count=0
+                     AND v.expired=1
+                     AND v.expires_at IS NOT NULL
+                     AND julianday(v.last_seen_at) >= julianday(v.expires_at)
                      AND NOT EXISTS (
                          SELECT 1 FROM voucher_prints AS vp
                          WHERE vp.voucher_id=v.id
