@@ -39,8 +39,15 @@ explicit local **Voucher nominale** classification. The flag is stored in the
 local SQLite archive for administrative reporting and is not transmitted to
 UniFi. It is independent from the recipient text: a room/reference label can be
 non-nominal and a person's name can be nominal only when the operator selects
-the flag. Existing vouchers for which that choice was never recorded remain
+the flag. Existing vouchers for which that choice was never recorded initially remain
 "non classificati"; the application does not infer nominal status from names.
+After a successful UniFi synchronization, an operator may explicitly enrich a
+voucher with a separate local recipient, free-text local notes and a
+nominal/non-nominal/unclassified choice. The UniFi description, voucher code
+and UniFi identifier shown in that workflow are read-only and are never changed
+by the local edit. Local recipient and notes are included in the SQLite database
+and therefore in application backups; operators should treat them as potentially
+personal data and record only what is administratively necessary.
 
 If a physical print was submitted but its audit write has not completed, a
 local `pending_print_audit.json` file temporarily stores only HMAC voucher
@@ -106,5 +113,9 @@ La chiusura dell'anteprima elimina questa copia temporanea dopo la conclusione
 delle operazioni in corso; un arresto anomalo del processo può lasciare residui
 nella cartella temporanea del sistema. Salva PDF conserva una copia nella posizione
 scelta dall'operatore. La stampa di un report non alimenta lo storico di stampa
-dei voucher. I report di dettaglio possono contenere destinatari e operatori;
-il riepilogo resta aggregato e le regole di occultamento dei codici non cambiano.
+dei voucher. I report di dettaglio possono contenere descrizioni UniFi, destinatari locali e
+operatori; le note locali non vengono esportate nei report ordinari. Descrizione
+UniFi e destinatario locale restano colonne distinte e non vengono dedotti l'uno
+dall'altro. Il riepilogo resta aggregate-only: il dataset passato al renderer
+non conserva righe personali quando deve produrre soltanto aggregati. Le regole
+di occultamento dei codici non cambiano.
