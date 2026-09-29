@@ -23,6 +23,7 @@ def _dataset(*, code="", kind=ReportKind.FULL_HISTORY, purpose=ReportPurpose.AUD
         controller_name="Sala & Test <Nord>",
         code=code,
         recipient="Mario & Lucia <ospiti>",
+        controller_description="EMI06 & Sala <Nord>",
         created_at="2026-09-01T09:00:00+00:00",
         imported_at="2026-09-01T09:05:00+00:00",
         expires_at="2026-10-01T09:00:00+00:00",
@@ -88,9 +89,11 @@ def test_detail_csv_hides_codes_but_keeps_sanitized_administrative_detail(tmp_pa
     assert "Voucher;" not in payload
     assert "12345-67890" not in payload
     assert "Mario & Lucia <ospiti>" in payload
-    assert "Guest autorizzati (somma ultimo conteggio);2" in payload
+    assert "Utilizzi/guest autorizzati (somma ultimo conteggio osservato);2" in payload
+    assert "Descrizione UniFi;Destinatario locale;Origine" in payload
+    assert "EMI06 & Sala <Nord>" in payload
     assert "Dato uso;Utilizzato;Guest autorizzati" in payload
-    assert "Dati controller aggiornati fino a;" in payload
+    assert "Ultima osservazione per voucher - più recente;" in payload
     assert "26/09/2026" in payload
 
 
