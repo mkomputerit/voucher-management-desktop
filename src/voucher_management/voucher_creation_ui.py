@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from pathlib import Path
 from tkinter import messagebox
 
 from .dialogs import CreateDialog
 from .mutation_guard import CreateMutationGuardError
+from .sync_store import persist_create_result_to_path
 from .workflows import create_vouchers_and_refresh
 
 
@@ -52,9 +55,30 @@ class VoucherCreationMixin:
         client = self.client
         cached = list(self.vouchers)
         params = dict(dialog.result)
+        controller_id = getattr(self, "active_controller_id", None)
+        database_path = Path(self.paths.database)
+
+        def worker():
+            outcome = create_vouchers_and_refresh(
+                client,
+                cached,
+                params,
+            )
+            if controller_id is not None:
+                persist_create_result_to_path(
+                    database_path,
+                    controller_id=controller_id,
+                    snapshot=list(outcome.vouchers),
+                    created=list(outcome.created),
+                    snapshot_complete=outcome.refresh_error is None,
+                    is_nominal=bool(params.get("is_nominal", False)),
+                    observed_at=datetime.now(timezone.utc).isoformat(),
+                )
+            return outcome
 
         def completed(outcome) -> None:
             self.vouchers = list(outcome.vouchers)
+            self.controller_snapshot_live = outcome.refresh_error is None
 
             if outcome.uncertain_error is not None:
                 self.checked_ids.clear()
@@ -138,11 +162,7 @@ class VoucherCreationMixin:
 
         started = self._run_network_task(
             "Creazione voucher…",
-            lambda: create_vouchers_and_refresh(
-                client,
-                cached,
-                params,
-            ),
+            worker,
             completed,
             failed,
         )
