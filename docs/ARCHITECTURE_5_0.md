@@ -28,10 +28,14 @@ complete local archive; active-controller scoping is an optional filter. PDF out
 is printable A4 landscape; CSV is an administrative export. Both are written atomically.
 
 Report totals are calculated from atomic persisted facts. Schema 3 adds
-`created_by_app`, `is_nominal`, `classification_updated_at` and the sticky
-`ever_used` fact to each voucher row. Application creation and nominality are
-written only after a definitive create response; uncertain POST outcomes are never
-attributed by guessing. Existing pre-schema-3 rows retain NULL classification.
+`origin`, `is_nominal`, `classification_updated_at` and the sticky
+`ever_used` fact to each voucher row. Origin is one of `APPLICATION`,
+`CONTROLLER`, `LEGACY` or NULL. Application creation and nominality are
+written atomically only after a definitive create response; uncertain POST
+outcomes are never attributed to the application by guessing. New rows first
+discovered by a normal controller snapshot are `CONTROLLER`; synthetic
+pre-SQLite recovery rows are `LEGACY`; existing pre-schema-3 rows retain NULL
+origin/classification.
 `ever_used` becomes true after any positive observed controller usage count and
 cannot later return to false, while `authorized_guest_count` remains the latest
 observed counter. A usage counter is never converted into an invented guest-use
