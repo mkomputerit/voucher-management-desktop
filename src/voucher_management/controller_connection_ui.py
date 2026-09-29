@@ -102,9 +102,14 @@ class ControllerConnectionMixin:
                     vouchers=vouchers,
                     observed_at=observed_at,
                 )
+                marker_path = getattr(
+                    self.paths,
+                    "pending_create_reporting",
+                    database_path.with_name("pending_create_reporting.json"),
+                )
                 reconcile_pending_create_reporting_to_path(
                     database_path,
-                    self.paths.pending_create_reporting,
+                    marker_path,
                     controller_id=persisted.controller_id,
                 )
             except Exception as exc:
