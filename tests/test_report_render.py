@@ -31,6 +31,7 @@ def _dataset(*, code="") -> ReportDataset:
         expires_at="2026-10-01T09:00:00+00:00",
         authorized_guest_count=2,
         ever_used=True,
+        usage_observed=True,
         print_jobs=2,
         physical_copies=3,
         reprint_jobs=1,
@@ -50,6 +51,7 @@ def _dataset(*, code="") -> ReportDataset:
         generated_vouchers=1,
         used_vouchers=1,
         never_used_vouchers=0,
+        usage_unknown_vouchers=0,
         total_controller_uses=2,
         expired_vouchers=0,
         printed_vouchers=1,
@@ -84,7 +86,8 @@ def test_csv_report_omits_voucher_column_when_policy_hides_code(tmp_path: Path):
     assert "Voucher;" not in payload
     assert "12345-67890" not in payload
     assert "Mario & Lucia <ospiti>" in payload
-    assert "Utilizzi controller osservati;2" in payload
+    assert "Utilizzi (ultimo valore conservato);2" in payload
+    assert "Dato uso;Utilizzato;Utilizzi" in payload
 
 
 def test_renderer_rejects_clear_code_for_summary_purpose(tmp_path: Path):
