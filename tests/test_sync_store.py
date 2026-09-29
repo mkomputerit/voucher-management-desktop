@@ -6,6 +6,7 @@ from voucher_management.database import Database
 from voucher_management.sync_store import (
     load_local_vouchers,
     persist_connection_snapshot_to_path,
+    persist_creation_result_to_path,
     persist_refresh_snapshot_to_path,
     persist_successful_snapshot,
 )
@@ -51,6 +52,164 @@ def test_snapshot_records_usage_change_without_inventing_use_timestamp(tmp_path)
         assert usage[0]["observed_at"] == "2026-09-25T11:00:00+00:00"
     finally:
         db.close()
+
+
+def test_ever_used_is_sticky_after_later_zero_controller_count(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("1", used=2)],
+            observed_at="2026-09-25T10:00:00+00:00",
+            sync_uuid="sync-used",
+        )
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("1", used=0)],
+            observed_at="2026-09-25T11:00:00+00:00",
+            sync_uuid="sync-zero",
+        )
+        row = db.connection.execute(
+            "SELECT authorized_guest_count, ever_used FROM vouchers"
+        ).fetchone()
+        assert row["authorized_guest_count"] == 0
+        assert row["ever_used"] == 1
+    finally:
+        db.close()
+
+
+def test_creation_result_persists_nominal_classification_only_for_definite_created_rows(tmp_path):
+    path = tmp_path / "creation.sqlite"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    db.close()
+
+    created = voucher("created")
+    external = voucher("external")
+    persist_creation_result_to_path(
+        path,
+        controller_id=controller,
+        vouchers=[created, external],
+        created=[created],
+        observed_at="2026-09-29T08:00:00+00:00",
+        is_nominal=True,
+        snapshot_complete=True,
+    )
+
+    check = Database(path)
+    try:
+        check.initialize()
+        rows = {
+            row["unifi_id"]: row
+            for row in check.connection.execute(
+                """SELECT unifi_id, created_by_app, is_nominal
+                   FROM vouchers ORDER BY unifi_id"""
+            )
+        }
+        assert rows["created"]["created_by_app"] == 1
+        assert rows["created"]["is_nominal"] == 1
+        assert rows["external"]["created_by_app"] is None
+        assert rows["external"]["is_nominal"] is None
+    finally:
+        check.close()
+
+
+def test_creation_refresh_failure_persists_only_returned_created_rows_without_absence_inference(tmp_path):
+    path = tmp_path / "creation-partial.sqlite"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    persist_successful_snapshot(
+        db,
+        controller_id=controller,
+        vouchers=[voucher("existing")],
+        observed_at="2026-09-29T07:00:00+00:00",
+        sync_uuid="sync-before-create",
+    )
+    db.close()
+
+    created = voucher("created")
+    persist_creation_result_to_path(
+        path,
+        controller_id=controller,
+        vouchers=[voucher("existing"), created],
+        created=[created],
+        observed_at="2026-09-29T08:00:00+00:00",
+        is_nominal=False,
+        snapshot_complete=False,
+    )
+
+    check = Database(path)
+    try:
+        check.initialize()
+        rows = {
+            row["unifi_id"]: row
+            for row in check.connection.execute(
+                """SELECT unifi_id, present_on_controller,
+                          created_by_app, is_nominal
+                   FROM vouchers"""
+            )
+        }
+        assert rows["existing"]["present_on_controller"] == 1
+        assert rows["created"]["created_by_app"] == 1
+        assert rows["created"]["is_nominal"] == 0
+        assert (
+            check.connection.execute("SELECT COUNT(*) FROM sync_runs").fetchone()[0]
+            == 1
+        )
+    finally:
+        check.close()
+
+
+def test_uncertain_creation_snapshot_never_guesses_created_or_nominal_flags(tmp_path):
+    path = tmp_path / "creation-uncertain.sqlite"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    db.close()
+
+    persist_creation_result_to_path(
+        path,
+        controller_id=controller,
+        vouchers=[voucher("maybe-created")],
+        created=[],
+        observed_at="2026-09-29T08:00:00+00:00",
+        is_nominal=True,
+        snapshot_complete=True,
+    )
+
+    check = Database(path)
+    try:
+        check.initialize()
+        row = check.connection.execute(
+            """SELECT created_by_app, is_nominal
+               FROM vouchers WHERE unifi_id='maybe-created'"""
+        ).fetchone()
+        assert row["created_by_app"] is None
+        assert row["is_nominal"] is None
+    finally:
+        check.close()
 
 
 def test_complete_snapshot_marks_missing_voucher_absent_but_keeps_history(tmp_path):
