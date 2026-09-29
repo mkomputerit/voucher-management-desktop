@@ -115,13 +115,13 @@ def test_creation_result_persists_nominal_classification_only_for_definite_creat
         rows = {
             row["unifi_id"]: row
             for row in check.connection.execute(
-                """SELECT unifi_id, created_by_app, is_nominal
+                """SELECT unifi_id, origin, is_nominal
                    FROM vouchers ORDER BY unifi_id"""
             )
         }
-        assert rows["created"]["created_by_app"] == 1
+        assert rows["created"]["origin"] == "APPLICATION"
         assert rows["created"]["is_nominal"] == 1
-        assert rows["external"]["created_by_app"] is None
+        assert rows["external"]["origin"] == "CONTROLLER"
         assert rows["external"]["is_nominal"] is None
     finally:
         check.close()
@@ -163,12 +163,12 @@ def test_creation_refresh_failure_persists_only_returned_created_rows_without_ab
             row["unifi_id"]: row
             for row in check.connection.execute(
                 """SELECT unifi_id, present_on_controller,
-                          created_by_app, is_nominal
+                          origin, is_nominal
                    FROM vouchers"""
             )
         }
         assert rows["existing"]["present_on_controller"] == 1
-        assert rows["created"]["created_by_app"] == 1
+        assert rows["created"]["origin"] == "APPLICATION"
         assert rows["created"]["is_nominal"] == 0
         assert (
             check.connection.execute("SELECT COUNT(*) FROM sync_runs").fetchone()[0]
@@ -203,10 +203,10 @@ def test_uncertain_creation_snapshot_never_guesses_created_or_nominal_flags(tmp_
     try:
         check.initialize()
         row = check.connection.execute(
-            """SELECT created_by_app, is_nominal
+            """SELECT origin, is_nominal
                FROM vouchers WHERE unifi_id='maybe-created'"""
         ).fetchone()
-        assert row["created_by_app"] is None
+        assert row["origin"] == "CONTROLLER"
         assert row["is_nominal"] is None
     finally:
         check.close()
