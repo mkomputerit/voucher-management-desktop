@@ -128,6 +128,7 @@ def validate_create_params(
     data_mb: object = None,
     down_mbps: object = None,
     up_mbps: object = None,
+    is_nominal: object = False,
 ) -> dict[str, object]:
     """Normalize and validate CreateDialog values without any Tk dependency."""
 
@@ -187,6 +188,7 @@ def validate_create_params(
         "data_mb": data_limit,
         "down_mbps": download_limit,
         "up_mbps": upload_limit,
+        "is_nominal": bool(is_nominal),
     }
 
 
