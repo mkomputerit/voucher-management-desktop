@@ -21,16 +21,21 @@ the central code-exposure policy and reject an inconsistent dataset, so a
 manually constructed summary/audit object cannot smuggle a clear voucher code
 into an export.
 
-The operator UI provides summary, used, expired, printed-but-never-used,
-never-printed, nominal-assignment and full-history views, scoped either to the
-active controller or to all persisted controllers. PDF output is printable A4
-landscape; CSV is an administrative export. Both are written atomically.
+The operator UI provides historical summary, application-generated,
+generated-but-never-used, used, expired, printed, printed-but-never-used,
+never-printed, explicitly nominal and full-history views. Report defaults to the
+complete local archive; active-controller scoping is an optional filter. PDF output
+is printable A4 landscape; CSV is an administrative export. Both are written atomically.
 
-Report totals are calculated from atomic persisted facts: current/last-observed
-controller usage counters and the application's physical-print audit. A usage
-counter is never converted into an invented guest-use timestamp. Controller
-creation time and first local import time remain separate fields rather than
-being collapsed into an unsupported created/imported classification.
+Report totals are calculated from atomic persisted facts. Schema 3 adds
+`created_by_app`, `is_nominal`, `classification_updated_at` and the sticky
+`ever_used` fact to each voucher row. Application creation and nominality are
+written only after a definitive create response; uncertain POST outcomes are never
+attributed by guessing. Existing pre-schema-3 rows retain NULL classification.
+`ever_used` becomes true after any positive observed controller usage count and
+cannot later return to false, while `authorized_guest_count` remains the latest
+observed counter. A usage counter is never converted into an invented guest-use
+timestamp. Controller creation time and first local import time remain separate fields.
 
 ## Data ownership
 
@@ -220,7 +225,10 @@ identity is idempotent, while a later plan may promote previously unresolved
 evidence when an independently known voucher becomes available.
 
 Schema 1 upgrades to schema 2 inside an explicit SQLite transaction so a DDL
-failure cannot leave a partial migration schema.
+failure cannot leave a partial migration schema. Schema 2 upgrades to schema 3
+in a second explicit transaction. The v3 migration leaves creation/nominality
+classification NULL, but reconstructs `ever_used` from both the current usage
+counter and any earlier positive `voucher_sync_observations`.
 
 Resolved evidence can then be materialized idempotently into operational facts.
 Legacy PDF-generation rows become `voucher_events` with source `MIGRATION`.
@@ -404,10 +412,18 @@ resulting shared database instead.
 ## Reporting
 
 Reports are calculated from durable atomic facts rather than stored aggregate
-monthly counters. Required report dimensions include created/imported vouchers,
-unique printed vouchers, physical copies, reprints, used vouchers, total
-controller-reported uses, expired vouchers, printed-but-never-used vouchers,
-never-printed vouchers, nominal assignment, controller and Windows operator.
+monthly counters. The Report workspace is deliberately historical and defaults
+to all persisted controllers. Home is deliberately operational: its current
+metrics and recent-voucher list are populated only from a fresh controller GET
+in the current application session.
+
+Required report dimensions include definitive application creation, explicit
+nominal/non-nominal/unclassified status, sticky ever-used evidence, latest
+controller-reported usage count, expiry, physical print/reprint audit, controller
+and Windows operator. "Generated and never used" means created definitively by
+Voucher Management and never observed with a positive controller usage count.
+"Printed and never used" uses the physical-print audit plus the same sticky usage
+fact.
 
 Observation timestamps mean "the application observed this change at this
 time". They must not be presented as an exact guest-use timestamp unless UniFi
