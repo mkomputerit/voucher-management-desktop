@@ -13,11 +13,11 @@ from voucher_management.sync_store import (
 from voucher_management.unifi_api import ApiVoucher
 
 
-def voucher(remote_id, *, used=0, status="VALID_MULTI"):
+def voucher(remote_id, *, used=0, status="VALID_MULTI", recipient=""):
     return ApiVoucher(
         id=remote_id,
         code=f"CODE-{remote_id}",
-        recipient="",
+        recipient=recipient,
         duration_minutes=60,
         create_time=1_700_000_000,
         quota=5,
@@ -306,8 +306,7 @@ def test_create_result_persists_application_origin_and_nominal_flag(tmp_path):
     )
     db.close()
 
-    created = voucher("nominal-created")
-    created.recipient = "Pinco Pallino"
+    created = voucher("nominal-created", recipient="Pinco Pallino")
     persist_create_result_to_path(
         path,
         controller_id=controller,
