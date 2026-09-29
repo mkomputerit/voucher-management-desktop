@@ -109,6 +109,52 @@ def test_quick_connect_clears_dialog_secret_on_cancel_and_accept(root):
     assert root.api_key_var.get() == ""
 
 
+def test_home_hides_local_snapshot_metrics_until_controller_snapshot_is_fresh(root):
+    frame = ttk.Frame(root)
+    frame.pack(fill="both", expand=True)
+    fake = SimpleNamespace()
+    for name in (
+        "home_controller_name", "home_last_sync", "home_ready", "home_sync_action",
+        "home_backup_summary", "home_to_print", "home_active", "home_used",
+        "home_expired", "home_print_action",
+    ):
+        setattr(fake, name + "_var", tk.StringVar(root, value="0"))
+    for name in (
+        "_home_sync_or_connect", "create", "create_backup", "_home_print_selected",
+        "_on_home_recent_click", "_on_voucher_selection_key",
+    ):
+        setattr(fake, name, lambda *args: None)
+    fake._build_status_dot = lambda parent: tk.Canvas(parent, width=14, height=14)
+    fake._toggle_home_activity = lambda: ModernVoucherApp._toggle_home_activity(fake)
+    ModernVoucherApp._build_home_workspace(fake, frame)
+
+    fake.vouchers = [
+        SimpleNamespace(
+            id="local-1",
+            code_formatted="11111-22222",
+            recipient="Local snapshot",
+            create_time=1,
+            end_time=0,
+            used=0,
+        )
+    ]
+    fake.controller_snapshot_fresh = False
+    fake.checked_ids = set()
+    fake._is_expired = lambda voucher: False
+    fake._print_state = lambda stat: "DA STAMPARE"
+    fake._refresh_home_activity = lambda: None
+    fake._refresh_controller_workspace_status = lambda: None
+
+    ModernVoucherApp._update_operator_summary(fake, {})
+    root.update()
+
+    assert fake.home_to_print_var.get() == "—"
+    assert fake.home_active_var.get() == "—"
+    assert fake.home_used_var.get() == "—"
+    assert fake.home_expired_var.get() == "—"
+    assert fake.home_recent_tree.get_children() == ()
+
+
 def test_home_displays_ten_recent_vouchers_and_collapses_activity(root):
     root.geometry("1100x760")
     frame = ttk.Frame(root)
@@ -129,6 +175,7 @@ def test_home_displays_ten_recent_vouchers_and_collapses_activity(root):
         id=str(i), code_formatted=f"{i:05d}-00000", recipient="Guest", create_time=i,
         end_time=0, used=0,
     ) for i in range(12)]
+    fake.controller_snapshot_fresh = True
     fake.checked_ids = set()
     fake._is_expired = lambda voucher: False
     fake._print_state = lambda stat: "DA STAMPARE"
