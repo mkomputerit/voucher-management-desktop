@@ -50,6 +50,8 @@ def persist_successful_snapshot(
     vouchers: list[ApiVoucher],
     observed_at: str,
     sync_uuid: str | None = None,
+    application_created_ids: list[str] | tuple[str, ...] = (),
+    application_created_is_nominal: bool | None = None,
 ) -> str:
     """Persist one complete successful UniFi voucher-list snapshot.
 
@@ -120,6 +122,18 @@ def persist_successful_snapshot(
                 new_value = current[field]
                 if old_value != new_value:
                     changes.append((voucher_id, field, old_value, new_value))
+
+        if application_created_ids:
+            if application_created_is_nominal is None:
+                raise ValueError(
+                    "application-created classification requires nominality"
+                )
+            database.mark_application_created_vouchers(
+                controller_id=controller_id,
+                unifi_ids=application_created_ids,
+                is_nominal=application_created_is_nominal,
+                connection=tx,
+            )
 
         # Absence is meaningful only because this function represents a
         # complete successful list operation.
@@ -236,6 +250,7 @@ def persist_create_result_to_path(
     snapshot: list[ApiVoucher],
     created: list[ApiVoucher],
     snapshot_complete: bool,
+    snapshot_observed: bool,
     is_nominal: bool,
     observed_at: str,
 ) -> None:
@@ -250,16 +265,26 @@ def persist_create_result_to_path(
     database = Database(Path(database_path))
     try:
         database.initialize()
+        created_ids = [voucher.id for voucher in created]
         if snapshot_complete:
             persist_successful_snapshot(
                 database,
                 controller_id=int(controller_id),
                 vouchers=list(snapshot),
                 observed_at=observed_at,
+                application_created_ids=created_ids,
+                application_created_is_nominal=bool(is_nominal),
             )
         elif created:
+            # A stale-but-successful GET is useful positive evidence for rows it
+            # returned, but must not authoritatively mark omitted rows absent.
+            # A failed GET contributes no fresh rows beyond the confirmed POST.
+            partial_rows = list(snapshot) if snapshot_observed else list(created)
+            by_id = {voucher.id: voucher for voucher in partial_rows}
+            for voucher in created:
+                by_id[voucher.id] = voucher
             with database.transaction() as tx:
-                for voucher in created:
+                for voucher in by_id.values():
                     database.upsert_voucher(
                         controller_id=int(controller_id),
                         unifi_id=voucher.id,
@@ -279,13 +304,12 @@ def persist_create_result_to_path(
                         last_synced_at=observed_at,
                         connection=tx,
                     )
-
-        if created:
-            database.mark_application_created_vouchers(
-                controller_id=int(controller_id),
-                unifi_ids=[voucher.id for voucher in created],
-                is_nominal=bool(is_nominal),
-            )
+                database.mark_application_created_vouchers(
+                    controller_id=int(controller_id),
+                    unifi_ids=created_ids,
+                    is_nominal=bool(is_nominal),
+                    connection=tx,
+                )
     finally:
         database.close()
 
