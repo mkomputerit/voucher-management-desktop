@@ -1215,6 +1215,7 @@ COMMIT;
                     v.id AS voucher_id,
                     v.controller_id,
                     c.name AS controller_name,
+                    c.api_root AS controller_api_root,
                     v.code,
                     v.name,
                     v.assigned_to,

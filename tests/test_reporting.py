@@ -429,3 +429,30 @@ def test_retention_archived_row_remains_in_full_history(tmp_path):
         assert row.nominality_redacted is True
     finally:
         db.close()
+
+
+def test_legacy_import_is_not_expiry_or_controller_observation(tmp_path):
+    db, controller = _db(tmp_path)
+    legacy = db.create_controller(name="Previous backup", api_root="legacy-backup://synthetic", created_at=NOW)
+    _voucher(db, legacy, "old", "9876543210", expired=True, expires_at=None)
+    _voucher(db, controller, "live", "1111122222", used=1)
+    expired = build_report_dataset(db, kind=ReportKind.EXPIRED, generated_at=NOW)
+    assert expired.totals.vouchers == 0
+    summary = build_report_dataset(db, kind=ReportKind.SUMMARY, generated_at=NOW)
+    old = next(row for row in summary.rows if row.controller_name == "Previous backup")
+    assert old.last_synced_at == ""
+    assert not old.expired
+    assert "backup" in old.status.lower()
+    assert "Registrazioni da backup precedente: 1" in summary.coverage_note
+    db.close()
+
+
+def test_empty_filtered_report_keeps_scope_observation_and_missing_data_reason(tmp_path):
+    db, controller = _db(tmp_path)
+    _voucher(db, controller, "v", "1111122222")
+    report = build_report_dataset(db, kind=ReportKind.NOMINAL, generated_at=NOW)
+    assert report.totals.vouchers == 0
+    assert report.data_as_of == NOW
+    assert "Nessun risultato" in report.coverage_note
+    assert "nominalità 1" in report.coverage_note
+    db.close()

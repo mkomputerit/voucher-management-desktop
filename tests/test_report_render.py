@@ -104,7 +104,7 @@ def test_summary_csv_is_aggregate_only_and_excludes_personal_detail(tmp_path: Pa
     assert "Mario & Lucia" not in payload
     assert r"PC\alice" not in payload
     assert "Destinatario" not in payload
-    assert "Creazione Voucher Management confermata;1" in payload
+    assert "Creati con questo software;1" in payload
 
 
 def test_renderer_rejects_clear_code_for_summary_purpose(tmp_path: Path):

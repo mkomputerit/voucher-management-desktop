@@ -322,3 +322,22 @@ and `docs/UNIFI_OFFICIAL_API_ANALYSIS.md`.
 Voucher Management is licensed under the [MIT License](LICENSE).
 
 Third-party components retain their own licenses. See `THIRD_PARTY_NOTICES.md`.
+
+### Guida ai report e anteprima
+
+La pagina Report consulta lo storico locale, anche offline. Sincronizzare con
+UniFi aggiorna le osservazioni disponibili; la connessione non è un aggiornamento
+continuo. "Aiutami a scegliere" propone domande operative e una sezione Verifica
+dei dati. Ogni scelta spiega inclusioni e limiti. Gli zeri non provano sempre
+l'assenza di voucher: origine, nominalità o utilizzo possono essere sconosciuti.
+
+Genera anteprima apre il PDF temporaneo: Salva PDF conserva una copia, Stampa
+invia il report alla stampante scelta e Chiudi elimina l'anteprima temporanea.
+La stampa dei report non registra stampe di voucher. Il CSV rimane un'esportazione
+con scelta esplicita del file. Il report distingue generazione del documento e
+intervallo delle ultime osservazioni controller nell'ambito scelto.
+
+Le registrazioni da vecchi backup prive di evidenza controller non provano
+scadenza o utilizzo. "Senza stampe registrate" significa senza evidenze collegate
+all'identità locale. Non unire registrazioni in base al destinatario: la
+riconciliazione richiede prove d'identità, che possono mancare nei dati minimizzati.

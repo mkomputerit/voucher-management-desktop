@@ -2,6 +2,18 @@
 
 ## 5.1.0 - Unreleased
 
+- Add a question-based report guide, separate operational and data-quality
+  choices, and explain local-history freshness and missing-data exclusions.
+- Generate PDFs into a temporary preview with explicit Save PDF, Print and Close
+  actions. Report printing never updates voucher print audit or voucher state.
+- Exclude synthetic legacy-backup expiry flags from reports and stop presenting
+  import timestamps as controller observations. Show the observation range for
+  the complete selected scope even when the selected report is empty.
+- Describe missing print evidence as "Senza stampe registrate" rather than
+  asserting that no physical print ever occurred. Do not merge historical
+  identities using recipient names or reconstruct privacy-minimized codes.
+
+
 - Separate the two product cores explicitly: Home is now a live UniFi
   operational view whose counters stay blank until a successful controller
   snapshot in the current session, while Report is the durable local-history

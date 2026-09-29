@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import tkinter as tk
+from tempfile import TemporaryDirectory
+from .report_guide import HISTORY_NOTICE, REPORT_GUIDE
 from tkinter import filedialog, messagebox, ttk
 
 from .report_render import render_report_csv, render_report_pdf
@@ -13,13 +15,13 @@ from .reporting import ReportKind, build_report_dataset_from_path
 
 REPORT_CHOICES = (
     ("Riepilogo storico", ReportKind.SUMMARY),
-    ("Creazione VM confermata", ReportKind.GENERATED),
-    ("Creazione VM confermata • mai osservati usati", ReportKind.GENERATED_UNUSED),
+    ("Creati con questo software", ReportKind.GENERATED),
+    ("Creati con questo software - nessun utilizzo rilevato", ReportKind.GENERATED_UNUSED),
     ("Utilizzati almeno una volta", ReportKind.USED),
     ("Scaduti", ReportKind.EXPIRED),
     ("Stampati", ReportKind.PRINTED),
-    ("Stampati mai osservati usati", ReportKind.PRINTED_UNUSED),
-    ("Mai stampati", ReportKind.NEVER_PRINTED),
+    ("Stampati - nessun utilizzo rilevato", ReportKind.PRINTED_UNUSED),
+    ("Senza stampe registrate", ReportKind.NEVER_PRINTED),
     ("Nominali", ReportKind.NOMINAL),
     ("Non classificati", ReportKind.UNCLASSIFIED),
     ("Uso non determinabile", ReportKind.USAGE_UNKNOWN),
@@ -56,15 +58,17 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(
             shell,
             text=(
-                "I report amministrativi leggono lo storico locale conservato "
-                "da Voucher Management e non dipendono dalla connessione corrente "
-                "alla controller. I codici voucher non sono esportati in chiaro. "
+                HISTORY_NOTICE + " I codici voucher non sono esportati in chiaro. "
                 "Il Riepilogo storico contiene solo aggregati; i report di dettaglio "
                 "possono contenere destinatari e account Windows degli operatori."
             ),
             style="Muted.TLabel",
             wraplength=520,
         ).pack(anchor="w", pady=(2, 16))
+
+        self.help_var = tk.StringVar(value=REPORT_GUIDE[ReportKind.SUMMARY][1])
+        ttk.Button(shell, text="Aiutami a scegliere", command=self._guide).pack(anchor="w", pady=(0, 8))
+        ttk.Label(shell, textvariable=self.help_var, wraplength=560, style="Muted.TLabel").pack(anchor="w", pady=(0, 12))
 
         grid = ttk.Frame(shell)
         grid.pack(fill="x")
@@ -77,9 +81,10 @@ class ReportDialog(tk.Toplevel):
             textvariable=self.kind_var,
             state="readonly",
             values=tuple(label for label, _kind in REPORT_CHOICES),
-            width=30,
+            width=56,
         )
         self.kind_combo.grid(row=0, column=1, sticky="ew", pady=7)
+        self.kind_combo.bind("<<ComboboxSelected>>", lambda _: self.help_var.set(REPORT_GUIDE[REPORT_KIND_BY_LABEL[self.kind_var.get()]][1]))
 
         ttk.Label(grid, text="Ambito").grid(
             row=1, column=0, sticky="w", pady=7, padx=(0, 16)
@@ -131,10 +136,10 @@ class ReportDialog(tk.Toplevel):
         self.cancel_button.pack(side="right")
         self.generate_button = ttk.Button(
             footer,
-            text="Genera…",
+            text="Genera anteprima / CSV…",
             command=self._generate,
             style="Accent.TButton",
-            width=12,
+            width=26,
         )
         self.generate_button.pack(side="right", padx=(0, 8))
 
@@ -143,6 +148,33 @@ class ReportDialog(tk.Toplevel):
         height = max(360, self.winfo_reqheight() + 30)
         self.geometry(f"{width}x{height}")
         self.resizable(True, False)
+
+    def _guide(self):
+        guide = tk.Toplevel(self)
+        guide.title("Che cosa vuoi sapere?")
+        guide.transient(self)
+        guide.grab_set()
+        shell = ttk.Frame(guide, padding=16)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text="Scegli un'esigenza. Il report si aprirà in anteprima prima di salvarlo o stamparlo.", wraplength=600).pack(anchor="w", pady=8)
+        tabs = ttk.Notebook(shell)
+        tabs.pack(fill="both", expand=True)
+        normal, quality = ttk.Frame(tabs, padding=12), ttk.Frame(tabs, padding=12)
+        tabs.add(normal, text="Report operativi")
+        tabs.add(quality, text="Verifica dei dati")
+        def select(kind):
+            label = next(label for label, value in REPORT_CHOICES if value == kind)
+            self.kind_var.set(label)
+            self.help_var.set(REPORT_GUIDE[kind][1])
+            close()
+        def close():
+            guide.destroy()
+            self.grab_set()
+        for kind, (question, _) in REPORT_GUIDE.items():
+            parent = quality if question.startswith("Verifica dati:") else normal
+            ttk.Button(parent, text=question, command=lambda k=kind: select(k)).pack(fill="x", pady=3)
+        ttk.Button(shell, text="Chiudi", command=close).pack(anchor="e", pady=8)
+        guide.protocol("WM_DELETE_WINDOW", close)
 
     def _close(self) -> None:
         """Do not destroy Tk widgets while a renderer callback is pending."""
@@ -189,25 +221,16 @@ class ReportDialog(tk.Toplevel):
         extension = ".pdf" if self.format_var.get() == "PDF" else ".csv"
         timestamp = datetime.now().strftime("%Y%m%d-%H%M")
         safe_kind = kind.value.replace("_", "-")
-        target = filedialog.asksaveasfilename(
-            parent=self,
-            title="Salva report",
-            defaultextension=extension,
-            initialfile=f"Report-{safe_kind}-{timestamp}{extension}",
-            filetypes=(
-                ("Documento PDF", "*.pdf"),
-                ("CSV", "*.csv"),
-            )
-            if extension == ".pdf"
-            else (
-                ("CSV", "*.csv"),
-                ("Documento PDF", "*.pdf"),
-            ),
-        )
-        if not target:
-            return
+        temporary = None
+        if extension == ".pdf":
+            temporary = TemporaryDirectory(prefix="voucher-report-")
+            output = Path(temporary.name) / f"Report-{safe_kind}-{timestamp}.pdf"
+        else:
+            target = filedialog.asksaveasfilename(parent=self, title="Salva CSV", defaultextension=".csv", initialfile=f"Report-{safe_kind}-{timestamp}.csv", filetypes=(("CSV", "*.csv"),))
+            if not target:
+                return
+            output = Path(target)
 
-        output = Path(target)
         installation_name = str(
             self.app.settings.get("structure_name", "") or ""
         )
@@ -231,15 +254,22 @@ class ReportDialog(tk.Toplevel):
             return output
 
         def completed(path: Path) -> None:
-            messagebox.showinfo(
-                "Report",
-                f"Report creato:\n{path}",
-                parent=self,
-            )
             self._busy = False
+            if temporary is not None:
+                try:
+                    from .report_preview import ReportPreview
+                    ReportPreview(self.app, path, temporary)
+                except Exception:
+                    temporary.cleanup()
+                    messagebox.showerror("Report", "Impossibile aprire l'anteprima. Riprova la generazione.", parent=self)
+                    return
+            else:
+                messagebox.showinfo("Report", f"CSV salvato:\n{path}", parent=self)
             self.destroy()
 
         def failed(exc: Exception) -> None:
+            if temporary is not None:
+                temporary.cleanup()
             self.app.logger.error(
                 "report_generation_failed type=%s",
                 type(exc).__name__,
@@ -250,10 +280,13 @@ class ReportDialog(tk.Toplevel):
                 parent=self,
             )
 
-        self.app._run_background_task(
+        started = self.app._run_background_task(
             "Generazione report…",
             worker,
             completed,
             failed,
             busy_scope=self._set_busy,
         )
+
+        if not started and temporary is not None:
+            temporary.cleanup()

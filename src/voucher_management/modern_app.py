@@ -1607,8 +1607,9 @@ class ModernVoucherApp(
         ttk.Label(
             frame,
             text=(
-                "Consulta i principali indicatori e genera PDF o CSV senza "
-                "esporre i codici voucher in chiaro nei report ordinari."
+                "I report leggono lo storico locale anche senza connessione. "
+                "Sincronizza con UniFi per aggiornare i dati di utilizzo. "
+                "La connessione non aggiorna continuamente lo storico."
             ),
             style="Muted.TLabel",
             wraplength=760,
@@ -1620,9 +1621,9 @@ class ModernVoucherApp(
             metrics.columnconfigure(column, weight=1)
         report_metrics = (
             ("Conservati", self.report_total_var),
-            ("Creazione VM conf.", self.report_generated_var),
+            ("Creati dal software", self.report_generated_var),
             ("Utilizzati", self.report_used_var),
-            ("Mai osservati usati", self.report_never_used_var),
+            ("Nessun utilizzo rilevato", self.report_never_used_var),
             ("Stampati", self.report_printed_var),
             ("Scaduti", self.report_expired_var),
             ("Nominali", self.report_nominal_var),
@@ -1652,7 +1653,7 @@ class ModernVoucherApp(
 
         actions = ttk.Labelframe(
             frame,
-            text="Esportazione",
+            text="Scegli e visualizza un report",
             style="Card.TLabelframe",
             padding=(18, 14),
         )
@@ -1666,16 +1667,16 @@ class ModernVoucherApp(
         ttk.Label(
             actions,
             text=(
-                "Riepilogo aggregato, creazioni VM confermate, mai osservati "
-                "utilizzati, utilizzati, scaduti, stampati, nominali, dati non "
-                "determinabili e storico completo."
+                "Scegli direttamente un report oppure usa Aiutami a scegliere. "
+                "La guida distingue le domande operative dalla verifica dei dati. "
+                "Il PDF si apre in anteprima prima di salvarlo o stamparlo."
             ),
             style="Muted.TLabel",
             wraplength=720,
         ).grid(row=1, column=0, sticky="w", pady=(3, 12))
         self.report_button = ttk.Button(
             actions,
-            text="Crea / esporta report…",
+            text="Scegli report / Guida…",
             command=lambda: ReportDialog(self),
             style="Accent.TButton",
         )
@@ -2989,7 +2990,7 @@ class ModernVoucherApp(
                 f"origine {totals.unknown_origin_vouchers} • "
                 f"nominalità {totals.unclassified_vouchers} • "
                 f"rimossa per privacy {totals.redacted_nominality_vouchers} • "
-                f"dati controller fino a {audit_time_label(dataset.data_as_of)}"
+                f"osservazioni controller: {audit_time_label(dataset.data_from)} - {audit_time_label(dataset.data_as_of)}"
             )
 
         def failed(exc: Exception) -> None:

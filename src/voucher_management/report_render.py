@@ -88,16 +88,16 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
     totals = dataset.totals
     return [
         ["Voucher nel report", str(totals.vouchers)],
-        ["Creazione Voucher Management confermata", str(totals.generated_vouchers)],
+        ["Creati con questo software", str(totals.generated_vouchers)],
         ["Origine creazione non determinabile", str(totals.unknown_origin_vouchers)],
         ["Utilizzati almeno una volta", str(totals.used_vouchers)],
-        ["Mai osservati utilizzati", str(totals.never_used_vouchers)],
+        ["Nessun utilizzo rilevato", str(totals.never_used_vouchers)],
         ["Utilizzo non determinabile", str(totals.usage_unknown_vouchers)],
         ["Guest autorizzati (somma ultimo conteggio)", str(totals.total_controller_uses)],
         ["Voucher scaduti", str(totals.expired_vouchers)],
         ["Voucher stampati", str(totals.printed_vouchers)],
-        ["Mai stampati", str(totals.never_printed)],
-        ["Stampati mai osservati utilizzati", str(totals.printed_never_used)],
+        ["Senza stampe registrate", str(totals.never_printed)],
+        ["Stampati - nessun utilizzo rilevato", str(totals.printed_never_used)],
         ["Voucher nominali", str(totals.nominal_vouchers)],
         ["Voucher non nominali", str(totals.non_nominal_vouchers)],
         ["Nominalità non classificata", str(totals.unclassified_vouchers)],
@@ -196,6 +196,7 @@ def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
                     _csv_cell(_display_time(dataset.data_as_of)),
                 ]
             )
+            writer.writerow([_csv_cell("Copertura dati"), _csv_cell(dataset.coverage_note)])
             writer.writerow([])
             writer.writerow([_csv_cell("Riepilogo"), _csv_cell("Valore")])
             for summary_row in _summary_rows(dataset):
@@ -315,11 +316,13 @@ def render_report_pdf(
                 (
                     f"Generato: {_display_time(dataset.generated_at)}"
                     f"  |  Ambito: {dataset.controller_label}"
-                    f"  |  Dati controller fino a: {_display_time(dataset.data_as_of)}"
+                    f"  |  Ultime osservazioni controller nell’ambito: {_display_time(dataset.data_from)} - {_display_time(dataset.data_as_of)}"
                 ),
                 subtitle_style,
             )
         )
+        if dataset.coverage_note:
+            story.append(_paragraph(dataset.coverage_note, regular))
         story.append(Spacer(1, 4 * mm))
 
         summary = [

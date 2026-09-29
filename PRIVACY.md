@@ -98,3 +98,13 @@ controller settings, API keys or TLS trust. Exchange passwords are not stored.
 No information is transferred to systems other than those explicitly selected/configured by the user as part of the application's requested operation.
 
 Third-party platform/API use remains subject to the platform provider's applicable privacy terms.
+
+### Anteprima report
+
+I report PDF vengono generati in una cartella temporanea per la consultazione.
+La chiusura dell'anteprima elimina questa copia temporanea dopo la conclusione
+delle operazioni in corso; un arresto anomalo del processo può lasciare residui
+nella cartella temporanea del sistema. Salva PDF conserva una copia nella posizione
+scelta dall'operatore. La stampa di un report non alimenta lo storico di stampa
+dei voucher. I report di dettaglio possono contenere destinatari e operatori;
+il riepilogo resta aggregato e le regole di occultamento dei codici non cambiano.

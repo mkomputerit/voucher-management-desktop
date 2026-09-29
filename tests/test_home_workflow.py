@@ -179,3 +179,35 @@ def test_controller_failure_invalidates_live_home_metrics():
     assert fake._controller_status_failed is True
     assert fake.controller_snapshot_live is False
     assert calls == ["status", "populate"]
+
+
+def test_report_guide_and_preview_controls(root, tmp_path, monkeypatch):
+    from tempfile import TemporaryDirectory
+    from pathlib import Path
+    from voucher_management.report_ui import ReportDialog
+    from voucher_management.report_preview import ReportPreview
+    from voucher_management import pdf_preview
+    from reportlab.pdfgen import canvas
+    root.settings = {}
+    dialog = ReportDialog(root)
+    dialog._guide()
+    guide = next(child for child in dialog.winfo_children() if isinstance(child, tk.Toplevel))
+    def descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from descendants(child)
+    nominal = next(child for child in descendants(guide) if isinstance(child, ttk.Button) and child.cget("text") == "Quali voucher sono nominali?")
+    nominal.invoke()
+    assert dialog.kind_var.get() == "Nominali"
+    assert "flag" in dialog.help_var.get()
+    dialog.destroy()
+    temporary = TemporaryDirectory(prefix="report-test-")
+    pdf = Path(temporary.name) / "report.pdf"
+    doc = canvas.Canvas(str(pdf)); doc.drawString(40, 100, "Synthetic report"); doc.save()
+    monkeypatch.setattr(pdf_preview.PdfPreview, "_load_printers", lambda self: None)
+    preview = ReportPreview(root, pdf, temporary)
+    labels = [child.cget("text") for child in descendants(preview) if isinstance(child, ttk.Button)]
+    assert "Salva PDF…" in labels
+    assert "STAMPA" in labels
+    preview.destroy()
+    assert not pdf.exists()

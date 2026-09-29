@@ -98,7 +98,7 @@ def test_report_query_and_renderer_both_run_inside_background_worker(
     monkeypatch.setattr(
         report_ui.filedialog,
         "asksaveasfilename",
-        lambda **kwargs: str(output),
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("PDF must preview before saving")),
     )
 
     ReportDialog._generate(dialog)
@@ -110,14 +110,15 @@ def test_report_query_and_renderer_both_run_inside_background_worker(
 
     result = tasks[0]["worker"]()
 
-    assert result == output
+    assert result.suffix == ".pdf"
+    assert result != output  # PDF preview does not prompt for a save location.
     assert events[0][0] == "build"
     assert events[0][1] == database_path
     assert events[0][2]["controller_id"] == 7
     assert events[1] == (
         "render",
         dataset,
-        output,
+        result,
         "Sala Assemblee",
     )
 
@@ -153,11 +154,17 @@ def test_active_controller_scope_without_controller_blocks_cleanly(monkeypatch):
 
 def test_report_choices_cover_historical_core_and_data_quality_views():
     labels = [label for label, _kind in report_ui.REPORT_CHOICES]
-    assert "Creazione VM confermata" in labels
-    assert "Creazione VM confermata • mai osservati usati" in labels
+    assert "Creati con questo software" in labels
+    assert "Creati con questo software - nessun utilizzo rilevato" in labels
     assert "Stampati" in labels
     assert "Nominali" in labels
     assert "Non classificati" in labels
     assert "Uso non determinabile" in labels
     assert "Origine creazione non determinabile" in labels
     assert "Nominalità rimossa per privacy" in labels
+
+
+def test_guide_covers_every_report_kind():
+    from voucher_management.report_guide import REPORT_GUIDE
+    assert set(REPORT_GUIDE) == set(ReportKind)
+    assert all(question and description for question, description in REPORT_GUIDE.values())
