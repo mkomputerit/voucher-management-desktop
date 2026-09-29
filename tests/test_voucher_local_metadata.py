@@ -204,3 +204,51 @@ def test_local_metadata_labels_are_explicit_and_searchable(tmp_path):
     )
     assert metadata_map["voucher-1"].assigned_to == "Pinco Pallino"
     database.close()
+
+
+def test_application_nominal_creation_preserves_name_as_verified_local_recipient(tmp_path):
+    database, controller_id = _database(tmp_path)
+    database.upsert_voucher(
+        controller_id=controller_id,
+        unifi_id="nominal-created",
+        code="9999900000",
+        name="Pinco Pallino",
+        imported_at=NOW,
+        last_synced_at=NOW,
+        created_at=NOW,
+        duration_minutes=60,
+        authorized_guest_limit=1,
+    )
+    database.mark_application_created_vouchers(
+        controller_id=controller_id,
+        unifi_ids=["nominal-created"],
+        is_nominal=True,
+    )
+    metadata = database.voucher_local_metadata(
+        controller_id=controller_id,
+        unifi_id="nominal-created",
+    )
+    assert metadata is not None
+    assert metadata.origin == "APPLICATION"
+    assert metadata.is_nominal is True
+    assert metadata.controller_description == "Pinco Pallino"
+    assert metadata.assigned_to == "Pinco Pallino"
+    database.close()
+
+
+def test_application_non_nominal_creation_does_not_invent_local_recipient(tmp_path):
+    database, controller_id = _database(tmp_path)
+    database.mark_application_created_vouchers(
+        controller_id=controller_id,
+        unifi_ids=["voucher-1"],
+        is_nominal=False,
+    )
+    metadata = database.voucher_local_metadata(
+        controller_id=controller_id,
+        unifi_id="voucher-1",
+    )
+    assert metadata is not None
+    assert metadata.controller_description == "EMI06"
+    assert metadata.assigned_to == ""
+    assert metadata.is_nominal is False
+    database.close()
