@@ -18,6 +18,18 @@ from voucher_management.settings import SettingsStore
 from voucher_management.backup import BackupService
 
 
+@pytest.fixture(scope="module")
+def tk_root():
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        if sys.platform == "win32":
+            raise
+        pytest.skip("Tk display unavailable")
+    yield root
+    root.destroy()
+
+
 @pytest.mark.parametrize("protected", [False, True])
 def test_choice_uses_unambiguous_extension_and_never_passes_unused_secret(tmp_path, protected):
     choice = make_backup_choice(str(tmp_path), protected=protected, password="s" * 24,
@@ -101,51 +113,38 @@ def test_home_uses_only_successful_backup_history(tmp_path):
         database.close()
 
 
-def test_real_backup_dialog_defaults_to_protected_copy_and_plaintext_requires_opt_out(tmp_path):
-    try:
-        root = tk.Tk()
-    except tk.TclError:
-        if sys.platform == "win32":
-            raise
-        pytest.skip("Tk display unavailable")
-    try:
-        dialog = BackupOptionsDialog(root, default_directory=str(tmp_path), closing=True)
-        assert dialog.protected_var.get() is True
-        dialog.password_var.set("synthetic-password")
-        dialog.confirm_var.set("synthetic-password")
-        dialog.accept()
-        assert dialog.result.password == "synthetic-password"
-        assert dialog.result.target.suffix == ".vmbk"
+def test_real_backup_dialog_defaults_to_protected_copy_and_plaintext_requires_opt_out(tmp_path, tk_root):
+    root = tk_root
+    dialog = BackupOptionsDialog(root, default_directory=str(tmp_path), closing=True)
+    assert dialog.protected_var.get() is True
+    dialog.password_var.set("synthetic-password")
+    dialog.confirm_var.set("synthetic-password")
+    dialog.accept()
+    assert dialog.result.password == "synthetic-password"
+    assert dialog.result.target.suffix == ".vmbk"
 
-        dialog = BackupOptionsDialog(root, default_directory=str(tmp_path), closing=True)
-        dialog.password_var.set("synthetic-password")
-        dialog.confirm_var.set("synthetic-password")
-        dialog.protected_var.set(False)
-        dialog._toggle_password()
-        assert dialog.password_var.get() == ""
-        assert dialog.confirm_var.get() == ""
-        dialog.accept()
-        assert dialog.result.password is None
-        assert dialog.result.target.suffix == ".zip"
+    dialog = BackupOptionsDialog(root, default_directory=str(tmp_path), closing=True)
+    dialog.password_var.set("synthetic-password")
+    dialog.confirm_var.set("synthetic-password")
+    dialog.protected_var.set(False)
+    dialog._toggle_password()
+    assert dialog.password_var.get() == ""
+    assert dialog.confirm_var.get() == ""
+    dialog.accept()
+    assert dialog.result.password is None
+    assert dialog.result.target.suffix == ".zip"
 
-        dialog = BackupOptionsDialog(root, default_directory=str(tmp_path), closing=True)
-        dialog.skip()
-        assert dialog.result.skip
-        dialog = BackupOptionsDialog(root, default_directory=str(tmp_path), closing=True)
-        dialog.destroy()
-        assert dialog.result is None
-    finally:
-        root.destroy()
+    dialog = BackupOptionsDialog(root, default_directory=str(tmp_path), closing=True)
+    dialog.skip()
+    assert dialog.result.skip
+    dialog = BackupOptionsDialog(root, default_directory=str(tmp_path), closing=True)
+    dialog.destroy()
+    assert dialog.result is None
 
-def test_real_wizard_reaches_backup_step_and_saves_it_at_completion(tmp_path, monkeypatch):
+def test_real_wizard_reaches_backup_step_and_saves_it_at_completion(tmp_path, monkeypatch, tk_root):
     from voucher_management import onboarding_ui
     from voucher_management.onboarding import onboarding_state, OnboardingState
-    try:
-        root = tk.Tk()
-    except tk.TclError:
-        if sys.platform == "win32":
-            raise
-        pytest.skip("Tk display unavailable")
+    root = tk_root
     database = Database(tmp_path / "db.sqlite")
     database.initialize()
     root.database = database
@@ -183,5 +182,4 @@ def test_real_wizard_reaches_backup_step_and_saves_it_at_completion(tmp_path, mo
         assert root.settings_store.load()["backup_on_close"] is False
         assert onboarding_state(database) is OnboardingState.COMPLETE
     finally:
-        root.destroy()
         database.close()
