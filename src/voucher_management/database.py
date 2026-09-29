@@ -499,6 +499,32 @@ COMMIT;
             self.connection.rollback()
             raise
 
+    @contextmanager
+    def read_snapshot(self) -> Iterator[sqlite3.Connection]:
+        """Keep a multi-query read on one stable SQLite snapshot.
+
+        Reporting deliberately performs a minimized first pass and may load
+        personal/operator details only for rows that survive filtering.  A
+        deferred read transaction makes those separate SELECTs observe the
+        same database state even if another SQLite connection commits while
+        the report is being assembled.
+
+        When a caller already owns a transaction, reuse it rather than trying
+        to nest BEGIN statements.
+        """
+
+        if self.connection.in_transaction:
+            yield self.connection
+            return
+
+        self.connection.execute("BEGIN")
+        try:
+            yield self.connection
+        finally:
+            # The snapshot is read-only. ROLLBACK releases it without implying
+            # that report construction persisted anything.
+            self.connection.rollback()
+
     def integrity_check(self) -> None:
         """Raise when SQLite reports anything other than a healthy database."""
 
