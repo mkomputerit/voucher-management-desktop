@@ -421,9 +421,11 @@ def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_usage_observed")
     raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
     raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
     raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN usage_observed")
     raw.execute("DROP TABLE legacy_audit_events")
     raw.execute("DROP TABLE migration_runs")
     raw.execute("PRAGMA user_version = 1")
@@ -454,7 +456,7 @@ def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
             row["name"]
             for row in db.connection.execute("PRAGMA table_info(vouchers)")
         }
-        assert {"origin", "is_nominal", "ever_used"} <= columns
+        assert {"origin", "is_nominal", "ever_used", "usage_observed"} <= columns
         db.integrity_check()
     finally:
         db.close()
@@ -482,9 +484,11 @@ def test_schema_two_upgrade_preserves_unknown_classification_for_existing_rows(t
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_usage_observed")
     raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
     raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
     raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN usage_observed")
     raw.execute("PRAGMA user_version = 2")
     raw.execute(
         "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '2')"
@@ -496,12 +500,13 @@ def test_schema_two_upgrade_preserves_unknown_classification_for_existing_rows(t
     try:
         migrated.initialize()
         row = migrated.connection.execute(
-            "SELECT origin, is_nominal, ever_used FROM vouchers WHERE id=?",
+            "SELECT origin, is_nominal, ever_used, usage_observed FROM vouchers WHERE id=?",
             (voucher_id,),
         ).fetchone()
         assert row["origin"] == "UNKNOWN"
         assert row["is_nominal"] is None
         assert row["ever_used"] == 0
+        assert row["usage_observed"] == 1
         assert migrated.connection.execute("PRAGMA user_version").fetchone()[0] == 3
     finally:
         migrated.close()
@@ -514,9 +519,11 @@ def test_failed_schema_one_upgrade_rolls_back_partial_ddl(tmp_path, monkeypatch)
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_usage_observed")
     raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
     raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
     raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN usage_observed")
     raw.execute("DROP TABLE legacy_audit_events")
     raw.execute("DROP TABLE migration_runs")
     raw.execute("PRAGMA user_version = 1")
