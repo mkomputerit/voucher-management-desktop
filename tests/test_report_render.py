@@ -225,3 +225,19 @@ def test_pdf_column_weights_follow_detail_headers():
         rows=(replace(dataset.rows[0], code="12345-67890"),),
     )
     assert len(_detail_column_weights(handoff)) == len(_detail_headers(handoff))
+
+
+def test_authorized_empty_handoff_keeps_code_column_without_failing(tmp_path: Path):
+    base = _dataset()
+    empty = replace(
+        base,
+        purpose=ReportPurpose.OPERATIONAL_HANDOFF,
+        code_exposed=True,
+        rows=(),
+        totals=replace(base.totals, vouchers=0),
+    )
+    output = tmp_path / "empty-handoff.csv"
+    render_report_csv(empty, output)
+    payload = output.read_text(encoding="utf-8-sig")
+    assert output.exists()
+    assert "Voucher" in payload
