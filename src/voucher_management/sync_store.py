@@ -81,6 +81,8 @@ def persist_successful_snapshot(
     vouchers: list[ApiVoucher],
     observed_at: str,
     sync_uuid: str | None = None,
+    created_unifi_ids: tuple[str, ...] = (),
+    created_is_nominal: bool = False,
 ) -> str:
     """Persist one complete successful UniFi voucher-list snapshot.
 
@@ -174,6 +176,15 @@ def persist_successful_snapshot(
                WHERE sync_uuid=?""",
             (len(changes), run_uuid),
         )
+        if created_unifi_ids:
+            database.mark_vouchers_created_by_app(
+                controller_id=controller_id,
+                unifi_ids=created_unifi_ids,
+                is_nominal=created_is_nominal,
+                classified_at=observed_at,
+                connection=tx,
+            )
+
         tx.execute(
             """UPDATE controllers
                SET last_successful_sync_at=? WHERE id=?""",
@@ -273,12 +284,15 @@ def persist_creation_result_to_path(
     database = Database(Path(database_path))
     try:
         database.initialize()
+        created_ids = tuple(voucher.id for voucher in created)
         if snapshot_complete:
             persist_successful_snapshot(
                 database,
                 controller_id=int(controller_id),
                 vouchers=list(vouchers),
                 observed_at=observed_at,
+                created_unifi_ids=created_ids,
+                created_is_nominal=bool(is_nominal),
             )
         elif created:
             with database.transaction() as tx:
@@ -290,14 +304,13 @@ def persist_creation_result_to_path(
                         observed_at=observed_at,
                         connection=tx,
                     )
-
-        if created:
-            database.mark_vouchers_created_by_app(
-                controller_id=int(controller_id),
-                unifi_ids=[voucher.id for voucher in created],
-                is_nominal=bool(is_nominal),
-                classified_at=observed_at,
-            )
+                database.mark_vouchers_created_by_app(
+                    controller_id=int(controller_id),
+                    unifi_ids=created_ids,
+                    is_nominal=bool(is_nominal),
+                    classified_at=observed_at,
+                    connection=tx,
+                )
     finally:
         database.close()
 
