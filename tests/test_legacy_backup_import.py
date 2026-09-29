@@ -204,7 +204,8 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
             "SELECT COUNT(*) FROM voucher_prints"
         ).fetchone()[0] == 2
         rows = database.connection.execute(
-            """SELECT code, present_on_controller, expired, archived_at
+            """SELECT code, present_on_controller, expired, archived_at,
+                      origin, is_nominal
                FROM vouchers ORDER BY code"""
         ).fetchall()
         assert [row["code"] for row in rows] == [
@@ -214,6 +215,8 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
         assert all(row["present_on_controller"] == 0 for row in rows)
         assert all(row["expired"] == 1 for row in rows)
         assert all(row["archived_at"] is None for row in rows)
+        assert all(row["origin"] == "LEGACY_APPLICATION" for row in rows)
+        assert all(row["is_nominal"] is None for row in rows)
         imported_pdf = (
             paths.prints
             / "Imported"
