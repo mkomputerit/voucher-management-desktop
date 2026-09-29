@@ -263,6 +263,17 @@ def nominal_label(value: bool | None, *, redacted: bool = False) -> str:
     return "Non classificato"
 
 
+def _is_printed_unused(row: ReportRow) -> bool:
+    """Require zero observed use plus controller evidence after first issuance."""
+
+    return (
+        row.print_jobs > 0
+        and row.usage_observed
+        and not row.ever_used
+        and _time_at_or_after(row.last_seen_at, row.first_printed_at)
+    )
+
+
 def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind in {ReportKind.SUMMARY, ReportKind.FULL_HISTORY}:
         return True
@@ -281,12 +292,7 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind is ReportKind.PRINTED:
         return row.print_jobs > 0
     if kind is ReportKind.PRINTED_UNUSED:
-        return (
-            row.print_jobs > 0
-            and row.usage_observed
-            and not row.ever_used
-            and _time_at_or_after(row.last_seen_at, row.first_printed_at)
-        )
+        return _is_printed_unused(row)
     if kind is ReportKind.NEVER_PRINTED:
         return row.print_jobs == 0
     if kind is ReportKind.NOMINAL:
@@ -343,8 +349,7 @@ def _totals(
         ),
         reprint_copies=sum(row.reprint_copies for row in materialized),
         printed_never_used=sum(
-            row.print_jobs > 0 and row.usage_observed and not row.ever_used
-            for row in materialized
+            _is_printed_unused(row) for row in materialized
         ),
         never_printed=sum(row.print_jobs == 0 for row in materialized),
         nominal_vouchers=sum(
