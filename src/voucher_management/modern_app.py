@@ -2602,6 +2602,7 @@ class ModernVoucherApp(
                     getattr(self, "delete_button", None),
                     getattr(self, "print_button", None),
                     getattr(self, "open_pdf_button", None),
+                    getattr(self, "local_data_button", None),
                     getattr(self, "report_button", None),
                 )
                 if widget is not None
