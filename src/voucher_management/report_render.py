@@ -28,7 +28,7 @@ from .pdf_fonts import (
     validate_pdf_text_support,
 )
 from .report_policy import voucher_code_policy
-from .reporting import ReportDataset, nominal_label, origin_label
+from .reporting import ReportDataset, ReportKind, nominal_label, origin_label
 
 
 def _validate_dataset_policy(dataset: ReportDataset) -> None:
@@ -88,18 +88,20 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
     totals = dataset.totals
     return [
         ["Voucher nel report", str(totals.vouchers)],
-        ["Generati da Voucher Management", str(totals.generated_vouchers)],
+        ["Creazione Voucher Management confermata", str(totals.generated_vouchers)],
+        ["Origine creazione non determinabile", str(totals.unknown_origin_vouchers)],
         ["Utilizzati almeno una volta", str(totals.used_vouchers)],
         ["Mai osservati utilizzati", str(totals.never_used_vouchers)],
         ["Utilizzo non determinabile", str(totals.usage_unknown_vouchers)],
-        ["Utilizzi (ultimo valore conservato)", str(totals.total_controller_uses)],
+        ["Guest autorizzati (somma ultimo conteggio)", str(totals.total_controller_uses)],
         ["Voucher scaduti", str(totals.expired_vouchers)],
         ["Voucher stampati", str(totals.printed_vouchers)],
         ["Mai stampati", str(totals.never_printed)],
-        ["Stampati mai utilizzati", str(totals.printed_never_used)],
+        ["Stampati mai osservati utilizzati", str(totals.printed_never_used)],
         ["Voucher nominali", str(totals.nominal_vouchers)],
         ["Voucher non nominali", str(totals.non_nominal_vouchers)],
         ["Nominalità non classificata", str(totals.unclassified_vouchers)],
+        ["Nominalità rimossa per privacy", str(totals.redacted_nominality_vouchers)],
         ["Job di stampa", str(totals.print_jobs)],
         ["Copie fisiche", str(totals.physical_copies)],
         ["Ristampe", str(totals.reprint_jobs)],
@@ -119,9 +121,10 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
             "Creazione controller",
             "Prima acquisizione",
             "Scadenza",
+            "Ultima osservazione controller",
             "Dato uso",
             "Utilizzato",
-            "Utilizzi",
+            "Guest autorizzati",
             "Stampe",
             "Copie",
             "Ristampe",
@@ -140,10 +143,14 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
         [
             row.recipient or "—",
             origin_label(row.origin),
-            nominal_label(row.is_nominal),
+            nominal_label(
+                row.is_nominal,
+                redacted=row.nominality_redacted,
+            ),
             _display_time(row.created_at),
             _display_time(row.imported_at),
             _display_time(row.expires_at),
+            _display_time(row.last_synced_at),
             "Osservato" if row.usage_observed else "Non disponibile",
             (
                 "Sì"
@@ -180,18 +187,28 @@ def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
             writer.writerow(
                 [_csv_cell("Ambito"), _csv_cell(dataset.controller_label)]
             )
+            writer.writerow(
+                [_csv_cell("Dati controller dal"), _csv_cell(_display_time(dataset.data_from))]
+            )
+            writer.writerow(
+                [
+                    _csv_cell("Dati controller aggiornati fino a"),
+                    _csv_cell(_display_time(dataset.data_as_of)),
+                ]
+            )
             writer.writerow([])
             writer.writerow([_csv_cell("Riepilogo"), _csv_cell("Valore")])
             for summary_row in _summary_rows(dataset):
                 writer.writerow([_csv_cell(value) for value in summary_row])
-            writer.writerow([])
-            writer.writerow(
-                [_csv_cell(value) for value in _detail_headers(dataset)]
-            )
-            for row in dataset.rows:
+            if dataset.kind is not ReportKind.SUMMARY:
+                writer.writerow([])
                 writer.writerow(
-                    [_csv_cell(value) for value in _detail_row(dataset, row)]
+                    [_csv_cell(value) for value in _detail_headers(dataset)]
                 )
+                for row in dataset.rows:
+                    writer.writerow(
+                        [_csv_cell(value) for value in _detail_row(dataset, row)]
+                    )
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temp_path, output_path)
@@ -216,11 +233,10 @@ def render_report_pdf(
     ensure_pdf_fonts_registered()
     output_path = Path(output_path)
 
-    text_values = [
-        dataset.title,
-        dataset.controller_label,
-        installation_name,
-        *(
+    detail_text = (
+        []
+        if dataset.kind is ReportKind.SUMMARY
+        else [
             value
             for row in dataset.rows
             for value in (
@@ -230,7 +246,13 @@ def render_report_pdf(
                 ", ".join(row.print_operators),
                 row.code,
             )
-        ),
+        ]
+    )
+    text_values = [
+        dataset.title,
+        dataset.controller_label,
+        installation_name,
+        *detail_text,
     ]
     validate_pdf_text_support(text_values)
 
@@ -293,6 +315,7 @@ def render_report_pdf(
                 (
                     f"Generato: {_display_time(dataset.generated_at)}"
                     f"  |  Ambito: {dataset.controller_label}"
+                    f"  |  Dati controller fino a: {_display_time(dataset.data_as_of)}"
                 ),
                 subtitle_style,
             )
@@ -328,63 +351,65 @@ def render_report_pdf(
         story.append(summary_table)
         story.append(Spacer(1, 5 * mm))
 
-        headers = _detail_headers(dataset)
-        rows = [
-            [_paragraph(value, small) for value in headers]
-        ]
-        for row in dataset.rows:
-            rows.append(
-                [
-                    _paragraph(value, small)
-                    for value in _detail_row(dataset, row)
-                ]
-            )
-
-        if len(rows) == 1:
-            story.append(
-                _paragraph(
-                    "Nessun voucher corrisponde ai criteri del report.",
-                    regular,
-                )
-            )
-        else:
-            usable = page_width - 20 * mm
-            if dataset.code_exposed:
-                weights = [0.72, 0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
-            else:
-                weights = [0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
-            scale = usable / sum(weights)
-            detail_table = Table(
-                rows,
-                colWidths=[weight * scale for weight in weights],
-                repeatRows=1,
-                hAlign="LEFT",
-            )
-            detail_table.setStyle(
-                TableStyle(
+        if dataset.kind is not ReportKind.SUMMARY:
+            headers = _detail_headers(dataset)
+            rows = [
+                [_paragraph(value, small) for value in headers]
+            ]
+            for row in dataset.rows:
+                rows.append(
                     [
-                        ("FONTNAME", (0, 0), (-1, -1), PDF_FONT_REGULAR),
-                        ("FONTNAME", (0, 0), (-1, 0), PDF_FONT_BOLD),
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8E8E8")),
-                        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 2.5),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 2.5),
-                        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                        _paragraph(value, small)
+                        for value in _detail_row(dataset, row)
                     ]
                 )
-            )
-            story.append(detail_table)
+
+            if len(rows) == 1:
+                story.append(
+                    _paragraph(
+                        "Nessun voucher corrisponde ai criteri del report.",
+                        regular,
+                    )
+                )
+            else:
+                usable = page_width - 20 * mm
+                if dataset.code_exposed:
+                    weights = [0.72, 0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.72, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
+                else:
+                    weights = [0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.72, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
+                scale = usable / sum(weights)
+                detail_table = Table(
+                    rows,
+                    colWidths=[weight * scale for weight in weights],
+                    repeatRows=1,
+                    hAlign="LEFT",
+                )
+                detail_table.setStyle(
+                    TableStyle(
+                        [
+                            ("FONTNAME", (0, 0), (-1, -1), PDF_FONT_REGULAR),
+                            ("FONTNAME", (0, 0), (-1, 0), PDF_FONT_BOLD),
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8E8E8")),
+                            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 2.5),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 2.5),
+                            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                        ]
+                    )
+                )
+                story.append(detail_table)
 
         story.append(Spacer(1, 4 * mm))
         story.append(
             _paragraph(
-                "Nota: “Mai utilizzato” viene dichiarato solo quando Voucher Management "
-                "ha effettivamente osservato il dato d'uso e non ha mai visto un valore "
-                "positivo. Se manca questa evidenza, il report mostra “uso non "
-                "determinabile”. Il numero utilizzi è l'ultimo valore conservato e non "
-                "rappresenta l'ora esatta d'uso.",
+                "Nota: “Mai osservato utilizzato” significa soltanto che Voucher "
+                "Management non ha mai osservato un conteggio guest autorizzati positivo "
+                "fino all'ultima osservazione controller indicata. Se manca questa "
+                "evidenza, il report mostra “uso non determinabile”. Il conteggio guest "
+                "autorizzati è l'ultimo valore conservato e non è un contatore cumulativo "
+                "di accessi né un timestamp d'uso.",
                 small,
             )
         )
