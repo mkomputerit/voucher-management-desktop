@@ -341,7 +341,7 @@ def build_report_dataset(
     all_rows: list[ReportRow] = []
     rows: list[ReportRow] = []
     controllers: set[str] = set()
-    code_exposed = False
+    code_exposed = code_policy.expose_code
     for raw in raw_rows:
         controller_name = str(raw["controller_name"] or "").strip() or "Controller"
         controllers.add(controller_name)
@@ -350,9 +350,6 @@ def build_report_dataset(
             purpose,
             include_code_requested=include_code_requested,
         )
-        if clear_code:
-            code_exposed = True
-
         legacy = bool(raw["legacy_source"])
         print_jobs = int(raw["print_jobs"] or 0)
         expired = _expired_at_report_time(
