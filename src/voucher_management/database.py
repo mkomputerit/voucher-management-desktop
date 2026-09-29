@@ -356,6 +356,14 @@ class PrintAuditSummary:
 
 
 @dataclass(frozen=True)
+class ReportPrintJobTotals:
+    """Distinct print submissions represented by a report voucher set."""
+
+    print_jobs: int
+    reprint_jobs: int
+
+
+@dataclass(frozen=True)
 class VoucherLocalMetadata:
     """Operator-owned voucher facts that must never be written back to UniFi."""
 
@@ -1364,6 +1372,47 @@ COMMIT;
                         int(sequence > 1),
                     ),
                 )
+
+    def report_print_job_totals(
+        self,
+        *,
+        voucher_ids: list[int] | tuple[int, ...],
+    ) -> ReportPrintJobTotals:
+        """Count distinct print submissions for a selected voucher population.
+
+        voucher_prints is one row per voucher/job relation, so summing the
+        per-voucher counts would overstate document submissions whenever one
+        PDF contains multiple vouchers.  Collect stable job ids in chunks and
+        deduplicate in Python to stay below conservative SQLite parameter
+        limits without double-counting jobs that span chunks.
+        """
+
+        ids = tuple(dict.fromkeys(int(value) for value in voucher_ids))
+        if not ids:
+            return ReportPrintJobTotals(print_jobs=0, reprint_jobs=0)
+
+        job_ids: set[int] = set()
+        reprint_job_ids: set[int] = set()
+        chunk_size = 800
+        for start in range(0, len(ids), chunk_size):
+            chunk = ids[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.connection.execute(
+                f"""SELECT print_job_id, is_reprint
+                    FROM voucher_prints
+                    WHERE voucher_id IN ({placeholders})""",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                job_id = int(row["print_job_id"])
+                job_ids.add(job_id)
+                if bool(row["is_reprint"]):
+                    reprint_job_ids.add(job_id)
+
+        return ReportPrintJobTotals(
+            print_jobs=len(job_ids),
+            reprint_jobs=len(reprint_job_ids),
+        )
 
     def controller_name(self, controller_id: int) -> str | None:
         """Return one persisted non-secret controller display name."""
