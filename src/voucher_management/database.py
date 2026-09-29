@@ -1396,7 +1396,6 @@ COMMIT;
         return self.connection.execute(
             f"""SELECT
                     v.id AS voucher_id,
-                    v.controller_id,
                     c.name AS controller_name,
                     CASE WHEN c.api_root LIKE 'legacy-backup://%' THEN 1 ELSE 0 END
                         AS legacy_source,
@@ -1410,15 +1409,11 @@ COMMIT;
                     v.usage_observed,
                     v.created_at,
                     v.imported_at,
-                    v.duration_minutes,
-                    v.authorized_guest_limit,
                     v.authorized_guest_count,
-                    v.activated_at,
                     v.expires_at,
                     v.expired,
                     v.present_on_controller,
                     v.archived_at,
-                    v.last_seen_at,
                     v.last_synced_at,
                     COUNT(vp.id) AS print_jobs,
                     COALESCE(SUM(vp.physical_copies), 0) AS physical_copies,
