@@ -141,6 +141,7 @@ def test_empty_pdf_report_is_still_printable(tmp_path: Path):
             generated_vouchers=0,
             used_vouchers=0,
             never_used_vouchers=0,
+            usage_unknown_vouchers=0,
             total_controller_uses=0,
             expired_vouchers=0,
             printed_vouchers=0,
