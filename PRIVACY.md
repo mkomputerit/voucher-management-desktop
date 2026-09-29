@@ -34,6 +34,14 @@ preview explains this before physical printing. Operators should use only the
 recipient information they intend to hand to the guest. Existing archived PDFs
 retain their original layout; this change does not rewrite them.
 
+Starting with the 5.1 reporting revision, voucher creation also offers an
+explicit local **Voucher nominale** classification. The flag is stored in the
+local SQLite archive for administrative reporting and is not transmitted to
+UniFi. It is independent from the recipient text: a room/reference label can be
+non-nominal and a person's name can be nominal only when the operator selects
+the flag. Existing vouchers for which that choice was never recorded remain
+"non classificati"; the application does not infer nominal status from names.
+
 If a physical print was submitted but its audit write has not completed, a
 local `pending_print_audit.json` file temporarily stores only HMAC voucher
 identifiers plus print metadata needed for idempotent recovery. It does not
