@@ -46,6 +46,7 @@ from .settings import SettingsStore
 from .single_instance import InstanceAlreadyRunning, SingleInstanceGuard
 from .sync_store import (
     load_local_vouchers,
+    persist_connection_snapshot_to_path,
     persist_refresh_snapshot_to_path,
 )
 from .voucher_creation_ui import VoucherCreationMixin
@@ -614,14 +615,42 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         def worker():
             snapshot = list(refresh_vouchers(client))
             archive_error = None
-            if controller_id is not None:
-                try:
+            resolved_controller_id = controller_id
+            observed_at = datetime.now(timezone.utc).isoformat()
+            try:
+                if controller_id is not None:
                     persist_refresh_snapshot_to_path(
                         database_path,
                         controller_id=controller_id,
                         vouchers=snapshot,
-                        observed_at=datetime.now(timezone.utc).isoformat(),
+                        observed_at=observed_at,
                     )
+                else:
+                    # A live controller can exist even when the first local
+                    # persistence attempt failed. A later Sync must be able to
+                    # create the missing durable controller profile.
+                    base_url = str(getattr(client, "base_url", "") or "").strip()
+                    if base_url and database_path is not None:
+                        name_var = getattr(self, "controller_name_var", None)
+                        requested_name = (
+                            str(name_var.get()).strip()
+                            if name_var is not None
+                            else ""
+                        )
+                        persisted = persist_connection_snapshot_to_path(
+                            database_path,
+                            api_root=base_url,
+                            cert_sha256=str(
+                                getattr(client, "trusted_cert_sha256", "") or ""
+                            ),
+                            requested_name=requested_name,
+                            site_name=requested_name,
+                            vouchers=snapshot,
+                            observed_at=observed_at,
+                        )
+                        resolved_controller_id = persisted.controller_id
+
+                if resolved_controller_id is not None and database_path is not None:
                     marker_path = getattr(
                         self.paths,
                         "pending_create_reporting",
@@ -632,14 +661,23 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     reconcile_pending_create_reporting_to_path(
                         database_path,
                         marker_path,
-                        controller_id=controller_id,
+                        controller_id=resolved_controller_id,
                     )
-                except Exception as exc:
-                    archive_error = exc
-            return snapshot, archive_error
+            except Exception as exc:
+                archive_error = exc
+            return snapshot, archive_error, resolved_controller_id
 
         def completed(result) -> None:
             if (
+                isinstance(result, tuple)
+                and len(result) == 3
+                and (
+                    result[1] is None
+                    or isinstance(result[1], Exception)
+                )
+            ):
+                vouchers, archive_error, resolved_controller_id = result
+            elif (
                 isinstance(result, tuple)
                 and len(result) == 2
                 and (
@@ -648,10 +686,15 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 )
             ):
                 vouchers, archive_error = result
+                resolved_controller_id = controller_id
             else:
                 # Compatibility with thin adapters/tests that invoke the
                 # success callback directly with a voucher sequence.
                 vouchers, archive_error = result, None
+                resolved_controller_id = controller_id
+
+            if resolved_controller_id is not None:
+                self.active_controller_id = resolved_controller_id
             snapshot = list(vouchers)
             self.vouchers = snapshot
             self.controller_snapshot_live = True
