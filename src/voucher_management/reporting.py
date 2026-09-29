@@ -129,6 +129,83 @@ class ReportDataset:
     coverage_note: str = ""
 
 
+def validate_report_dataset_consistency(dataset: ReportDataset) -> None:
+    """Fail closed when aggregate categories no longer describe one population.
+
+    These are semantic invariants, not presentation checks. Every voucher must
+    belong to exactly one usage-provenance class, one nominality class, one
+    print-evidence class and one creation-origin class. A future schema or
+    migration regression must therefore stop report export instead of emitting
+    totals that look credible but describe overlapping populations.
+    """
+
+    totals = dataset.totals
+    numeric_values = (
+        totals.vouchers,
+        totals.generated_vouchers,
+        totals.used_vouchers,
+        totals.never_used_vouchers,
+        totals.usage_unknown_vouchers,
+        totals.total_controller_uses,
+        totals.expired_vouchers,
+        totals.printed_vouchers,
+        totals.print_jobs,
+        totals.physical_copies,
+        totals.reprint_jobs,
+        totals.reprint_copies,
+        totals.printed_never_used,
+        totals.never_printed,
+        totals.nominal_vouchers,
+        totals.non_nominal_vouchers,
+        totals.unclassified_vouchers,
+        totals.unknown_origin_vouchers,
+        totals.redacted_nominality_vouchers,
+    )
+    if any(int(value) < 0 for value in numeric_values):
+        raise RuntimeError("Report totals contain negative values")
+
+    expected = int(totals.vouchers)
+    partitions = {
+        "usage": (
+            totals.used_vouchers
+            + totals.never_used_vouchers
+            + totals.usage_unknown_vouchers
+        ),
+        "nominality": (
+            totals.nominal_vouchers
+            + totals.non_nominal_vouchers
+            + totals.unclassified_vouchers
+            + totals.redacted_nominality_vouchers
+        ),
+        "print": totals.printed_vouchers + totals.never_printed,
+        "origin": totals.generated_vouchers + totals.unknown_origin_vouchers,
+    }
+    invalid = [
+        name for name, value in partitions.items()
+        if int(value) != expected
+    ]
+    if invalid:
+        raise RuntimeError(
+            "Report totals are internally inconsistent: "
+            + ", ".join(sorted(invalid))
+        )
+
+    if totals.printed_never_used > totals.printed_vouchers:
+        raise RuntimeError("Printed-unused total exceeds printed vouchers")
+    if totals.reprint_jobs > totals.print_jobs:
+        raise RuntimeError("Reprint jobs exceed print jobs")
+    if totals.reprint_copies > totals.physical_copies:
+        raise RuntimeError("Reprint copies exceed physical voucher copies")
+
+    if dataset.kind is ReportKind.SUMMARY:
+        if dataset.rows:
+            raise RuntimeError("Summary report must not retain detail rows")
+    elif len(dataset.rows) != expected:
+        raise RuntimeError(
+            "Report detail row count does not match aggregate voucher count"
+        )
+
+
 def _purpose_for_kind(kind: ReportKind) -> ReportPurpose:
     return ReportPurpose.AUDIT if kind is ReportKind.FULL_HISTORY else ReportPurpose.SUMMARY
 
@@ -554,7 +631,7 @@ def _build_report_dataset_snapshot(
     print_job_totals = database.report_print_job_totals(
         voucher_ids=[row.voucher_id for row in totals_source],
     )
-    return ReportDataset(
+    dataset = ReportDataset(
         kind=kind,
         purpose=purpose,
         title=REPORT_TITLES[kind],
@@ -571,6 +648,8 @@ def _build_report_dataset_snapshot(
         data_as_of=data_as_of,
         coverage_note=coverage_note,
     )
+    validate_report_dataset_consistency(dataset)
+    return dataset
 
 
 def build_report_dataset(
