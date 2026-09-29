@@ -93,7 +93,7 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Utilizzati almeno una volta", str(totals.used_vouchers)],
         ["Nessun utilizzo rilevato", str(totals.never_used_vouchers)],
         ["Utilizzo non determinabile", str(totals.usage_unknown_vouchers)],
-        ["Utilizzi/guest autorizzati (somma ultimo conteggio osservato)", str(totals.total_controller_uses)],
+        ["Guest autorizzati (somma ultimo conteggio osservato)", str(totals.total_controller_uses)],
         ["Voucher scaduti", str(totals.expired_vouchers)],
         ["Voucher stampati", str(totals.printed_vouchers)],
         ["Senza stampe registrate", str(totals.never_printed)],
