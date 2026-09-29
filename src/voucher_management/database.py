@@ -1367,13 +1367,15 @@ COMMIT;
         self,
         *,
         controller_id: int | None = None,
+        include_voucher_code: bool = False,
+        include_personal_details: bool = True,
     ) -> list[sqlite3.Row]:
-        """Return durable voucher facts aggregated for reporting.
+        """Return only the durable facts required by the requested report layer.
 
-        The query deliberately returns atomic/current facts plus print
-        aggregates. It does not precompute business labels such as "used" or
-        "printed but never used"; those remain pure reporting policy so the
-        same database facts can support multiple report views.
+        Clear voucher credentials are excluded by default. Aggregate-only
+        callers can also omit controller descriptions, local recipients and
+        operator identities so unnecessary personal/credential data never
+        crosses the SQLite boundary.
         """
 
         where = ""
@@ -1382,15 +1384,25 @@ COMMIT;
             where = "WHERE v.controller_id=?"
             params = (int(controller_id),)
 
+        code_expr = "v.code" if include_voucher_code else "''"
+        name_expr = "v.name" if include_personal_details else "''"
+        assigned_expr = "v.assigned_to" if include_personal_details else "''"
+        operators_expr = (
+            "COALESCE(GROUP_CONCAT(DISTINCT vp.windows_user), '')"
+            if include_personal_details
+            else "''"
+        )
+
         return self.connection.execute(
             f"""SELECT
                     v.id AS voucher_id,
                     v.controller_id,
                     c.name AS controller_name,
-                    c.api_root AS controller_api_root,
-                    v.code,
-                    v.name,
-                    v.assigned_to,
+                    CASE WHEN c.api_root LIKE 'legacy-backup://%' THEN 1 ELSE 0 END
+                        AS legacy_source,
+                    {code_expr} AS code,
+                    {name_expr} AS name,
+                    {assigned_expr} AS assigned_to,
                     v.origin,
                     v.is_nominal,
                     v.nominality_redacted,
@@ -1421,8 +1433,7 @@ COMMIT;
                     ) AS reprint_copies,
                     COALESCE(MIN(vp.printed_at), '') AS first_printed_at,
                     COALESCE(MAX(vp.printed_at), '') AS last_printed_at,
-                    COALESCE(GROUP_CONCAT(DISTINCT vp.windows_user), '')
-                        AS print_operators
+                    {operators_expr} AS print_operators
                FROM vouchers AS v
                -- INNER JOIN is intentional. vouchers.controller_id is a
                -- foreign key with enforcement enabled, so a referenced
