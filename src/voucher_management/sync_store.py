@@ -69,6 +69,7 @@ def _upsert_api_voucher(
         data_limit_mb=voucher.data_mb,
         download_limit_kbps=voucher.down_kbps,
         upload_limit_kbps=voucher.up_kbps,
+        origin="CONTROLLER",
         last_synced_at=observed_at,
         connection=connection,
     )
