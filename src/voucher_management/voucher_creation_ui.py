@@ -9,7 +9,7 @@ from tkinter import messagebox
 from .dialogs import CreateDialog
 from .mutation_guard import CreateMutationGuardError
 from .sync_store import persist_create_result_to_path
-from .workflows import create_vouchers_and_refresh
+from .workflows import CreateOutcome, create_vouchers_and_refresh
 
 
 class VoucherCreationMixin:
@@ -70,15 +70,27 @@ class VoucherCreationMixin:
                 params,
             )
             if controller_id is not None and database_path is not None:
-                persist_create_result_to_path(
-                    database_path,
-                    controller_id=controller_id,
-                    snapshot=list(outcome.vouchers),
-                    created=list(outcome.created),
-                    snapshot_complete=outcome.refresh_error is None,
-                    is_nominal=bool(params.get("is_nominal", False)),
-                    observed_at=datetime.now(timezone.utc).isoformat(),
-                )
+                try:
+                    persist_create_result_to_path(
+                        database_path,
+                        controller_id=controller_id,
+                        snapshot=list(outcome.vouchers),
+                        created=list(outcome.created),
+                        snapshot_complete=outcome.refresh_error is None,
+                        is_nominal=bool(params.get("is_nominal", False)),
+                        observed_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                except Exception as exc:
+                    # The controller result is already known at this point.
+                    # Never turn a confirmed remote create into a generic
+                    # "creation failed" message that could encourage a repeat.
+                    outcome = CreateOutcome(
+                        created=outcome.created,
+                        vouchers=outcome.vouchers,
+                        refresh_error=outcome.refresh_error,
+                        uncertain_error=outcome.uncertain_error,
+                        local_persistence_error=exc,
+                    )
             return outcome
 
         def completed(outcome) -> None:
@@ -94,6 +106,11 @@ class VoucherCreationMixin:
                         "configurazione multi-postazione non è sicuro attribuire "
                         "automaticamente eventuali nuovi voucher a questa richiesta."
                     )
+                    if outcome.local_persistence_error is not None:
+                        detail += (
+                            "\nInoltre l'archivio locale dei report non è stato "
+                            "aggiornato correttamente."
+                        )
                 else:
                     detail = (
                         "Non è stato possibile rileggere l'elenco dal controller."
@@ -131,6 +148,23 @@ class VoucherCreationMixin:
             }
             self.filter_var.set("Da stampare")
             self.populate()
+
+            if outcome.local_persistence_error is not None:
+                self.logger.error(
+                    "create_reporting_persistence_failed type=%s",
+                    type(outcome.local_persistence_error).__name__,
+                )
+                messagebox.showwarning(
+                    "Voucher creati • archivio locale da verificare",
+                    f"UniFi ha confermato la creazione di {len(outcome.created)} "
+                    "voucher, ma la loro classificazione nello storico locale "
+                    "non è stata registrata correttamente.\n\n"
+                    "Non ripetere la creazione. I voucher restano validi sulla "
+                    "controller; prima di affidarsi ai report, verificare "
+                    "l'archivio locale.",
+                    parent=self,
+                )
+                return
 
             if outcome.refresh_error is not None:
                 messagebox.showwarning(
