@@ -45,6 +45,8 @@ class OnboardingDraft:
     pdf_subtitle: str = ""
     pdf_contact: str = ""
     pdf_notes: str = ""
+    backup_directory: str = ""
+    backup_on_close: bool = True
     unused_unprinted_days: int = DEFAULT_VOUCHER_RETENTION_DAYS
 
 
@@ -161,6 +163,8 @@ def validate_onboarding_draft(draft: OnboardingDraft) -> OnboardingDraft:
         pdf_subtitle=draft.pdf_subtitle.strip(),
         pdf_contact=draft.pdf_contact.strip(),
         pdf_notes=draft.pdf_notes.strip(),
+        backup_directory=draft.backup_directory.strip(),
+        backup_on_close=bool(draft.backup_on_close),
         unused_unprinted_days=days,
     )
 
@@ -188,6 +192,8 @@ def complete_onboarding(
         structure_name=clean.structure_name,
         wifi_title=clean.wifi_title,
         logo_path=clean.logo_path,
+        backup_directory=clean.backup_directory,
+        backup_on_close=clean.backup_on_close,
     )
 
     with database.transaction() as db:

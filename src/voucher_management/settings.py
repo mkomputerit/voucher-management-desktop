@@ -33,9 +33,9 @@ DEFAULT_SETTINGS = {
     "history_key_fingerprint": "",
     "log_retention_days": 30,
     "print_retention_days": 0,
-    # 5.0 protects the SQLite operational archive with an encrypted snapshot
-    # before an ordinary operator-requested application close.
+    # Propose an operator-controlled backup before ordinary application close.
     "backup_on_close": True,
+    "backup_directory": "",
 }
 
 
@@ -52,6 +52,9 @@ class SettingsStore:
     @staticmethod
     def _validated_value(key: str, value):
         """Return a schema-safe value for typed persisted settings."""
+
+        if key == "backup_directory":
+            return (value.strip(), False) if isinstance(value, str) else ("", True)
 
         if key in _BOOL_SETTINGS:
             if type(value) is bool:

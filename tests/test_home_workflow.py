@@ -116,10 +116,10 @@ def test_home_displays_ten_recent_vouchers_and_collapses_activity(root):
     fake = SimpleNamespace()
     for name in (
         "home_controller_name", "home_last_sync", "home_ready", "home_sync_action",
-        "home_to_print", "home_active", "home_used", "home_expired", "home_print_action",
+        "home_backup_summary", "home_to_print", "home_active", "home_used", "home_expired", "home_print_action",
     ):
         setattr(fake, name + "_var", tk.StringVar(root, value="0"))
-    for name in ("_home_sync_or_connect", "create", "_home_print_selected",
+    for name in ("_home_sync_or_connect", "create", "create_backup", "_home_print_selected",
                  "_on_home_recent_click", "_on_voucher_selection_key"):
         setattr(fake, name, lambda *args: None)
     fake._build_status_dot = lambda parent: tk.Canvas(parent, width=14, height=14)

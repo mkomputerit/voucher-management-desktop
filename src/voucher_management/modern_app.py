@@ -31,6 +31,7 @@ from .reporting import ReportKind, build_report_dataset
 from .retention_ui import RetentionMixin
 from .utils import format_fingerprint
 from .data_maintenance_ui import DataMaintenanceMixin
+from .backup_options_ui import default_backup_directory, validate_backup_directory
 from .controller_connection_ui import ControllerConnectionMixin
 from .voucher_deletion_ui import VoucherDeletionMixin
 from .workspace_state import build_controller_workspace_status
@@ -1023,6 +1024,7 @@ class ModernVoucherApp(
         self.home_ready_var = tk.StringVar(value="Controller da configurare")
         self.home_sync_action_var = tk.StringVar(value="Configura controller")
         self.home_print_action_var = tk.StringVar(value="Stampa voucher")
+        self.home_backup_summary_var = tk.StringVar(value="Nessun backup registrato")
         self.home_to_print_var = tk.StringVar(value="0")
         self.home_active_var = tk.StringVar(value="0")
         self.home_used_var = tk.StringVar(value="0")
@@ -1359,10 +1361,15 @@ class ModernVoucherApp(
             padding=(12, 10),
         )
         self.home_activity_frame = activity
+        home_footer = ttk.Frame(frame)
+        home_footer.grid(row=3, column=0, sticky="ew", pady=(2, 4))
+        ttk.Button(home_footer, text="Crea backup…", command=self.create_backup).pack(side="right")
+        ttk.Label(home_footer, textvariable=self.home_backup_summary_var,
+                  style="Muted.TLabel", wraplength=420).pack(side="right", padx=12)
         self.home_activity_toggle = ttk.Button(
-            frame, text="Mostra attività recenti", command=self._toggle_home_activity,
+            home_footer, text="Mostra attività recenti", command=self._toggle_home_activity,
         )
-        self.home_activity_toggle.grid(row=3, column=0, sticky="w", pady=(2, 4))
+        self.home_activity_toggle.pack(side="left")
         activity.grid(row=4, column=0, sticky="ew")
         activity.grid_remove()
         activity.columnconfigure(0, weight=1)
@@ -1675,6 +1682,7 @@ class ModernVoucherApp(
         self.settings_logo_var = tk.StringVar()
         self.settings_pdf_retention_var = tk.StringVar()
         self.settings_backup_on_close_var = tk.BooleanVar()
+        self.settings_backup_directory_var = tk.StringVar()
         self.settings_save_status_var = tk.StringVar()
         self.settings_backup_summary_var = tk.StringVar()
         self.settings_legacy_history_summary_var = tk.StringVar()
@@ -1944,9 +1952,16 @@ class ModernVoucherApp(
         ).pack(anchor="w", pady=(0, 12))
         ttk.Checkbutton(
             backup,
-            text="Crea un backup protetto prima della chiusura (consigliato)",
+            text="Proponi una copia di sicurezza alla chiusura",
             variable=self.settings_backup_on_close_var,
         ).pack(anchor="w", pady=(0, 12))
+        ttk.Label(backup, text="Cartella predefinita dei backup").pack(anchor="w")
+        backup_folder = ttk.Frame(backup)
+        backup_folder.pack(fill="x", pady=(6, 12))
+        ttk.Entry(backup_folder, textvariable=self.settings_backup_directory_var).pack(side="left", fill="x", expand=True)
+        ttk.Button(backup_folder, text="Scegli…", command=self._choose_default_backup_directory).pack(side="left", padx=(8, 0))
+        ttk.Label(backup, text="La password si sceglie a ogni backup ed è facoltativa.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(0, 12))
         backup_actions = ttk.Frame(backup)
         backup_actions.pack(anchor="w")
         ttk.Button(
@@ -2078,7 +2093,14 @@ class ModernVoucherApp(
         self.settings_backup_on_close_var.set(
             bool(settings.get("backup_on_close", True))
         )
+        self.settings_backup_directory_var.set(default_backup_directory(self))
         self.settings_save_status_var.set("")
+
+    def _choose_default_backup_directory(self) -> None:
+        selected = filedialog.askdirectory(parent=self, title="Cartella predefinita backup",
+                                           initialdir=self.settings_backup_directory_var.get(), mustexist=False)
+        if selected:
+            self.settings_backup_directory_var.set(selected)
 
     def _choose_settings_logo(self) -> None:
         selected = filedialog.askopenfilename(
@@ -2140,6 +2162,13 @@ class ModernVoucherApp(
             messagebox.showerror("Logo non valido", str(exc), parent=self)
             return
 
+        try:
+            backup_directory = str(validate_backup_directory(
+                self.settings_backup_directory_var.get(), self.paths.user_root))
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Cartella backup", str(exc), parent=self)
+            return
+
         previous_theme = str(self.settings.get("ui_theme", "system"))
         previous_pdf_retention = int(
             self.settings.get(
@@ -2157,6 +2186,7 @@ class ModernVoucherApp(
             ui_theme=_theme_setting_value(self.settings_theme_var.get()),
             print_retention_days=pdf_retention_days,
             backup_on_close=bool(self.settings_backup_on_close_var.get()),
+            backup_directory=backup_directory,
         )
         self.settings_logo_var.set(logo_value)
         self.installation_display_var.set(
@@ -2186,24 +2216,23 @@ class ModernVoucherApp(
         self.after(3500, lambda: self.settings_save_status_var.set(""))
 
     def _refresh_backup_summary(self) -> None:
-        if not hasattr(self, "settings_backup_summary_var"):
-            return
+        """Show only completed, verified backups, never an attempted copy."""
         row = self.database.connection.execute(
-            """SELECT completed_at, filename
-               FROM backup_history
-               WHERE status='SUCCESS'
-               ORDER BY id DESC LIMIT 1"""
+            """SELECT completed_at, filename FROM backup_history
+               WHERE status='SUCCESS' ORDER BY id DESC LIMIT 1"""
         ).fetchone()
         if row is None:
-            self.settings_backup_summary_var.set(
-                "Nessun backup completato è ancora registrato su questa postazione."
-            )
-            return
-        when = audit_time_label(str(row["completed_at"] or ""))
-        filename = str(row["filename"] or "").strip() or "backup protetto"
-        self.settings_backup_summary_var.set(
-            f"Ultimo backup: {when}  •  {filename}"
-        )
+            summary = "Nessun backup completato è ancora registrato su questa postazione."
+            short = "Ultimo backup: mai eseguito"
+        else:
+            when = audit_time_label(str(row["completed_at"] or ""))
+            filename = str(row["filename"] or "").strip() or "backup"
+            summary = f"Ultimo backup: {when}  •  {filename}"
+            short = f"Ultimo backup: {when}"
+        for name, value in (("settings_backup_summary_var", summary), ("home_backup_summary_var", short)):
+            variable = getattr(self, name, None)
+            if variable is not None:
+                variable.set(value)
 
     def _refresh_legacy_history_summary(self) -> None:
         """Explain when restored pre-SQLite print history still needs migration."""
@@ -2293,7 +2322,9 @@ class ModernVoucherApp(
             button.configure(
                 style="NavActive.TButton" if name == key else "Nav.TButton"
             )
-        if key == "report":
+        if key == "home":
+            self._refresh_backup_summary()
+        elif key == "report":
             self._refresh_report_summary()
         elif key == "settings":
             self._load_settings_workspace_values()

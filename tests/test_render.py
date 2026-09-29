@@ -309,7 +309,8 @@ def test_nfd_operator_text_is_normalized_to_nfc_before_render(tmp_path):
 
     assert "Guest José" in extracted
     assert "Zoë" in extracted
-    assert "Destinatario: José Zoë" in extracted
+    assert "José Zoë" in extracted
+    assert "Destinatario:" not in extracted
     assert "\u0301" not in extracted
     assert "\u0308" not in extracted
 
@@ -341,7 +342,8 @@ def test_recipient_is_rendered_inside_the_cut_voucher_content(tmp_path):
     )
 
     extracted = _extract_pdf_text(output)
-    assert "Destinatario: Reception" in extracted
+    assert "Reception" in extracted
+    assert "Destinatario:" not in extracted
     assert "Personale - Non condividere / Personal - Do not share" in extracted
 
 

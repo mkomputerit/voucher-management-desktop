@@ -308,7 +308,7 @@ def _draw_label(
     )
 
     recipient = _normalize_pdf_text(
-        f"Destinatario: {voucher.recipient_label}"
+        voucher.recipient_label
     )
     recipient_font_size = _fit_font(
         recipient,

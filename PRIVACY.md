@@ -47,10 +47,15 @@ unverified hash/format/schema metadata. Full Windows destination paths,
 passwords and exception messages are not stored; failure detail is limited to
 the exception type.
 
-The normal backup workflow creates only password-protected `.vmbk` files.
-Legacy unencrypted ZIP archives remain readable for restore compatibility but
-are no longer offered as normal backup output. The encrypted form protects the
-complete portable snapshot, including generated PDFs and the local history key.
+From 5.1, operators choose an unencrypted ZIP or a password-protected `.vmbk`
+for each normal manual or shutdown backup. The dialog explicitly identifies
+unencrypted copies: anyone with file access can read the database, voucher
+codes, recipients and PDFs. Selecting password protection encrypts and
+authenticates the complete portable snapshot, including the local history key.
+The default backup folder is stored as an operator preference. A folder chosen
+in the backup dialog applies only to that copy and never changes the default.
+Machine-specific backup destinations are cleared in exported settings so a
+restore cannot silently reuse another workstation's destination.
 Backup passwords are used only for the active create/restore operation and are
 not stored in settings, logs or backup metadata. Encrypted validation/restore uses
 an OS-managed anonymous/auto-delete temporary file for decrypted ZIP bytes,

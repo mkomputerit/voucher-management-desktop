@@ -46,9 +46,10 @@ The application currently provides:
   export/import for deliberate idempotent merging between compatible stations;
   new generation events carry stable IDs so independent identical events from
   separate stations remain distinct during convergence;
-- encrypted/authenticated `.vmbk` backup creation and restore of
-  application-managed data, including a default backup-before-close workflow;
-  plaintext ZIP remains accepted only for legacy restore compatibility;
+- verified backup creation and restore, with optional password-protected
+  `.vmbk` encryption or an explicitly identified unencrypted ZIP;
+- first-run backup-folder configuration, a Home last-successful-backup indicator
+  and an optional backup proposal on close with per-copy destination choices;
 - SQLite backup audit for manual, shutdown and migration safety backups,
   recording privacy-safe outcome metadata plus SHA-256/format/schema facts for
   verified final artifacts without storing passwords or full destination paths;
@@ -198,6 +199,19 @@ working file containing printable voucher data. At startup, Voucher Management
 removes only managed renderer temp files older than 24 hours; these scratch
 files are also excluded from application backups.
 
+
+The first-run wizard configures the default backup folder and whether to offer
+backup on close. Existing installations can set these in Settings > Backup.
+Closing offers **Create backup and close**, **Exit without backup**, or **Cancel**.
+The dialog shows the default folder; selecting another folder changes only that
+copy, not the saved preference. Password protection is optional for both manual
+and shutdown copies: unchecked creates a readable `.zip`, checked creates an
+AES-GCM `.vmbk` and requires matching passwords of at least 12 characters.
+Home shows the last verified successful backup recorded locally and provides a
+manual backup action. A failed attempt does not replace that timestamp. After a
+restore, the saved destination is reset to the local fallback folder; choose a
+new default in Settings. Safety backups for migration retain their dedicated
+protected workflow.
 
 Encrypted backups use a password supplied only for the active operation. The
 application derives an AES-256 key with Scrypt and authenticates the complete

@@ -16,6 +16,7 @@ from tkinter import filedialog, messagebox
 from .backup import BackupArtifactInfo, BackupError, BackupService
 from .database import Database
 from .dialogs import ask_password
+from .backup_options_ui import ask_backup_options, default_backup_directory
 from .history import HistoryError
 from .history_exchange import HistoryExchangeError, HistoryExchangeService
 from .legacy_backup_import import (
@@ -86,6 +87,12 @@ class DataMaintenanceMixin:
                     None if error is None else type(error).__name__
                 ),
             )
+            refresh = getattr(self, "_refresh_backup_summary", None)
+            if refresh is not None:
+                try:
+                    refresh()
+                except Exception as exc:
+                    self.logger.warning("backup_summary_refresh_failed type=%s", type(exc).__name__)
             return True
         except Exception as exc:
             self.logger.warning(
@@ -95,10 +102,10 @@ class DataMaintenanceMixin:
             return False
 
     def request_close(self, *, on_abort=None) -> None:
-        """Close safely, creating the configured encrypted recovery snapshot.
+        """Offer a recovery snapshot with per-attempt operator choices.
 
-        The password exists only for this close attempt. Cancelling either the
-        password prompt or a failed-backup decision leaves the application
+        The password exists only for this close attempt. Cancelling the
+        options dialog or a failed-backup decision leaves the application
         open. A running background operation is never interrupted by shutdown.
         """
 
@@ -120,28 +127,18 @@ class DataMaintenanceMixin:
             )
             return
 
-        password = ask_password(
-            self,
-            title="Backup alla chiusura",
-            prompt=(
-                "Prima di chiudere verrà creato un backup cifrato e "
-                "autenticato dell'archivio locale. Inserire la password "
-                "del backup (almeno 12 caratteri). La password non viene "
-                "salvata."
-            ),
+        choice = ask_backup_options(
+            self, default_directory=default_backup_directory(self), closing=True,
+            data_root=getattr(self.paths, "user_root", None),
         )
-        if password is None:
+        if choice is None:
             if on_abort is not None:
                 on_abort()
             return
-
-        target = (
-            Path(self.paths.automatic_backups)
-            / (
-                "VoucherManagement-auto-"
-                f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.vmbk"
-            )
-        )
+        if choice.skip:
+            self._finish_close(close_status="CLOSED_WITHOUT_BACKUP", backup_status="SKIPPED")
+            return
+        target, password = choice.target, choice.password
         if on_abort is None:
             self._start_close_backup(target, password)
         else:
@@ -150,11 +147,11 @@ class DataMaintenanceMixin:
     def _start_close_backup(
         self,
         target: Path,
-        password: str,
+        password: str | None,
         *,
         on_abort=None,
     ) -> None:
-        """Run one encrypted shutdown backup attempt without blocking Tk."""
+        """Run one verified shutdown backup attempt without blocking Tk."""
 
         service = self._backup_service()
         started_at = self._backup_audit_started_at()
@@ -169,7 +166,7 @@ class DataMaintenanceMixin:
             if not audited:
                 messagebox.showwarning(
                     "Backup completato",
-                    "Il backup cifrato è stato creato e verificato, ma il suo "
+                    "Il backup è stato creato e verificato, ma il suo "
                     "audit locale non è stato registrato. La chiusura può "
                     "comunque proseguire.",
                     parent=self,
@@ -194,7 +191,7 @@ class DataMaintenanceMixin:
             )
             decision = messagebox.askyesnocancel(
                 "Backup di chiusura non riuscito",
-                "Non è stato possibile creare e verificare il backup cifrato.\n\n"
+                "Non è stato possibile creare e verificare il backup.\n\n"
                 "Sì: riprova il backup.\n"
                 "No: chiudi comunque senza un nuovo backup.\n"
                 "Annulla: resta nel programma.",
@@ -233,8 +230,6 @@ class DataMaintenanceMixin:
                 "un'altra operazione.",
                 parent=self,
             )
-            if on_abort is not None:
-                on_abort()
             if on_abort is not None:
                 on_abort()
 
@@ -1226,36 +1221,16 @@ class DataMaintenanceMixin:
                 )
 
     def create_backup(self, *, parent=None) -> None:
-        """Create the normal 5.0 backup only through the encrypted format."""
+        """Create a verified ZIP or encrypted backup with per-copy choices."""
 
         parent = parent or self
-        password = ask_password(
-            parent,
-            title="Password backup",
-            prompt=(
-                "Inserire una password di almeno 12 caratteri per proteggere "
-                "il backup cifrato e autenticato."
-            ),
-            confirm=True,
+        choice = ask_backup_options(
+            parent, default_directory=default_backup_directory(self), closing=False,
+            data_root=getattr(self.paths, "user_root", None),
         )
-        if password is None:
+        if choice is None or choice.skip:
             return
-
-        default = (
-            "VoucherManagement-backup-"
-            f"{datetime.now().strftime('%Y%m%d-%H%M')}.vmbk"
-        )
-        target = filedialog.asksaveasfilename(
-            parent=parent,
-            title="Crea backup cifrato",
-            defaultextension=".vmbk",
-            initialfile=default,
-            filetypes=[
-                ("Backup cifrato Voucher Management", "*.vmbk"),
-            ],
-        )
-        if not target:
-            return
+        target, password = choice.target, choice.password
 
         service = self._backup_service()
         started_at = self._backup_audit_started_at()
