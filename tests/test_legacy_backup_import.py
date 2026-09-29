@@ -204,13 +204,14 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
             "SELECT COUNT(*) FROM voucher_prints"
         ).fetchone()[0] == 2
         rows = database.connection.execute(
-            """SELECT code, present_on_controller, expired, archived_at
+            """SELECT code, origin, present_on_controller, expired, archived_at
                FROM vouchers ORDER BY code"""
         ).fetchall()
         assert [row["code"] for row in rows] == [
             "12345-67890",
             "98765-43210",
         ]
+        assert all(row["origin"] == "LEGACY" for row in rows)
         assert all(row["present_on_controller"] == 0 for row in rows)
         assert all(row["expired"] == 1 for row in rows)
         assert all(row["archived_at"] is None for row in rows)
