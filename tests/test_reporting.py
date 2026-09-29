@@ -81,7 +81,8 @@ def test_summary_report_never_exposes_codes_even_when_requested(tmp_path):
         )
         assert dataset.purpose is ReportPurpose.SUMMARY
         assert dataset.code_exposed is False
-        assert dataset.rows[0].code == ""
+        assert dataset.rows == ()
+        assert dataset.totals.vouchers == 1
     finally:
         db.close()
 
@@ -268,7 +269,9 @@ def test_summary_exposes_data_quality_and_freshness_without_clear_codes(tmp_path
         assert dataset.totals.unclassified_vouchers == 1
         assert dataset.data_from == "2026-09-20T08:00:00+00:00"
         assert dataset.data_as_of == "2026-09-29T09:00:00+00:00"
-        assert external in {row.voucher_id for row in dataset.rows}
+        assert dataset.rows == ()
+        assert dataset.totals.vouchers == 2
+        assert external > 0
     finally:
         db.close()
 
@@ -354,7 +357,8 @@ def test_controller_scope_filters_historical_rows(tmp_path):
             generated_at=NOW,
             controller_id=first,
         )
-        assert len(dataset.rows) == 1
+        assert dataset.rows == ()
+        assert dataset.totals.vouchers == 1
         assert dataset.controller_label == "Reception"
     finally:
         db.close()
@@ -456,3 +460,135 @@ def test_empty_filtered_report_keeps_scope_observation_and_missing_data_reason(t
     assert "Nessun risultato" in report.coverage_note
     assert "nominalità 1" in report.coverage_note
     db.close()
+
+
+def test_non_nominal_report_is_distinct_from_unclassified_and_redacted(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        non_nominal = _voucher(db, controller, "non-nominal", "1111122222")
+        unclassified = _voucher(db, controller, "unclassified", "3333344444")
+        redacted = _voucher(db, controller, "redacted", "5555566666")
+        db.mark_application_created_vouchers(
+            controller_id=controller,
+            unifi_ids=["non-nominal"],
+            is_nominal=False,
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers SET is_nominal=NULL, nominality_redacted=1
+                   WHERE id=?""",
+                (redacted,),
+            )
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.NON_NOMINAL,
+            generated_at=NOW,
+        )
+        assert [row.voucher_id for row in dataset.rows] == [non_nominal]
+        assert unclassified not in {row.voucher_id for row in dataset.rows}
+        assert redacted not in {row.voucher_id for row in dataset.rows}
+    finally:
+        db.close()
+
+
+def test_report_keeps_unifi_description_separate_from_local_recipient(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        _voucher(
+            db,
+            controller,
+            "external",
+            "1111122222",
+            name="EMI06",
+        )
+        db.update_voucher_local_metadata(
+            controller_id=controller,
+            unifi_id="external",
+            assigned_to="Mario Rossi",
+            notes="",
+            is_nominal=True,
+            updated_at=NOW,
+            windows_user="operator",
+        )
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.NOMINAL,
+            generated_at=NOW,
+        )
+        assert dataset.rows[0].controller_description == "EMI06"
+        assert dataset.rows[0].recipient == "Mario Rossi"
+    finally:
+        db.close()
+
+
+def test_usage_total_excludes_rows_without_controller_usage_evidence(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        known = _voucher(db, controller, "known", "1111122222", used=3)
+        unknown = _voucher(db, controller, "unknown", "3333344444", used=7)
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET usage_observed=0 WHERE id=?",
+                (unknown,),
+            )
+        summary = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+        )
+        assert summary.totals.total_controller_uses == 3
+        assert summary.totals.usage_unknown_vouchers == 1
+        assert known > 0
+    finally:
+        db.close()
+
+
+def test_coverage_separates_unclassified_from_privacy_redaction(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        _voucher(db, controller, "unclassified", "1111122222")
+        redacted = _voucher(db, controller, "redacted", "3333344444")
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers SET nominality_redacted=1
+                   WHERE id=?""",
+                (redacted,),
+            )
+        summary = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+        )
+        assert "nominalità non classificata 1" in summary.coverage_note
+        assert "nominalità rimossa per privacy 1" in summary.coverage_note
+    finally:
+        db.close()
+
+
+def test_freshness_bounds_compare_timezone_offsets_chronologically(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        _voucher(
+            db,
+            controller,
+            "later-text-earlier-time",
+            "1111122222",
+            synced_at="2026-09-29T10:30:00+02:00",
+        )
+        _voucher(
+            db,
+            controller,
+            "earlier-text-later-time",
+            "3333344444",
+            synced_at="2026-09-29T09:00:00+00:00",
+        )
+        summary = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+        )
+        assert summary.data_from == "2026-09-29T10:30:00+02:00"
+        assert summary.data_as_of == "2026-09-29T09:00:00+00:00"
+    finally:
+        db.close()
