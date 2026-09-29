@@ -1089,11 +1089,20 @@ COMMIT;
         self,
         *,
         controller_id: int,
+        include_notes: bool = False,
     ) -> dict[str, VoucherLocalMetadata]:
-        """Return local metadata keyed by stable UniFi voucher id."""
+        """Return only local fields needed by the voucher list/search.
 
+        Notes are intentionally omitted for ordinary table population and are
+        loaded in bulk only when the operator actually performs a text search.
+        Single-voucher editing uses voucher_local_metadata() and always receives
+        the full local record.
+        """
+
+        notes_expr = "notes" if include_notes else "''"
         rows = self.connection.execute(
-            """SELECT id, controller_id, unifi_id, name, assigned_to, notes,
+            f"""SELECT id, controller_id, unifi_id, '' AS name, assigned_to,
+                      {notes_expr} AS notes,
                       origin, is_nominal, nominality_redacted,
                       present_on_controller, archived_at
                FROM vouchers
