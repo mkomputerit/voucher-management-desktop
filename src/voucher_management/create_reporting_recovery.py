@@ -153,3 +153,23 @@ def reconcile_pending_create_reporting(
     )
     clear_pending_create_reporting(path)
     return True
+
+
+def reconcile_pending_create_reporting_to_path(
+    database_path: Path,
+    marker_path: Path,
+    *,
+    controller_id: int | None = None,
+) -> bool:
+    """Reconcile using a short worker-owned SQLite connection."""
+
+    database = Database(Path(database_path))
+    try:
+        database.initialize()
+        return reconcile_pending_create_reporting(
+            database,
+            marker_path,
+            controller_id=controller_id,
+        )
+    finally:
+        database.close()
