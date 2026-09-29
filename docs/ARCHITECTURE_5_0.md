@@ -361,10 +361,12 @@ The pre-restore rollback snapshot uses the same SQLite-safe mechanism.
 In 5.1, backup-on-close is a proposal enabled by default. The first-run wizard
 and Settings > Backup persist the default directory and this preference.
 One modal collects a per-copy directory override and optional encryption;
-passwords and overrides never update settings. Operators can cancel, skip the
-copy, or create a verified ZIP/.vmbk before closing. With encryption selected,
-the existing password validation and authenticated streaming format apply.
-An unencrypted ZIP is clearly identified in the UI and follows the same
+passwords and overrides never update settings. Password protection is selected
+by default, while an unencrypted ZIP requires an explicit operator opt-out.
+Operators can cancel, skip the copy, or create a verified ZIP/.vmbk before
+closing. With encryption selected, the existing password validation and
+authenticated streaming format apply. An unencrypted ZIP is clearly identified
+in the UI and follows the same
 snapshot/validation path. All destinations remain outside the managed data
 tree; the old operator-home directory is the fallback for existing installs.
 Exported settings clear the machine-specific backup directory. Home shows the
