@@ -267,7 +267,7 @@ def test_archive_revalidates_and_skips_row_that_became_used(tmp_path):
 
         with database.transaction() as db:
             db.execute(
-                "UPDATE vouchers SET authorized_guest_count=1 WHERE id=?",
+                "UPDATE vouchers SET authorized_guest_count=1, ever_used=1 WHERE id=?",
                 (voucher_id,),
             )
 
