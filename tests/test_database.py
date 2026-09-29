@@ -587,6 +587,106 @@ def test_schema_two_upgrade_recovers_use_from_previous_positive_observation(tmp_
         migrated.close()
 
 
+
+def test_schema_three_upgrade_adds_redaction_and_clears_false_legacy_origin(tmp_path):
+    path = tmp_path / "schema-three.db"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    voucher_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="legacy-provenance",
+        code="1234567890",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            "UPDATE vouchers SET origin='LEGACY_APPLICATION' WHERE id=?",
+            (voucher_id,),
+        )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("ALTER TABLE vouchers DROP COLUMN nominality_redacted")
+    raw.execute("PRAGMA user_version = 3")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '3')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        row = migrated.connection.execute(
+            """SELECT origin, nominality_redacted
+               FROM vouchers WHERE id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert row["origin"] == "UNKNOWN"
+        assert row["nominality_redacted"] == 0
+        assert migrated.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0] == SCHEMA_VERSION
+    finally:
+        migrated.close()
+
+
+def test_intermediate_schema_three_with_redaction_column_upgrades_idempotently(tmp_path):
+    path = tmp_path / "schema-three-intermediate.db"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    voucher_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="legacy-provenance",
+        code="1234567890",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            """UPDATE vouchers
+               SET origin='LEGACY_APPLICATION', nominality_redacted=1
+               WHERE id=?""",
+            (voucher_id,),
+        )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("PRAGMA user_version = 3")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '3')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        row = migrated.connection.execute(
+            """SELECT origin, nominality_redacted
+               FROM vouchers WHERE id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert row["origin"] == "UNKNOWN"
+        assert row["nominality_redacted"] == 1
+        assert migrated.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0] == SCHEMA_VERSION
+    finally:
+        migrated.close()
+
+
 def test_failed_schema_two_upgrade_rolls_back_partial_ddl(tmp_path, monkeypatch):
     path = tmp_path / "schema-two-failure.db"
     db = Database(path)
