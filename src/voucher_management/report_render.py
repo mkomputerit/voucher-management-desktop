@@ -185,7 +185,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
             "Osservato" if row.usage_observed else "Non disponibile",
             (
                 "Sì"
-                if row.ever_used
+                if row.usage_observed and row.ever_used
                 else ("No" if row.usage_observed else "—")
             ),
             str(row.authorized_guest_count) if row.usage_observed else "—",
