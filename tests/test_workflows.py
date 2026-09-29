@@ -57,11 +57,13 @@ class FakeClient:
         self.create_error: UniFiApiError | None = None
         self.current_by_id: dict[str, ApiVoucher] = {}
         self.create_calls = 0
+        self.last_create_params = None
         self.get_calls: list[str] = []
         self.delete_calls: list[list[str]] = []
 
     def create_vouchers(self, **params):
         self.create_calls += 1
+        self.last_create_params = dict(params)
         if self.create_error is not None:
             raise self.create_error
         return list(self.created)
@@ -104,6 +106,26 @@ def test_create_success_refresh_failure_merges_created_without_recreating():
     assert outcome.created == (created,)
     assert {item.id for item in outcome.vouchers} == {"cached", "created"}
     assert str(outcome.refresh_error) == "refresh unavailable"
+
+
+def test_nominal_flag_is_application_only_and_never_sent_to_unifi():
+    created = voucher("created-nominal", "1212121212")
+    client = FakeClient()
+    client.created = [created]
+    client.list_result = [created]
+
+    outcome = create_vouchers_and_refresh(
+        client,
+        [],
+        {"recipient": "Pinco Pallino", "quantity": 1, "is_nominal": True},
+    )
+
+    assert outcome.created == (created,)
+    assert client.last_create_params == {
+        "recipient": "Pinco Pallino",
+        "quantity": 1,
+    }
+
 
 
 def test_uncertain_create_never_replays_post_and_refreshes_controller_state():
@@ -309,6 +331,7 @@ def test_validate_create_params_normalizes_usage_modes(
         "data_mb": 1024,
         "down_mbps": 50,
         "up_mbps": 25,
+        "is_nominal": False,
     }
 
 
