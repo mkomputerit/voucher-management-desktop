@@ -365,7 +365,9 @@ def archive_retention_candidates(
 
             db.execute(
                 """UPDATE vouchers
-                   SET code=?, name='', assigned_to='', notes='', archived_at=?
+                   SET code=?, name='', assigned_to='', notes='',
+                       is_nominal=NULL, classification_updated_at=NULL,
+                       archived_at=?
                    WHERE id=?""",
                 (f"ARCHIVED-{voucher_id}", stamp, voucher_id),
             )
@@ -384,6 +386,7 @@ def archive_retention_candidates(
                             "unused_unprinted_days": policy.unused_unprinted_days,
                             "credential_removed": True,
                             "personal_text_removed": True,
+                            "nominal_classification_removed": True,
                         }
                     ),
                 ),
