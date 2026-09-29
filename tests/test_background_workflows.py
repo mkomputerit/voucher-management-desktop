@@ -152,6 +152,7 @@ def test_create_dialog_accept_is_thin_validation_adapter(monkeypatch):
         data=SimpleNamespace(get=lambda: ""),
         down=SimpleNamespace(get=lambda: "50"),
         up=SimpleNamespace(get=lambda: ""),
+        is_nominal=SimpleNamespace(get=lambda: True),
         result=None,
         destroy=lambda: destroyed.append(True),
     )
@@ -171,6 +172,7 @@ def test_create_dialog_accept_is_thin_validation_adapter(monkeypatch):
     assert captured["recipient"] == " Guest "
     assert captured["mode"] == "Multiuso"
     assert captured["down_mbps"] == "50"
+    assert captured["is_nominal"] is True
     assert fake.result == {"recipient": "Guest", "quantity": 2}
     assert destroyed == [True]
 
@@ -189,6 +191,7 @@ def test_create_dialog_validation_error_stays_in_ui(monkeypatch):
         data=var,
         down=var,
         up=var,
+        is_nominal=SimpleNamespace(get=lambda: False),
         result=None,
         destroy=lambda: destroyed.append(True),
     )
