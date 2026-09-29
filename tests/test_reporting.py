@@ -734,3 +734,76 @@ def test_personal_detail_lookup_chunks_large_id_sets(tmp_path):
         assert details[real_id]["name"] == "Descrizione"
     finally:
         db.close()
+
+
+def test_positive_use_evidence_cannot_also_be_usage_unknown(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "migrated-used",
+            "1212121212",
+            used=0,
+        )
+        # Simulate conservative migrated coverage metadata. ever_used is a
+        # stronger positive fact and must dominate the stale coverage flag.
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET ever_used=1, usage_observed=0
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+
+        summary = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+        )
+        assert summary.totals.vouchers == 1
+        assert summary.totals.used_vouchers == 1
+        assert summary.totals.usage_unknown_vouchers == 0
+        assert (
+            summary.totals.used_vouchers
+            + summary.totals.never_used_vouchers
+            + summary.totals.usage_unknown_vouchers
+            == summary.totals.vouchers
+        )
+
+        unknown = build_report_dataset(
+            db,
+            kind=ReportKind.USAGE_UNKNOWN,
+            generated_at=NOW,
+        )
+        assert unknown.rows == ()
+
+        used = build_report_dataset(
+            db,
+            kind=ReportKind.USED,
+            generated_at=NOW,
+        )
+        assert [row.voucher_id for row in used.rows] == [voucher_id]
+        assert used.rows[0].usage_observed is True
+    finally:
+        db.close()
+
+
+def test_unprinted_row_status_describes_evidence_not_absolute_history(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "no-print-evidence",
+            "3434343434",
+        )
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+        row = next(row for row in dataset.rows if row.voucher_id == voucher_id)
+        assert row.status == "Senza stampe registrate"
+    finally:
+        db.close()
