@@ -136,6 +136,35 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
     return headers
 
 
+_DETAIL_COLUMN_WEIGHTS = {
+    "Controller": 0.72,
+    "Voucher": 0.72,
+    "Descrizione UniFi": 0.90,
+    "Destinatario locale": 1.00,
+    "Origine": 0.88,
+    "Nominale": 0.55,
+    "Creazione controller": 0.68,
+    "Prima acquisizione": 0.68,
+    "Scadenza": 0.68,
+    "Ultima osservazione controller": 0.72,
+    "Dato uso": 0.66,
+    "Utilizzato": 0.46,
+    "Guest autorizzati": 0.40,
+    "Stampe": 0.40,
+    "Copie": 0.40,
+    "Ristampe": 0.44,
+    "Operatori": 0.72,
+    "Stato": 0.56,
+}
+
+
+def _detail_column_weights(dataset: ReportDataset) -> list[float]:
+    """Keep PDF widths structurally aligned with the generated headers."""
+
+    headers = _detail_headers(dataset)
+    return [_DETAIL_COLUMN_WEIGHTS[header] for header in headers]
+
+
 def _detail_row(dataset: ReportDataset, row) -> list[str]:
     values = [row.controller_name]
     if dataset.code_exposed:
@@ -382,10 +411,11 @@ def render_report_pdf(
                 )
             else:
                 usable = page_width - 20 * mm
-                if dataset.code_exposed:
-                    weights = [0.72, 0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.72, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
-                else:
-                    weights = [0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.72, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
+                weights = _detail_column_weights(dataset)
+                if len(weights) != len(headers):
+                    raise RuntimeError(
+                        "La configurazione colonne del report non è coerente."
+                    )
                 scale = usable / sum(weights)
                 detail_table = Table(
                     rows,
@@ -413,7 +443,7 @@ def render_report_pdf(
         story.append(Spacer(1, 4 * mm))
         story.append(
             _paragraph(
-                "Nota: “Mai osservato utilizzato” significa soltanto che Voucher "
+                "Nota: “Nessun utilizzo rilevato” significa soltanto che Voucher "
                 "Management non ha mai osservato un conteggio guest autorizzati positivo "
                 "fino all'ultima osservazione controller indicata. Se manca questa "
                 "evidenza, il report mostra “uso non determinabile”. Il conteggio guest "
