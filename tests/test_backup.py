@@ -545,6 +545,24 @@ class BackupServiceTests(unittest.TestCase):
 
         self.assertFalse(backup.exists())
 
+    def test_backup_is_blocked_while_create_reporting_reconciliation_is_pending(self):
+        pending = self.paths.user_root / "data" / "pending_create_reporting.json"
+        pending.write_text(
+            '{"format":1,"controller_id":1,"voucher_ids":["uuid-1"],'
+            '"is_nominal":true,"confirmed_at":"2026-09-29T08:00:00+00:00"}\n',
+            encoding="utf-8",
+        )
+        backup = Path(self.temp.name) / "backup.zip"
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "classificazione report deve ancora essere riconciliata",
+        ):
+            self.service.create(backup)
+
+        self.assertFalse(backup.exists())
+
+
     def test_restore_is_blocked_while_create_outcome_is_unresolved(self):
         backup = Path(self.temp.name) / "backup.zip"
         self.service.create(backup)
