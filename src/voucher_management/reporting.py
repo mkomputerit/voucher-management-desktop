@@ -107,6 +107,7 @@ class ReportRow:
     origin: str
     is_nominal: bool | None
     last_synced_at: str = ""
+    last_seen_at: str = ""
     nominality_redacted: bool = False
     controller_description: str = ""
 
@@ -284,7 +285,7 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
             row.print_jobs > 0
             and row.usage_observed
             and not row.ever_used
-            and _time_at_or_after(row.last_synced_at, row.first_printed_at)
+            and _time_at_or_after(row.last_seen_at, row.first_printed_at)
         )
     if kind is ReportKind.NEVER_PRINTED:
         return row.print_jobs == 0
@@ -456,6 +457,7 @@ def _build_report_dataset_snapshot(
             origin=str(raw["origin"] or "UNKNOWN"),
             is_nominal=is_nominal,
             last_synced_at="" if legacy else str(raw["last_synced_at"] or ""),
+            last_seen_at="" if legacy else str(raw["last_seen_at"] or ""),
             nominality_redacted=bool(raw["nominality_redacted"]),
             controller_description=controller_description,
         )
@@ -496,7 +498,7 @@ def _build_report_dataset_snapshot(
     materialized = () if kind is ReportKind.SUMMARY else tuple(rows)
     totals_source = all_rows if kind is ReportKind.SUMMARY else rows
     data_from, data_as_of = _time_bounds(
-        row.last_synced_at for row in all_rows if row.last_synced_at
+        row.last_seen_at for row in all_rows if row.last_seen_at
     )
     unknown_origin = sum(row.origin != "APPLICATION" for row in all_rows)
     unknown_usage = sum(not row.usage_observed for row in all_rows)
@@ -507,7 +509,9 @@ def _build_report_dataset_snapshot(
     redacted = sum(row.nominality_redacted for row in all_rows)
     legacy_count = sum(bool(raw["legacy_source"]) for raw in raw_rows)
     coverage_note = (
-        f"Ambito: {len(all_rows)} registrazioni locali. Informazioni non determinabili: "
+        f"Ambito: {len(all_rows)} registrazioni locali. La freschezza riportata usa "
+        "l'ultima presenza effettivamente osservata del voucher, non una successiva "
+        "sincronizzazione che ne abbia rilevato soltanto l'assenza. Informazioni non determinabili: "
         f"origine creazione {unknown_origin}, utilizzo {unknown_usage}, "
         f"nominalità non classificata {unclassified}; nominalità rimossa per privacy {redacted}. "
         f"Registrazioni da backup precedente: {legacy_count}; la loro importazione non prova "
