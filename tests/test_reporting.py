@@ -594,3 +594,68 @@ def test_freshness_bounds_compare_timezone_offsets_chronologically(tmp_path):
         assert summary.data_as_of == "2026-09-29T09:00:00+00:00"
     finally:
         db.close()
+
+
+def test_report_query_defaults_to_credential_minimization(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "safe-query",
+            "1234567890",
+            name="Descrizione UniFi",
+        )
+        db.update_voucher_local_metadata(
+            controller_id=controller,
+            unifi_id="safe-query",
+            assigned_to="Mario Rossi",
+            notes="Nota non esportata",
+            is_nominal=True,
+            updated_at=NOW,
+            windows_user="PC\\operator",
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="safe-query-print",
+            codes=["12345-67890"],
+            output_file="voucher.pdf",
+            document_copies=1,
+            printed_at=NOW,
+            windows_user="PC\\operator",
+        )
+
+        row = db.report_voucher_rows(controller_id=controller)[0]
+        assert int(row["voucher_id"]) == voucher_id
+        assert row["code"] == ""
+        assert row["name"] == "Descrizione UniFi"
+        assert row["assigned_to"] == "Mario Rossi"
+        assert row["print_operators"] == "PC\\operator"
+        assert "controller_api_root" not in row.keys()
+        assert row["legacy_source"] == 0
+
+        aggregate_row = db.report_voucher_rows(
+            controller_id=controller,
+            include_personal_details=False,
+        )[0]
+        assert aggregate_row["code"] == ""
+        assert aggregate_row["name"] == ""
+        assert aggregate_row["assigned_to"] == ""
+        assert aggregate_row["print_operators"] == ""
+    finally:
+        db.close()
+
+
+def test_report_query_exposes_code_only_when_explicitly_authorized(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        _voucher(db, controller, "handoff", "1234567890")
+        hidden = db.report_voucher_rows(controller_id=controller)[0]
+        exposed = db.report_voucher_rows(
+            controller_id=controller,
+            include_voucher_code=True,
+        )[0]
+        assert hidden["code"] == ""
+        assert exposed["code"] == "1234567890"
+    finally:
+        db.close()
