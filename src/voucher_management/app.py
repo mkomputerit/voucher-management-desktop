@@ -205,6 +205,11 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 parent=self,
             )
         self.client = None
+        # Home operational metrics are intentionally blank until this process
+        # has completed a real controller list operation. The local SQLite
+        # snapshot remains available to history/reporting but is not presented
+        # as current controller state.
+        self.controller_snapshot_live = False
         # Milestone A can reopen the last durable snapshot before any network
         # request. The timestamp/status remains explicitly local until connect.
         saved_api_root = str(self.settings.get("controller_api_root", "")).strip()
@@ -605,6 +610,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         def completed(vouchers) -> None:
             snapshot = list(vouchers)
             self.vouchers = snapshot
+            self.controller_snapshot_live = True
             callback = getattr(self, "_controller_operation_succeeded", None)
             if callback is not None:
                 callback()
