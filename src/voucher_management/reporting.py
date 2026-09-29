@@ -462,7 +462,16 @@ def _build_report_dataset_snapshot(
             controller_description=controller_description,
         )
         if legacy:
-            row = replace(row, status="Backup precedente - scadenza non verificata", expires_at="")
+            row = replace(
+                row,
+                status="Backup precedente - scadenza non verificata",
+                expires_at="",
+            )
+        elif not row.present_on_controller and not row.archived_at:
+            row = replace(
+                row,
+                status=f"{row.status} · non presente su UniFi",
+            )
         all_rows.append(row)
         if _matches(kind, row):
             rows.append(row)
