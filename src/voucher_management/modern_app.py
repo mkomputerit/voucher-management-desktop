@@ -1030,9 +1030,13 @@ class ModernVoucherApp(
         self.home_used_var = tk.StringVar(value="0")
         self.home_expired_var = tk.StringVar(value="0")
         self.report_total_var = tk.StringVar(value="0")
+        self.report_generated_var = tk.StringVar(value="0")
+        self.report_generated_unused_var = tk.StringVar(value="0")
         self.report_printed_var = tk.StringVar(value="0")
         self.report_used_var = tk.StringVar(value="0")
         self.report_expired_var = tk.StringVar(value="0")
+        self.report_nominal_var = tk.StringVar(value="0")
+        self.report_unclassified_var = tk.StringVar(value="0")
 
         root = ttk.Frame(self, padding=0)
         root.pack(fill="both", expand=True)
@@ -1250,10 +1254,14 @@ class ModernVoucherApp(
         for column in range(4):
             metrics.columnconfigure(column, weight=1)
         for column, (label, variable, hint) in enumerate((
-            ("Da stampare", self.home_to_print_var, "pronti per la stampa"),
-            ("Attivi", self.home_active_var, "disponibili sul controller"),
-            ("Utilizzati", self.home_used_var, "con almeno un utilizzo"),
-            ("Scaduti", self.home_expired_var, "nello storico locale"),
+            (
+                "Da stampare",
+                self.home_to_print_var,
+                "sul controller, non stampati localmente",
+            ),
+            ("Attivi", self.home_active_var, "presenti e non scaduti sul controller"),
+            ("Utilizzati", self.home_used_var, "nel dato corrente del controller"),
+            ("Scaduti", self.home_expired_var, "nel dato corrente del controller"),
         )):
             card = ttk.Labelframe(
                 metrics,
@@ -1591,8 +1599,9 @@ class ModernVoucherApp(
         ttk.Label(
             frame,
             text=(
-                "Consulta i principali indicatori e genera PDF o CSV senza "
-                "esporre i codici voucher in chiaro nei report ordinari."
+                "Questa area rappresenta la memoria storica locale di Voucher "
+                "Management: creazioni attribuite, utilizzi osservati, stampe "
+                "e classificazioni amministrative."
             ),
             style="Muted.TLabel",
             wraplength=760,
@@ -1602,18 +1611,25 @@ class ModernVoucherApp(
         metrics.grid(row=2, column=0, sticky="ew")
         for column in range(4):
             metrics.columnconfigure(column, weight=1)
-        for column, (label, variable) in enumerate((
-            ("Voucher", self.report_total_var),
-            ("Stampati", self.report_printed_var),
+        report_metrics = (
+            ("Voucher conservati", self.report_total_var),
+            ("Generati dal software", self.report_generated_var),
             ("Utilizzati", self.report_used_var),
             ("Scaduti", self.report_expired_var),
-        )):
+            ("Generati mai utilizzati", self.report_generated_unused_var),
+            ("Stampati", self.report_printed_var),
+            ("Nominali", self.report_nominal_var),
+            ("Nominalità non classificata", self.report_unclassified_var),
+        )
+        for index, (label, variable) in enumerate(report_metrics):
+            row, column = divmod(index, 4)
             card = ttk.Labelframe(metrics, text=label, padding=(16, 12))
             card.grid(
-                row=0,
+                row=row,
                 column=column,
                 sticky="nsew",
                 padx=(0 if column == 0 else 6, 0 if column == 3 else 6),
+                pady=(0 if row == 0 else 10, 0),
             )
             ttk.Label(
                 card,
@@ -1637,8 +1653,9 @@ class ModernVoucherApp(
         ttk.Label(
             actions,
             text=(
-                "Riepilogo, utilizzati, scaduti, stampati mai utilizzati, "
-                "mai stampati, nominali e storico completo."
+                "Riepilogo storico, generati dal software, generati e mai "
+                "utilizzati, utilizzati, scaduti, stampati, mai stampati, "
+                "nominali e storico completo."
             ),
             style="Muted.TLabel",
             wraplength=720,
@@ -2914,13 +2931,34 @@ class ModernVoucherApp(
             return
         totals = dataset.totals
         self.report_total_var.set(str(totals.vouchers))
+        self.report_generated_var.set(str(totals.generated_by_app))
+        self.report_generated_unused_var.set(str(totals.generated_never_used))
         self.report_printed_var.set(str(totals.printed_vouchers))
         self.report_used_var.set(str(totals.used_vouchers))
         self.report_expired_var.set(str(totals.expired_vouchers))
+        self.report_nominal_var.set(str(totals.nominal_vouchers))
+        self.report_unclassified_var.set(str(totals.unclassified_nominality))
 
     def _update_operator_summary(self, stats) -> None:
         if not hasattr(self, "home_to_print_var"):
             return
+
+        if not bool(getattr(self, "controller_snapshot_fresh", False)):
+            for variable in (
+                self.home_to_print_var,
+                self.home_active_var,
+                self.home_used_var,
+                self.home_expired_var,
+            ):
+                variable.set("—")
+            if hasattr(self, "home_recent_tree"):
+                for iid in self.home_recent_tree.get_children():
+                    self.home_recent_tree.delete(iid)
+                self._home_voucher_by_iid = {}
+            self._refresh_home_activity()
+            self._refresh_controller_workspace_status()
+            return
+
         active = 0
         expired_count = 0
         used = 0
