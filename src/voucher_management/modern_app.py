@@ -1960,7 +1960,7 @@ class ModernVoucherApp(
         backup_folder.pack(fill="x", pady=(6, 12))
         ttk.Entry(backup_folder, textvariable=self.settings_backup_directory_var).pack(side="left", fill="x", expand=True)
         ttk.Button(backup_folder, text="Scegli…", command=self._choose_default_backup_directory).pack(side="left", padx=(8, 0))
-        ttk.Label(backup, text="La password si sceglie a ogni backup ed è facoltativa.",
+        ttk.Label(backup, text="La password si sceglie a ogni backup ed è facoltativa; la protezione è preselezionata.",
                   style="Muted.TLabel").pack(anchor="w", pady=(0, 12))
         backup_actions = ttk.Frame(backup)
         backup_actions.pack(anchor="w")
