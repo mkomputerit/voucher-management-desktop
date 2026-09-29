@@ -1,4 +1,4 @@
-"""Privacy-safe reporting models built from durable SQLite facts."""
+"""Historical reporting models built from durable SQLite facts."""
 
 from __future__ import annotations
 
@@ -12,11 +12,14 @@ from .report_policy import ReportPurpose, report_code_value
 
 
 class ReportKind(str, Enum):
-    """Operator-facing report views over the same durable facts."""
+    """Operator-facing historical views over the local archive."""
 
     SUMMARY = "summary"
+    GENERATED = "generated"
+    GENERATED_UNUSED = "generated_unused"
     USED = "used"
     EXPIRED = "expired"
+    PRINTED = "printed"
     PRINTED_UNUSED = "printed_unused"
     NEVER_PRINTED = "never_printed"
     NOMINAL = "nominal"
@@ -24,9 +27,12 @@ class ReportKind(str, Enum):
 
 
 REPORT_TITLES = {
-    ReportKind.SUMMARY: "Riepilogo voucher",
+    ReportKind.SUMMARY: "Riepilogo storico voucher",
+    ReportKind.GENERATED: "Voucher generati da Voucher Management",
+    ReportKind.GENERATED_UNUSED: "Voucher generati e mai utilizzati",
     ReportKind.USED: "Voucher utilizzati",
     ReportKind.EXPIRED: "Voucher scaduti",
+    ReportKind.PRINTED: "Voucher stampati",
     ReportKind.PRINTED_UNUSED: "Voucher stampati mai utilizzati",
     ReportKind.NEVER_PRINTED: "Voucher mai stampati",
     ReportKind.NOMINAL: "Voucher nominali",
@@ -36,9 +42,11 @@ REPORT_TITLES = {
 
 @dataclass(frozen=True)
 class ReportTotals:
-    """Aggregates calculated from atomic voucher and print facts."""
+    """Aggregates calculated from durable local voucher and print facts."""
 
     vouchers: int
+    generated_by_app: int
+    generated_never_used: int
     used_vouchers: int
     total_controller_uses: int
     expired_vouchers: int
@@ -50,22 +58,23 @@ class ReportTotals:
     printed_never_used: int
     never_printed: int
     nominal_vouchers: int
+    non_nominal_vouchers: int
+    unclassified_nominality: int
 
 
 @dataclass(frozen=True)
 class ReportRow:
-    """One report-safe voucher row.
-
-    The code field is already filtered through report_policy before the row
-    leaves the reporting boundary. Summary/audit renderers therefore never
-    receive the raw reusable credential.
-    """
+    """One privacy-safe historical voucher row."""
 
     voucher_id: int
     controller_name: str
     code: str
     recipient: str
     assigned_to: str
+    created_by_app: bool | None
+    is_nominal: bool | None
+    classification_updated_at: str
+    ever_used: bool
     created_at: str
     imported_at: str
     expires_at: str
@@ -114,6 +123,12 @@ def _operators(value: object) -> tuple[str, ...]:
     return tuple(sorted(values, key=str.casefold))
 
 
+def _nullable_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
 def _parse_time(value: object) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -150,14 +165,14 @@ def _status(
     *,
     archived: bool,
     expired: bool,
-    uses: int,
+    ever_used: bool,
     print_jobs: int,
 ) -> str:
     if archived:
         return "Archiviato"
     if expired:
         return "Scaduto"
-    if uses > 0:
+    if ever_used:
         return "Utilizzato"
     if print_jobs > 0:
         return "Stampato"
@@ -167,16 +182,22 @@ def _status(
 def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind in {ReportKind.SUMMARY, ReportKind.FULL_HISTORY}:
         return True
+    if kind is ReportKind.GENERATED:
+        return row.created_by_app is True
+    if kind is ReportKind.GENERATED_UNUSED:
+        return row.created_by_app is True and not row.ever_used
     if kind is ReportKind.USED:
-        return row.authorized_guest_count > 0
+        return row.ever_used
     if kind is ReportKind.EXPIRED:
         return row.expired
+    if kind is ReportKind.PRINTED:
+        return row.print_jobs > 0
     if kind is ReportKind.PRINTED_UNUSED:
-        return row.print_jobs > 0 and row.authorized_guest_count == 0
+        return row.print_jobs > 0 and not row.ever_used
     if kind is ReportKind.NEVER_PRINTED:
         return row.print_jobs == 0
     if kind is ReportKind.NOMINAL:
-        return bool(row.assigned_to.strip())
+        return row.is_nominal is True
     raise ValueError(f"Unsupported report kind: {kind}")
 
 
@@ -184,7 +205,12 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
     materialized = tuple(rows)
     return ReportTotals(
         vouchers=len(materialized),
-        used_vouchers=sum(row.authorized_guest_count > 0 for row in materialized),
+        generated_by_app=sum(row.created_by_app is True for row in materialized),
+        generated_never_used=sum(
+            row.created_by_app is True and not row.ever_used
+            for row in materialized
+        ),
+        used_vouchers=sum(row.ever_used for row in materialized),
         total_controller_uses=sum(
             row.authorized_guest_count for row in materialized
         ),
@@ -195,11 +221,15 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
         reprint_jobs=sum(row.reprint_jobs for row in materialized),
         reprint_copies=sum(row.reprint_copies for row in materialized),
         printed_never_used=sum(
-            row.print_jobs > 0 and row.authorized_guest_count == 0
+            row.print_jobs > 0 and not row.ever_used
             for row in materialized
         ),
         never_printed=sum(row.print_jobs == 0 for row in materialized),
-        nominal_vouchers=sum(bool(row.assigned_to.strip()) for row in materialized),
+        nominal_vouchers=sum(row.is_nominal is True for row in materialized),
+        non_nominal_vouchers=sum(row.is_nominal is False for row in materialized),
+        unclassified_nominality=sum(
+            row.is_nominal is None for row in materialized
+        ),
     )
 
 
@@ -211,11 +241,17 @@ def build_report_dataset(
     controller_id: int | None = None,
     include_code_requested: bool = False,
 ) -> ReportDataset:
-    """Build one report without inventing facts absent from SQLite.
+    """Build one historical report only from facts persisted locally.
 
-    Controller usage counters are current/last-observed totals. Their value is
-    never presented as an exact use timestamp. Print facts come only from the
-    local physical-print audit.
+    ever_used is sticky local evidence: once a synchronization observes a
+    voucher with a positive controller usage count, later snapshots cannot
+    make it "never used" again. Voucher nominality and application creation
+    origin are application-owned facts and are never inferred from recipient
+    text.
+
+    Controller usage counters remain the latest observed values and are never
+    presented as exact use timestamps. Physical-print facts come only from the
+    local print audit.
     """
 
     purpose = _purpose_for_kind(kind)
@@ -237,6 +273,7 @@ def build_report_dataset(
 
         print_jobs = int(raw["print_jobs"] or 0)
         uses = int(raw["authorized_guest_count"] or 0)
+        ever_used = bool(raw["ever_used"]) or uses > 0
         expired = _expired_at_report_time(
             persisted_expired=bool(raw["expired"]),
             expires_at=raw["expires_at"],
@@ -250,6 +287,12 @@ def build_report_dataset(
             code=clear_code,
             recipient=recipient,
             assigned_to=assigned_to,
+            created_by_app=_nullable_bool(raw["created_by_app"]),
+            is_nominal=_nullable_bool(raw["is_nominal"]),
+            classification_updated_at=str(
+                raw["classification_updated_at"] or ""
+            ),
+            ever_used=ever_used,
             created_at=str(raw["created_at"] or ""),
             imported_at=str(raw["imported_at"] or ""),
             expires_at=str(raw["expires_at"] or ""),
@@ -267,7 +310,7 @@ def build_report_dataset(
             status=_status(
                 archived=bool(raw["archived_at"]),
                 expired=expired,
-                uses=uses,
+                ever_used=ever_used,
                 print_jobs=print_jobs,
             ),
         )
@@ -275,12 +318,8 @@ def build_report_dataset(
             rows.append(row)
 
     if controller_id is None:
-        controller_label = "Tutti i controller"
+        controller_label = "Tutto lo storico locale"
     else:
-        # Resolve from the controller table first so an empty scoped report
-        # still shows the selected controller. The row-derived fallback keeps
-        # old/partially named data readable; the final generic label is used
-        # only when neither source provides a display name.
         controller_label = (
             database.controller_name(controller_id)
             or (
