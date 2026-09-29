@@ -236,7 +236,56 @@ jobs:
           }
 
           $version = (Get-Content version.txt -Raw).Trim()
-          if ($version -notmatch '^\d+\.\d+\.\d+
+          New-Item -ItemType Directory -Force dist-installer | Out-Null
+          $payload = (Resolve-Path dist\VoucherManagement).Path
+          $output = (Resolve-Path dist-installer).Path
+
+          & $makensis.FullName /V3 "/DAPP_VERSION=$version" "/DAPP_FILE_VERSION=$version.0" "/DPAYLOAD_DIR=$payload" "/DOUTPUT_DIR=$output" installer\VoucherManagement.nsi
+          if ($LASTEXITCODE -ne 0) {
+            throw "Compilazione Setup.exe non riuscita."
+          }
+
+          $setup = Get-ChildItem dist-installer\VoucherManagement-*-Setup.exe -File |
+            Select-Object -First 1
+          if (-not $setup) {
+            throw "Setup.exe non prodotto."
+          }
+
+      - name: Test Windows Setup.exe install, upgrade and uninstall
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist-installer\VoucherManagement-*-Setup.exe -File |
+            Select-Object -First 1
+          if (-not $setup) {
+            throw "Setup.exe non trovato per il test."
+          }
+          .\tools\Test-WindowsSetup.ps1 -SetupPath $setup.FullName
+
+      - name: Verify Windows Setup.exe metadata
+        shell: pwsh
+        run: |
+          $version = (Get-Content version.txt -Raw).Trim()
+          $setup = Get-ChildItem dist-installer\VoucherManagement-*-Setup.exe -File |
+            Select-Object -First 1
+          if (-not $setup) {
+            throw "Setup.exe non trovato."
+          }
+
+          $info = $setup.VersionInfo
+          if ($info.ProductName -ne "Voucher Management") {
+            throw "Setup ProductName non valido: $($info.ProductName)"
+          }
+          if ($info.FileDescription -ne "Voucher Management Setup") {
+            throw "Setup FileDescription non valida: $($info.FileDescription)"
+          }
+          if ($info.ProductVersion -ne $version -or $info.FileVersion -ne $version) {
+            throw "Versione metadata Setup non coerente con version.txt."
+          }
+
+          $bundleIcon = "dist\VoucherManagement\_internal\assets\VoucherManagement.ico"
+          .\.venv\Scripts\python.exe tools\verify_exe_icon.py --exe $setup.FullName --ico $bundleIcon
+
+      - name: Package public release files
         if: github.event.repository.private == false && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
         shell: pwsh
         run: |
@@ -274,7 +323,7 @@ jobs:
           retention-days: 14
 
       - name: Upload installer build
-        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/installer/') || startsWith(github.ref, 'refs/heads/installer/')
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/installer/')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: VoucherManagement-Setup-${{ github.sha }}
@@ -287,7 +336,7 @@ jobs:
         # ~28 MB portable ZIP is retained only when explicitly requested or
         # when building a release/main branch. This prevents Actions artifact
         # storage from growing on every review commit.
-        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/installer/')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: VoucherManagement-Windows-x64-${{ github.sha }}
