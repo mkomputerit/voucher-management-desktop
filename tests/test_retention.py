@@ -60,7 +60,8 @@ def _voucher(
     code,
     imported_at=OLD,
     created_at=OLD,
-    expires_at=None,
+    expires_at=OLD,
+    expired=True,
     uses=0,
     present=False,
 ):
@@ -72,6 +73,7 @@ def _voucher(
         created_at=created_at,
         imported_at=imported_at,
         expires_at=expires_at,
+        expired=expired,
         authorized_guest_count=uses,
         last_synced_at=imported_at,
     )
@@ -154,6 +156,7 @@ def test_candidates_require_old_absent_unused_unprinted_rows(tmp_path):
             code="5555566666",
             imported_at=RECENT,
             created_at=RECENT,
+            expires_at=RECENT,
         )
         database.record_print_audit(
             controller_id=controller,
@@ -247,6 +250,34 @@ def test_usage_indeterminate_row_is_never_offered_for_retention(tmp_path):
         database.close()
 
 
+def test_absence_without_post_expiry_observation_is_not_retention_proof(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="vanished-before-proof",
+            code="8181818181",
+            imported_at="2026-01-01T08:00:00+00:00",
+            created_at="2026-01-01T08:00:00+00:00",
+            expires_at="2026-01-02T08:00:00+00:00",
+            expired=False,
+        )
+        with database.transaction() as db:
+            db.execute(
+                """UPDATE vouchers
+                   SET present_on_controller=0,
+                       last_seen_at='2026-01-01T12:00:00+00:00',
+                       last_synced_at='2026-01-03T08:00:00+00:00'
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+
+        assert retention_candidates(database, now=NOW) == ()
+    finally:
+        database.close()
+
+
 def test_expiry_is_conservative_age_basis_when_present(tmp_path):
     database, controller = _database(tmp_path)
     try:
@@ -258,6 +289,7 @@ def test_expiry_is_conservative_age_basis_when_present(tmp_path):
             created_at=OLD,
             imported_at=OLD,
             expires_at="2026-12-01T08:00:00+00:00",
+            expired=False,
         )
 
         assert retention_candidates(database, now=NOW) == ()
@@ -303,6 +335,7 @@ def test_reviewed_archive_scrubs_credential_and_personal_text(tmp_path):
         assert row["assigned_to"] == ""
         assert row["notes"] == ""
         assert row["is_nominal"] is None
+        assert row["nominality_redacted"] == 1
         assert row["archived_at"] == NOW
 
         event = database.connection.execute(
