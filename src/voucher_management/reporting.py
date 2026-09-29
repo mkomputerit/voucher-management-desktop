@@ -362,7 +362,10 @@ def _build_report_dataset_snapshot(
         assigned_to = str(raw["assigned_to"] or "").strip()
         controller_description = str(raw["name"] or "").strip()
         ever_used = bool(raw["ever_used"])
-        usage_observed = bool(raw["usage_observed"])
+        # Positive historical use is itself usage evidence. Older/migrated
+        # rows may carry a conservative coverage flag, but they must never be
+        # classified simultaneously as "used" and "usage unknown".
+        usage_observed = bool(raw["usage_observed"]) or ever_used
         row = ReportRow(
             voucher_id=int(raw["voucher_id"]),
             controller_name=controller_name,
