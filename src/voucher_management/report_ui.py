@@ -8,21 +8,23 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .report_render import render_report_csv, render_report_pdf
-from .reporting import ReportKind, build_report_dataset
+from .reporting import ReportKind, build_report_dataset_from_path
 
 
 REPORT_CHOICES = (
     ("Riepilogo storico", ReportKind.SUMMARY),
-    ("Generati da Voucher Management", ReportKind.GENERATED),
-    ("Generati e mai utilizzati", ReportKind.GENERATED_UNUSED),
+    ("Creazione VM confermata", ReportKind.GENERATED),
+    ("Creazione VM confermata • mai osservati usati", ReportKind.GENERATED_UNUSED),
     ("Utilizzati almeno una volta", ReportKind.USED),
     ("Scaduti", ReportKind.EXPIRED),
     ("Stampati", ReportKind.PRINTED),
-    ("Stampati mai utilizzati", ReportKind.PRINTED_UNUSED),
+    ("Stampati mai osservati usati", ReportKind.PRINTED_UNUSED),
     ("Mai stampati", ReportKind.NEVER_PRINTED),
     ("Nominali", ReportKind.NOMINAL),
     ("Non classificati", ReportKind.UNCLASSIFIED),
     ("Uso non determinabile", ReportKind.USAGE_UNKNOWN),
+    ("Origine creazione non determinabile", ReportKind.ORIGIN_UNKNOWN),
+    ("Nominalità rimossa per privacy", ReportKind.NOMINALITY_REDACTED),
     ("Storico completo", ReportKind.FULL_HISTORY),
 )
 REPORT_KIND_BY_LABEL = dict(REPORT_CHOICES)
@@ -56,7 +58,9 @@ class ReportDialog(tk.Toplevel):
             text=(
                 "I report amministrativi leggono lo storico locale conservato "
                 "da Voucher Management e non dipendono dalla connessione corrente "
-                "alla controller. I codici voucher non sono esportati in chiaro."
+                "alla controller. I codici voucher non sono esportati in chiaro. "
+                "Il Riepilogo storico contiene solo aggregati; i report di dettaglio "
+                "possono contenere destinatari e account Windows degli operatori."
             ),
             style="Muted.TLabel",
             wraplength=520,
@@ -106,10 +110,11 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(
             shell,
             text=(
-                "Nota: “mai utilizzato” richiede almeno un'osservazione del "
-                "dato d'uso. Se tale evidenza manca, il voucher resta in "
+                "Nota: “mai osservato utilizzato” descrive solo ciò che Voucher "
+                "Management ha visto fino all'ultima osservazione controller "
+                "riportata nel file. Se l'evidenza manca, il voucher resta in "
                 "“Uso non determinabile”. La nominalità è una classificazione "
-                "esplicita di Voucher Management."
+                "locale esplicita."
             ),
             style="Muted.TLabel",
             wraplength=520,
@@ -181,27 +186,6 @@ class ReportDialog(tk.Toplevel):
                 return
 
         generated_at = datetime.now(timezone.utc).isoformat()
-        try:
-            # SQLite connections stay on their owner Tk thread. Only the
-            # renderer runs in the worker below.
-            dataset = build_report_dataset(
-                self.app.database,
-                kind=kind,
-                generated_at=generated_at,
-                controller_id=controller_id,
-            )
-        except Exception as exc:
-            self.app.logger.error(
-                "report_dataset_failed type=%s",
-                type(exc).__name__,
-            )
-            messagebox.showerror(
-                "Report",
-                "Impossibile preparare i dati del report.",
-                parent=self,
-            )
-            return
-
         extension = ".pdf" if self.format_var.get() == "PDF" else ".csv"
         timestamp = datetime.now().strftime("%Y%m%d-%H%M")
         safe_kind = kind.value.replace("_", "-")
@@ -227,8 +211,15 @@ class ReportDialog(tk.Toplevel):
         installation_name = str(
             self.app.settings.get("structure_name", "") or ""
         )
+        database_path = Path(self.app.paths.database)
 
         def worker():
+            dataset = build_report_dataset_from_path(
+                database_path,
+                kind=kind,
+                generated_at=generated_at,
+                controller_id=controller_id,
+            )
             if extension == ".pdf":
                 render_report_pdf(
                     dataset,
@@ -250,7 +241,7 @@ class ReportDialog(tk.Toplevel):
 
         def failed(exc: Exception) -> None:
             self.app.logger.error(
-                "report_render_failed type=%s",
+                "report_generation_failed type=%s",
                 type(exc).__name__,
             )
             messagebox.showerror(
