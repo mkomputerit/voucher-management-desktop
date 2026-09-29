@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 BACKUP_AUDIT_DESTINATIONS = frozenset(
     {
@@ -307,8 +307,6 @@ ALTER TABLE vouchers ADD COLUMN origin TEXT NOT NULL DEFAULT 'UNKNOWN'
     CHECK (origin IN ('CONTROLLER', 'APPLICATION', 'LEGACY_APPLICATION', 'UNKNOWN'));
 ALTER TABLE vouchers ADD COLUMN is_nominal INTEGER
     CHECK (is_nominal IS NULL OR is_nominal IN (0, 1));
-ALTER TABLE vouchers ADD COLUMN nominality_redacted INTEGER NOT NULL DEFAULT 0
-    CHECK (nominality_redacted IN (0, 1));
 ALTER TABLE vouchers ADD COLUMN ever_used INTEGER NOT NULL DEFAULT 0
     CHECK (ever_used IN (0, 1));
 ALTER TABLE vouchers ADD COLUMN usage_observed INTEGER NOT NULL DEFAULT 1
@@ -337,6 +335,14 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_ever_used ON vouchers(ever_used);
 CREATE INDEX IF NOT EXISTS idx_vouchers_usage_observed ON vouchers(usage_observed);
 """
 
+
+MIGRATION_3_TO_4_SQL = """
+ALTER TABLE vouchers ADD COLUMN nominality_redacted INTEGER NOT NULL DEFAULT 0
+    CHECK (nominality_redacted IN (0, 1));
+UPDATE vouchers
+SET origin='UNKNOWN'
+WHERE origin='LEGACY_APPLICATION';
+"""
 
 @dataclass(frozen=True)
 class PrintAuditSummary:
@@ -423,6 +429,23 @@ COMMIT;
 """
                 )
                 current = 3
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 3:
+            try:
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + MIGRATION_3_TO_4_SQL
+                    + """
+PRAGMA user_version = 4;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '4');
+COMMIT;
+"""
+                )
+                current = 4
             except Exception:
                 self.connection.rollback()
                 raise
