@@ -94,7 +94,7 @@ def test_detail_csv_hides_codes_but_keeps_sanitized_administrative_detail(tmp_pa
     assert "Voucher;" not in payload
     assert "12345-67890" not in payload
     assert "Mario & Lucia <ospiti>" in payload
-    assert "Utilizzi/guest autorizzati (somma ultimo conteggio osservato);2" in payload
+    assert "Guest autorizzati (somma ultimo conteggio osservato);2" in payload
     assert "Descrizione UniFi;Destinatario locale;Origine" in payload
     assert "EMI06 & Sala <Nord>" in payload
     assert "Dato uso;Utilizzato;Guest autorizzati" in payload
