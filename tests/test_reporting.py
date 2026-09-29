@@ -716,3 +716,21 @@ def test_filtered_report_enriches_only_rows_that_match(tmp_path):
         assert excluded not in requested
     finally:
         db.close()
+
+
+def test_personal_detail_lookup_chunks_large_id_sets(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        real_id = _voucher(
+            db,
+            controller,
+            "chunked-detail",
+            "1234567890",
+            name="Descrizione",
+        )
+        requested = list(range(10_000, 11_005)) + [real_id]
+        details = db.report_voucher_personal_details(voucher_ids=requested)
+        assert set(details) == {real_id}
+        assert details[real_id]["name"] == "Descrizione"
+    finally:
+        db.close()
