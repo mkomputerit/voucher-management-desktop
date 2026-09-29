@@ -69,8 +69,7 @@ def test_busy_sync_does_not_open_dialog_or_start_second_operation():
     assert calls == ["bell"]
 
 
-@pytest.fixture
-def root():
+@pytest.fixture(scope="module")\ndef root():
     try:
         window = tk.Tk()
     except tk.TclError:
