@@ -608,10 +608,10 @@ def _ensure_import_candidates(
                         """INSERT INTO vouchers
                            (controller_id, unifi_id, code, name, created_at,
                             imported_at, duration_minutes,
-                            authorized_guest_count, expired,
-                            present_on_controller, last_seen_at,
+                            authorized_guest_count, ever_used, usage_observed,
+                            expired, present_on_controller, last_seen_at,
                             last_synced_at, archived_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, NULL, ?, NULL)""",
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 1, 0, NULL, ?, NULL)""",
                         (
                             archive_controller_id,
                             unifi_id,
