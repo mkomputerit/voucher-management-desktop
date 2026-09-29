@@ -41,7 +41,7 @@ def _validate_dataset_policy(dataset: ReportDataset) -> None:
     has_clear_code = any(bool(row.code) for row in dataset.rows)
     if decision.expose_code != dataset.code_exposed:
         raise ValueError("Report dataset code policy is inconsistent")
-    if has_clear_code != dataset.code_exposed:
+    if has_clear_code and not dataset.code_exposed:
         raise ValueError("Report dataset contains unexpected voucher code data")
 
 
