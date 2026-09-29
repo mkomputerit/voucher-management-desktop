@@ -128,6 +128,7 @@ def validate_create_params(
     data_mb: object = None,
     down_mbps: object = None,
     up_mbps: object = None,
+    is_nominal: object = False,
 ) -> dict[str, object]:
     """Normalize and validate CreateDialog values without any Tk dependency."""
 
@@ -187,6 +188,7 @@ def validate_create_params(
         "data_mb": data_limit,
         "down_mbps": download_limit,
         "up_mbps": upload_limit,
+        "is_nominal": bool(is_nominal),
     }
 
 
@@ -324,8 +326,14 @@ def create_vouchers_and_refresh(
     report "created, refresh failed" rather than encouraging a duplicate create.
     """
 
+    controller_params = dict(params)
+    # Nominality is an application-only reporting classification. UniFi has no
+    # corresponding field and must receive exactly the same voucher payload as
+    # before this feature existed.
+    controller_params.pop("is_nominal", None)
+
     try:
-        created = tuple(client.create_vouchers(**dict(params)))
+        created = tuple(client.create_vouchers(**controller_params))
     except UniFiMutationUncertain as exc:
         # Never retry a non-idempotent POST automatically. A fresh GET is safe
         # and gives the operator the best available controller state, but in a
