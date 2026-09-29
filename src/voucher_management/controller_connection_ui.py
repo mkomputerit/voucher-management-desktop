@@ -295,6 +295,7 @@ class ControllerConnectionMixin:
         self.active_controller_id = controller_id
         self.client = client
         self.vouchers = snapshot
+        self.controller_snapshot_live = True
         self.api_root_var.set(client.base_url)
         name_var = getattr(self, "controller_name_var", None)
         if name_var is not None:
