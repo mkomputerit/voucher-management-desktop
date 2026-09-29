@@ -130,6 +130,7 @@ def test_home_displays_ten_recent_vouchers_and_collapses_activity(root):
         end_time=0, used=0,
     ) for i in range(12)]
     fake.checked_ids = set()
+    fake.controller_snapshot_live = True
     fake._is_expired = lambda voucher: False
     fake._print_state = lambda stat: "DA STAMPARE"
     fake._refresh_home_activity = lambda: None
@@ -147,3 +148,20 @@ def test_home_displays_ten_recent_vouchers_and_collapses_activity(root):
     root.update()
     assert not fake.home_activity_frame.winfo_ismapped()
     assert all(str(widget.cget("text")) != "Aree" for widget in frame.winfo_children() if isinstance(widget, ttk.Labelframe))
+
+
+def test_home_metrics_do_not_present_local_cache_as_live_controller_state():
+    fake = SimpleNamespace(
+        home_to_print_var=Var("99"),
+        home_active_var=Var("99"),
+        home_used_var=Var("99"),
+        home_expired_var=Var("99"),
+        controller_snapshot_live=False,
+        _refresh_home_activity=lambda: None,
+        _refresh_controller_workspace_status=lambda: None,
+    )
+    ModernVoucherApp._update_operator_summary(fake, {})
+    assert fake.home_to_print_var.get() == "—"
+    assert fake.home_active_var.get() == "—"
+    assert fake.home_used_var.get() == "—"
+    assert fake.home_expired_var.get() == "—"
