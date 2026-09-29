@@ -2,6 +2,19 @@
 
 ## 5.1.0 - Unreleased
 
+- Add local-only enrichment for vouchers discovered on UniFi: controller
+  description/code/id remain read-only while local recipient, notes and
+  nominal/non-nominal/unclassified classification can be maintained without
+  sending mutations to UniFi.
+- Harden report provenance: separate UniFi description from local recipient,
+  add an explicit non-nominal report, distinguish unclassified nominality from
+  privacy-redacted nominality, and exclude usage-unknown rows from observed-use
+  counter sums.
+- Make Summary aggregate-only at the renderer boundary, compare freshness
+  timestamps chronologically across timezone offsets, explain valid zero-result
+  reports, and derive PDF column widths from the actual headers to prevent
+  layout drift.
+
 - Add a question-based report guide, separate operational and data-quality
   choices, and explain local-history freshness and missing-data exclusions.
 - Generate PDFs into a temporary preview with explicit Save PDF, Print and Close
