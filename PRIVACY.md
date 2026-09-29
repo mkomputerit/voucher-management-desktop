@@ -47,7 +47,9 @@ nominal/non-nominal/unclassified choice. The UniFi description, voucher code
 and UniFi identifier shown in that workflow are read-only and are never changed
 by the local edit. Local recipient and notes are included in the SQLite database
 and therefore in application backups; operators should treat them as potentially
-personal data and record only what is administratively necessary.
+personal data and record only what is administratively necessary. Selecting
+"Nominale" requires an explicit local recipient so the classification cannot
+produce a nominal report row with an unidentified local assignee.
 
 If a physical print was submitted but its audit write has not completed, a
 local `pending_print_audit.json` file temporarily stores only HMAC voucher
