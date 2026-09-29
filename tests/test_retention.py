@@ -207,7 +207,7 @@ def test_reviewed_archive_scrubs_credential_and_personal_text(tmp_path):
             db.execute(
                 """UPDATE vouchers
                    SET assigned_to='Mario Rossi', notes='private note',
-                       created_by_app=1, is_nominal=1,
+                       origin='APPLICATION', is_nominal=1,
                        classification_updated_at='2026-01-01T00:00:00+00:00'
                    WHERE id=?""",
                 (voucher_id,),
@@ -234,7 +234,7 @@ def test_reviewed_archive_scrubs_credential_and_personal_text(tmp_path):
         assert row["notes"] == ""
         assert row["is_nominal"] is None
         assert row["classification_updated_at"] is None
-        assert row["created_by_app"] == 1
+        assert row["origin"] == "APPLICATION"
         assert row["ever_used"] == 0
         assert row["archived_at"] == NOW
 
