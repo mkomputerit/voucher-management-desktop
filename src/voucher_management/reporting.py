@@ -266,7 +266,12 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
     raise ValueError(f"Unsupported report kind: {kind}")
 
 
-def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
+def _totals(
+    rows: Iterable[ReportRow],
+    *,
+    distinct_print_jobs: int | None = None,
+    distinct_reprint_jobs: int | None = None,
+) -> ReportTotals:
     materialized = tuple(rows)
     return ReportTotals(
         vouchers=len(materialized),
@@ -285,9 +290,17 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
         ),
         expired_vouchers=sum(row.expired for row in materialized),
         printed_vouchers=sum(row.print_jobs > 0 for row in materialized),
-        print_jobs=sum(row.print_jobs for row in materialized),
+        print_jobs=(
+            sum(row.print_jobs for row in materialized)
+            if distinct_print_jobs is None
+            else int(distinct_print_jobs)
+        ),
         physical_copies=sum(row.physical_copies for row in materialized),
-        reprint_jobs=sum(row.reprint_jobs for row in materialized),
+        reprint_jobs=(
+            sum(row.reprint_jobs for row in materialized)
+            if distinct_reprint_jobs is None
+            else int(distinct_reprint_jobs)
+        ),
         reprint_copies=sum(row.reprint_copies for row in materialized),
         printed_never_used=sum(
             row.print_jobs > 0 and row.usage_observed and not row.ever_used
@@ -467,6 +480,9 @@ def _build_report_dataset_snapshot(
             "possono escludere voucher dal report. "
             + coverage_note
         )
+    print_job_totals = database.report_print_job_totals(
+        voucher_ids=[row.voucher_id for row in totals_source],
+    )
     return ReportDataset(
         kind=kind,
         purpose=purpose,
@@ -474,7 +490,11 @@ def _build_report_dataset_snapshot(
         generated_at=str(generated_at),
         controller_label=controller_label,
         rows=materialized,
-        totals=_totals(totals_source),
+        totals=_totals(
+            totals_source,
+            distinct_print_jobs=print_job_totals.print_jobs,
+            distinct_reprint_jobs=print_job_totals.reprint_jobs,
+        ),
         code_exposed=code_exposed,
         data_from=data_from,
         data_as_of=data_as_of,
