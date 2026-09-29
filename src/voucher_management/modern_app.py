@@ -1260,7 +1260,7 @@ class ModernVoucherApp(
             ("Da stampare", self.home_to_print_var, "pronti per la stampa"),
             ("Attivi", self.home_active_var, "disponibili sul controller"),
             ("Utilizzati", self.home_used_var, "con almeno un utilizzo"),
-            ("Scaduti", self.home_expired_var, "nello storico locale"),
+            ("Scaduti", self.home_expired_var, "segnalati scaduti dal controller"),
         )):
             card = ttk.Labelframe(
                 metrics,
