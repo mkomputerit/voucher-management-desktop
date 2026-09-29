@@ -135,6 +135,17 @@ def reconcile_pending_create_reporting(
     if controller_id is not None and pending.controller_id != int(controller_id):
         return False
 
+    placeholders = ",".join("?" for _ in pending.voucher_ids)
+    count = database.connection.execute(
+        f"""SELECT COUNT(*)
+            FROM vouchers
+            WHERE controller_id=?
+              AND unifi_id IN ({placeholders})""",
+        (pending.controller_id, *pending.voucher_ids),
+    ).fetchone()[0]
+    if int(count) != len(pending.voucher_ids):
+        return False
+
     database.mark_application_created_vouchers(
         controller_id=pending.controller_id,
         unifi_ids=pending.voucher_ids,
