@@ -77,9 +77,19 @@ class VoucherDeletionMixin:
         if stats is None:
             return
 
+        controller_id = getattr(self, "active_controller_id", None)
+        historically_used = (
+            self.database.historically_used_remote_ids(
+                controller_id=controller_id,
+                unifi_ids=[voucher.id for voucher in current],
+            )
+            if controller_id is not None and getattr(self, "database", None) is not None
+            else frozenset()
+        )
         blocked = evaluate_delete_candidates(
             current,
             stats,
+            historically_used_ids=historically_used,
         )
         if blocked:
             reasons = {item.policy.reason for item in blocked}
