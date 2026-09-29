@@ -301,7 +301,7 @@ ALTER TABLE vouchers ADD COLUMN is_nominal INTEGER
     CHECK (is_nominal IS NULL OR is_nominal IN (0, 1));
 CREATE INDEX IF NOT EXISTS idx_vouchers_origin ON vouchers(origin);
 CREATE INDEX IF NOT EXISTS idx_vouchers_nominal ON vouchers(is_nominal);
-
+"""
 
 
 @dataclass(frozen=True)
