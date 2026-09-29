@@ -34,6 +34,9 @@ class CreateOutcome:
     refresh_error: UniFiApiError | None = None
     uncertain_error: UniFiMutationUncertain | None = None
     local_persistence_error: Exception | None = None
+    recovery_marker_error: Exception | None = None
+    snapshot_complete: bool = True
+    reconciliation_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -357,7 +360,28 @@ def create_vouchers_and_refresh(
 
     try:
         refreshed = tuple(client.list_vouchers())
-        return CreateOutcome(created=created, vouchers=refreshed)
+        refreshed_by_id = {voucher.id: voucher for voucher in refreshed}
+        missing_created = [
+            voucher for voucher in created if voucher.id not in refreshed_by_id
+        ]
+        if missing_created:
+            # A successful HTTP response is not enough to assume read-after-write
+            # consistency. Keep every confirmed POST result visible and avoid
+            # treating this list as a complete absence-authoritative snapshot.
+            merged = dict(refreshed_by_id)
+            for voucher in missing_created:
+                merged[voucher.id] = voucher
+            return CreateOutcome(
+                created=created,
+                vouchers=tuple(merged.values()),
+                snapshot_complete=False,
+                reconciliation_required=True,
+            )
+        return CreateOutcome(
+            created=created,
+            vouchers=refreshed,
+            snapshot_complete=True,
+        )
     except UniFiApiError as exc:
         merged = {voucher.id: voucher for voucher in cached_vouchers}
         for voucher in created:
@@ -366,6 +390,8 @@ def create_vouchers_and_refresh(
             created=created,
             vouchers=tuple(merged.values()),
             refresh_error=exc,
+            snapshot_complete=False,
+            reconciliation_required=True,
         )
 
 
