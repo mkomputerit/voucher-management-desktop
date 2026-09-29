@@ -1037,6 +1037,9 @@ class ModernVoucherApp(
         self.report_expired_var = tk.StringVar(value="0")
         self.report_nominal_var = tk.StringVar(value="0")
         self.report_unclassified_var = tk.StringVar(value="0")
+        self.report_data_quality_var = tk.StringVar(
+            value="Dati non determinabili: uso 0 • nominalità 0"
+        )
 
         root = ttk.Frame(self, padding=0)
         root.pack(fill="both", expand=True)
@@ -1632,13 +1635,19 @@ class ModernVoucherApp(
                 style="Metric.TLabel",
             ).pack(anchor="w")
 
+        ttk.Label(
+            frame,
+            textvariable=self.report_data_quality_var,
+            style="Muted.TLabel",
+        ).grid(row=3, column=0, sticky="w", pady=(8, 0))
+
         actions = ttk.Labelframe(
             frame,
             text="Esportazione",
             style="Card.TLabelframe",
             padding=(18, 14),
         )
-        actions.grid(row=3, column=0, sticky="ew", pady=(16, 0))
+        actions.grid(row=4, column=0, sticky="ew", pady=(16, 0))
         actions.columnconfigure(0, weight=1)
         ttk.Label(
             actions,
@@ -1649,8 +1658,8 @@ class ModernVoucherApp(
             actions,
             text=(
                 "Riepilogo storico, generati dal software, mai utilizzati, "
-                "utilizzati, scaduti, stampati, nominali, non classificati "
-                "e storico completo."
+                "utilizzati, scaduti, stampati, nominali, non classificati, "
+                "uso non determinabile e storico completo."
             ),
             style="Muted.TLabel",
             wraplength=720,
@@ -1669,7 +1678,7 @@ class ModernVoucherApp(
             style="Card.TLabelframe",
             padding=(18, 12),
         )
-        privacy.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        privacy.grid(row=5, column=0, sticky="ew", pady=(12, 0))
         ttk.Label(
             privacy,
             text=(
@@ -2933,6 +2942,11 @@ class ModernVoucherApp(
         self.report_expired_var.set(str(totals.expired_vouchers))
         self.report_nominal_var.set(str(totals.nominal_vouchers))
         self.report_unclassified_var.set(str(totals.unclassified_vouchers))
+        self.report_data_quality_var.set(
+            "Dati non determinabili: "
+            f"uso {totals.usage_unknown_vouchers} • "
+            f"nominalità {totals.unclassified_vouchers}"
+        )
 
     def _update_operator_summary(self, stats) -> None:
         if not hasattr(self, "home_to_print_var"):
