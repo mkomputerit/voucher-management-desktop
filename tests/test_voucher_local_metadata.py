@@ -252,3 +252,27 @@ def test_application_non_nominal_creation_does_not_invent_local_recipient(tmp_pa
     assert metadata.assigned_to == ""
     assert metadata.is_nominal is False
     database.close()
+
+
+def test_nominal_local_metadata_requires_recipient(tmp_path):
+    database, controller_id = _database(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="richiede un destinatario locale"):
+            database.update_voucher_local_metadata(
+                controller_id=controller_id,
+                unifi_id="voucher-1",
+                assigned_to="",
+                notes="",
+                is_nominal=True,
+                updated_at=NOW,
+                windows_user="operator",
+            )
+        metadata = database.voucher_local_metadata(
+            controller_id=controller_id,
+            unifi_id="voucher-1",
+        )
+        assert metadata is not None
+        assert metadata.is_nominal is None
+        assert metadata.assigned_to == ""
+    finally:
+        database.close()
