@@ -206,7 +206,7 @@ def test_uncertain_creation_snapshot_never_guesses_created_or_nominal_flags(tmp_
             """SELECT origin, is_nominal
                FROM vouchers WHERE unifi_id='maybe-created'"""
         ).fetchone()
-        assert row["origin"] == "CONTROLLER"
+        assert row["origin"] is None
         assert row["is_nominal"] is None
     finally:
         check.close()
