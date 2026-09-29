@@ -591,7 +591,10 @@ def test_reimport_repairs_credential_resurrected_by_early_5_1_bug(tmp_path):
         with database.transaction() as db:
             db.execute(
                 """UPDATE vouchers
-                   SET code='12345-67890', name='Ospite 1', archived_at=?
+                   SET code='12345-67890', name='Ospite 1',
+                       is_nominal=1,
+                       classification_updated_at='2027-06-01T07:59:00+00:00',
+                       archived_at=?
                    WHERE id=?""",
                 (archived_at, voucher_id),
             )
@@ -615,11 +618,15 @@ def test_reimport_repairs_credential_resurrected_by_early_5_1_bug(tmp_path):
         )
 
         repaired = database.connection.execute(
-            "SELECT code, name, archived_at FROM vouchers WHERE id=?",
+            """SELECT code, name, is_nominal, classification_updated_at,
+                      archived_at
+               FROM vouchers WHERE id=?""",
             (voucher_id,),
         ).fetchone()
         assert repaired["code"] == f"ARCHIVED-{voucher_id}"
         assert repaired["name"] == ""
+        assert repaired["is_nominal"] is None
+        assert repaired["classification_updated_at"] is None
         assert repaired["archived_at"] == archived_at
         assert result.minimized_vouchers_preserved >= 1
     finally:
