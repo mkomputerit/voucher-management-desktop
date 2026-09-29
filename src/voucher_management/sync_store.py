@@ -43,6 +43,37 @@ def _iso_from_epoch(value: int) -> str | None:
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
 
 
+def _upsert_api_voucher(
+    database: Database,
+    *,
+    controller_id: int,
+    voucher: ApiVoucher,
+    observed_at: str,
+    connection,
+) -> int:
+    """Persist one API voucher without changing application-owned metadata."""
+
+    return database.upsert_voucher(
+        controller_id=controller_id,
+        unifi_id=voucher.id,
+        code=voucher.code,
+        name=voucher.recipient,
+        created_at=_iso_from_epoch(voucher.create_time),
+        imported_at=observed_at,
+        duration_minutes=voucher.duration_minutes,
+        authorized_guest_limit=voucher.quota or None,
+        authorized_guest_count=voucher.used,
+        activated_at=_iso_from_epoch(voucher.start_time),
+        expires_at=_iso_from_epoch(voucher.end_time),
+        expired=voucher.status == "EXPIRED",
+        data_limit_mb=voucher.data_mb,
+        download_limit_kbps=voucher.down_kbps,
+        upload_limit_kbps=voucher.up_kbps,
+        last_synced_at=observed_at,
+        connection=connection,
+    )
+
+
 def persist_successful_snapshot(
     database: Database,
     *,
@@ -86,23 +117,11 @@ def persist_successful_snapshot(
         for voucher in vouchers:
             seen_remote_ids.add(voucher.id)
             old = previous.get(voucher.id)
-            voucher_id = database.upsert_voucher(
+            voucher_id = _upsert_api_voucher(
+                database,
                 controller_id=controller_id,
-                unifi_id=voucher.id,
-                code=voucher.code,
-                name=voucher.recipient,
-                created_at=_iso_from_epoch(voucher.create_time),
-                imported_at=observed_at,
-                duration_minutes=voucher.duration_minutes,
-                authorized_guest_limit=voucher.quota or None,
-                authorized_guest_count=voucher.used,
-                activated_at=_iso_from_epoch(voucher.start_time),
-                expires_at=_iso_from_epoch(voucher.end_time),
-                expired=voucher.status == "EXPIRED",
-                data_limit_mb=voucher.data_mb,
-                download_limit_kbps=voucher.down_kbps,
-                upload_limit_kbps=voucher.up_kbps,
-                last_synced_at=observed_at,
+                voucher=voucher,
+                observed_at=observed_at,
                 connection=tx,
             )
             if old is None:
@@ -225,6 +244,60 @@ def persist_refresh_snapshot_to_path(
             vouchers=list(vouchers),
             observed_at=observed_at,
         )
+    finally:
+        database.close()
+
+
+def persist_creation_result_to_path(
+    database_path: Path,
+    *,
+    controller_id: int,
+    vouchers: list[ApiVoucher],
+    created: list[ApiVoucher],
+    observed_at: str,
+    is_nominal: bool,
+    snapshot_complete: bool,
+) -> None:
+    """Persist a create result without inventing controller or reporting facts.
+
+    A successful follow-up list is a complete controller snapshot and is stored
+    through the normal synchronization path. If that GET fails after a
+    definitive POST response, only the returned created vouchers are stored;
+    absence of other vouchers is never inferred from a partial view.
+
+    Nominal classification and "created by this application" are attached only
+    to vouchers returned by a definitive create response. An uncertain POST
+    therefore never classifies controller rows by guesswork.
+    """
+
+    database = Database(Path(database_path))
+    try:
+        database.initialize()
+        if snapshot_complete:
+            persist_successful_snapshot(
+                database,
+                controller_id=int(controller_id),
+                vouchers=list(vouchers),
+                observed_at=observed_at,
+            )
+        elif created:
+            with database.transaction() as tx:
+                for voucher in created:
+                    _upsert_api_voucher(
+                        database,
+                        controller_id=int(controller_id),
+                        voucher=voucher,
+                        observed_at=observed_at,
+                        connection=tx,
+                    )
+
+        if created:
+            database.mark_vouchers_created_by_app(
+                controller_id=int(controller_id),
+                unifi_ids=[voucher.id for voucher in created],
+                is_nominal=bool(is_nominal),
+                classified_at=observed_at,
+            )
     finally:
         database.close()
 
