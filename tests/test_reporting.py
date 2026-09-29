@@ -934,3 +934,43 @@ def test_internal_migration_operator_is_labeled_as_historical_import(tmp_path):
         assert row.print_operators == ("Importazione storica",)
     finally:
         db.close()
+
+
+def test_privacy_redaction_dominates_stale_nominal_bit(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller, "redacted-stale-bit", "9090909090")
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET is_nominal=1, nominality_redacted=1
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+
+        summary = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+        )
+        assert summary.totals.vouchers == 1
+        assert summary.totals.nominal_vouchers == 0
+        assert summary.totals.non_nominal_vouchers == 0
+        assert summary.totals.unclassified_vouchers == 0
+        assert summary.totals.redacted_nominality_vouchers == 1
+
+        nominal = build_report_dataset(
+            db,
+            kind=ReportKind.NOMINAL,
+            generated_at=NOW,
+        )
+        assert nominal.rows == ()
+
+        redacted = build_report_dataset(
+            db,
+            kind=ReportKind.NOMINALITY_REDACTED,
+            generated_at=NOW,
+        )
+        assert [row.voucher_id for row in redacted.rows] == [voucher_id]
+    finally:
+        db.close()
