@@ -102,6 +102,8 @@ CREATE TABLE IF NOT EXISTS vouchers (
     origin TEXT NOT NULL DEFAULT 'CONTROLLER'
         CHECK (origin IN ('CONTROLLER', 'APPLICATION', 'LEGACY_APPLICATION', 'UNKNOWN')),
     is_nominal INTEGER CHECK (is_nominal IS NULL OR is_nominal IN (0, 1)),
+    nominality_redacted INTEGER NOT NULL DEFAULT 0
+        CHECK (nominality_redacted IN (0, 1)),
     archived_at TEXT,
     UNIQUE (controller_id, unifi_id)
 );
@@ -305,6 +307,8 @@ ALTER TABLE vouchers ADD COLUMN origin TEXT NOT NULL DEFAULT 'UNKNOWN'
     CHECK (origin IN ('CONTROLLER', 'APPLICATION', 'LEGACY_APPLICATION', 'UNKNOWN'));
 ALTER TABLE vouchers ADD COLUMN is_nominal INTEGER
     CHECK (is_nominal IS NULL OR is_nominal IN (0, 1));
+ALTER TABLE vouchers ADD COLUMN nominality_redacted INTEGER NOT NULL DEFAULT 0
+    CHECK (nominality_redacted IN (0, 1));
 ALTER TABLE vouchers ADD COLUMN ever_used INTEGER NOT NULL DEFAULT 0
     CHECK (ever_used IN (0, 1));
 ALTER TABLE vouchers ADD COLUMN usage_observed INTEGER NOT NULL DEFAULT 1
