@@ -28,6 +28,7 @@ def _empty_dataset() -> ReportDataset:
             generated_vouchers=0,
             used_vouchers=0,
             never_used_vouchers=0,
+            usage_unknown_vouchers=0,
             total_controller_uses=0,
             expired_vouchers=0,
             printed_vouchers=0,
@@ -157,3 +158,4 @@ def test_report_choices_cover_historical_core_views():
     assert "Stampati" in labels
     assert "Nominali" in labels
     assert "Non classificati" in labels
+    assert "Uso non determinabile" in labels
