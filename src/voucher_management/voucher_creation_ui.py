@@ -157,8 +157,8 @@ class VoucherCreationMixin:
             self.vouchers = list(outcome.vouchers)
             self.controller_snapshot_live = bool(
                 outcome.refresh_error is None
-                and outcome.snapshot_complete
-                and not outcome.reconciliation_required
+                and bool(getattr(outcome, "snapshot_complete", True))
+                and not bool(getattr(outcome, "reconciliation_required", False))
             )
             if getattr(outcome, "local_persistence_error", None) is not None:
                 callback = getattr(self, "_controller_operation_stale", None)
@@ -267,7 +267,7 @@ class VoucherCreationMixin:
                 )
                 return
 
-            if outcome.reconciliation_required:
+            if bool(getattr(outcome, "reconciliation_required", False)):
                 messagebox.showwarning(
                     "Voucher creati • elenco da aggiornare",
                     f"UniFi ha confermato la creazione di {len(outcome.created)} "
