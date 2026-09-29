@@ -40,6 +40,46 @@ REPORT_TITLES = {
 }
 
 
+REPORT_DESCRIPTIONS = {
+    ReportKind.SUMMARY: (
+        "Riepilogo aggregato di tutto lo storico locale conservato."
+    ),
+    ReportKind.GENERATED: (
+        "Solo voucher la cui creazione è stata attribuita con certezza "
+        "a Voucher Management."
+    ),
+    ReportKind.GENERATED_UNUSED: (
+        "Voucher creati con certezza da Voucher Management per i quali "
+        "non è mai stato osservato un utilizzo positivo."
+    ),
+    ReportKind.USED: (
+        "Voucher per i quali almeno una sincronizzazione ha osservato "
+        "un utilizzo positivo."
+    ),
+    ReportKind.EXPIRED: (
+        "Voucher scaduti secondo lo stato o la scadenza conservata "
+        "nello storico locale."
+    ),
+    ReportKind.PRINTED: (
+        "Voucher con almeno una stampa fisica registrata localmente."
+    ),
+    ReportKind.PRINTED_UNUSED: (
+        "Voucher stampati localmente per i quali non è mai stato "
+        "osservato un utilizzo positivo."
+    ),
+    ReportKind.NEVER_PRINTED: (
+        "Voucher senza alcuna stampa fisica registrata localmente."
+    ),
+    ReportKind.NOMINAL: (
+        "Solo voucher marcati esplicitamente come Voucher nominale "
+        "durante una creazione certa."
+    ),
+    ReportKind.FULL_HISTORY: (
+        "Dettaglio completo dei voucher conservati nello storico locale."
+    ),
+}
+
+
 @dataclass(frozen=True)
 class ReportTotals:
     """Aggregates calculated from durable local voucher and print facts."""
