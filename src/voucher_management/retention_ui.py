@@ -133,7 +133,8 @@ class RetentionReviewDialog(tk.Toplevel):
                 "Le protezioni per voucher utilizzati e stampati sono "
                 "obbligatorie e non possono essere disattivate. L'elenco "
                 "sottostante contiene soltanto voucher non più presenti sul "
-                "controller, mai usati, mai stampati e senza PDF generati."
+                "controller, con utilizzo osservabile e nessun utilizzo rilevato, "
+                "senza stampe registrate e senza evidenze di PDF generati."
             ),
             wraplength=820,
             justify="left",
@@ -170,7 +171,7 @@ class RetentionReviewDialog(tk.Toplevel):
         self.tree.heading("controller", text="Controller")
         self.tree.heading("recipient", text="Destinatario")
         self.tree.heading("basis", text="Data di riferimento")
-        self.tree.heading("lastsync", text="Ultima sincronizzazione")
+        self.tree.heading("lastsync", text="Ultima presenza osservata")
         self.tree.column("controller", width=190)
         self.tree.column("recipient", width=260)
         self.tree.column("basis", width=150, anchor="center")
@@ -235,7 +236,7 @@ class RetentionReviewDialog(tk.Toplevel):
                     candidate.controller_name,
                     candidate.recipient or "—",
                     _display_time(candidate.age_basis),
-                    _display_time(candidate.last_synced_at),
+                    _display_time(candidate.last_seen_at),
                 ),
             )
         self.status.set(
