@@ -102,10 +102,10 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Voucher non nominali", str(totals.non_nominal_vouchers)],
         ["Nominalità non classificata", str(totals.unclassified_vouchers)],
         ["Nominalità rimossa per privacy", str(totals.redacted_nominality_vouchers)],
-        ["Job di stampa", str(totals.print_jobs)],
-        ["Copie fisiche", str(totals.physical_copies)],
-        ["Ristampe", str(totals.reprint_jobs)],
-        ["Copie da ristampa", str(totals.reprint_copies)],
+        ["Job di stampa unici", str(totals.print_jobs)],
+        ["Copie fisiche dei voucher", str(totals.physical_copies)],
+        ["Job con almeno una ristampa", str(totals.reprint_jobs)],
+        ["Copie di voucher ristampate", str(totals.reprint_copies)],
     ]
 
 
