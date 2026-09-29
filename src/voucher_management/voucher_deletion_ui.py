@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import messagebox
 
+from .create_reporting_recovery import reconcile_pending_create_reporting_to_path
 from .sync_store import persist_refresh_snapshot_to_path
 from .unifi_api import UniFiClient
 from .workflows import (
@@ -131,6 +133,18 @@ class VoucherDeletionMixin:
             self.checked_ids.clear()
             self.vouchers = list(outcome.vouchers)
             self.controller_snapshot_live = outcome.refresh_error is None
+            if outcome.refresh_error is not None:
+                callback = getattr(self, "_controller_operation_stale", None)
+                if callback is not None:
+                    callback()
+            elif outcome.local_persistence_error is not None:
+                callback = getattr(self, "_controller_operation_stale", None)
+                if callback is not None:
+                    callback(archive_failed=True)
+            else:
+                callback = getattr(self, "_controller_operation_succeeded", None)
+                if callback is not None:
+                    callback()
             self.populate()
 
             if outcome.refresh_error is not None:
@@ -139,6 +153,21 @@ class VoucherDeletionMixin:
                     f"Eliminati {len(current)} voucher, ma l'aggiornamento "
                     "dell'elenco non è riuscito.\n\n"
                     f"{outcome.refresh_error}",
+                    parent=self,
+                )
+                return
+
+            if outcome.local_persistence_error is not None:
+                self.logger.error(
+                    "delete_archive_persistence_failed type=%s",
+                    type(outcome.local_persistence_error).__name__,
+                )
+                messagebox.showwarning(
+                    "Eliminazione completata • archivio locale da verificare",
+                    f"UniFi ha confermato l'eliminazione di {len(current)} "
+                    "voucher e l'elenco live è stato aggiornato, ma lo storico "
+                    "locale non è stato salvato correttamente. Non ripetere "
+                    "l'eliminazione; eseguire Sincronizza per riconciliare.",
                     parent=self,
                 )
                 return
@@ -174,12 +203,23 @@ class VoucherDeletionMixin:
                 and controller_id is not None
                 and database_path is not None
             ):
-                persist_refresh_snapshot_to_path(
-                    database_path,
-                    controller_id=controller_id,
-                    vouchers=list(outcome.vouchers),
-                    observed_at=datetime.now(timezone.utc).isoformat(),
-                )
+                try:
+                    persist_refresh_snapshot_to_path(
+                        database_path,
+                        controller_id=controller_id,
+                        vouchers=list(outcome.vouchers),
+                        observed_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    reconcile_pending_create_reporting_to_path(
+                        database_path,
+                        self.paths.pending_create_reporting,
+                        controller_id=controller_id,
+                    )
+                except Exception as exc:
+                    outcome = replace(
+                        outcome,
+                        local_persistence_error=exc,
+                    )
             return outcome
 
         self._run_network_task(
@@ -206,19 +246,37 @@ class VoucherDeletionMixin:
 
         def worker():
             vouchers = list(client.list_vouchers())
+            archive_error = None
             if controller_id is not None and database_path is not None:
-                persist_refresh_snapshot_to_path(
-                    database_path,
-                    controller_id=controller_id,
-                    vouchers=vouchers,
-                    observed_at=datetime.now(timezone.utc).isoformat(),
-                )
-            return vouchers
+                try:
+                    persist_refresh_snapshot_to_path(
+                        database_path,
+                        controller_id=controller_id,
+                        vouchers=vouchers,
+                        observed_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    reconcile_pending_create_reporting_to_path(
+                        database_path,
+                        self.paths.pending_create_reporting,
+                        controller_id=controller_id,
+                    )
+                except Exception as exc:
+                    archive_error = exc
+            return vouchers, archive_error
 
-        def refreshed(vouchers) -> None:
+        def refreshed(result) -> None:
+            vouchers, archive_error = result
             self.vouchers = list(vouchers)
             self.controller_snapshot_live = True
             self.checked_ids.clear()
+            if archive_error is None:
+                callback = getattr(self, "_controller_operation_succeeded", None)
+                if callback is not None:
+                    callback()
+            else:
+                callback = getattr(self, "_controller_operation_stale", None)
+                if callback is not None:
+                    callback(archive_failed=True)
             self.populate()
             self._show_network_error(
                 "Eliminazione",
@@ -227,6 +285,9 @@ class VoucherDeletionMixin:
 
         def refresh_failed(_exc: Exception) -> None:
             self.controller_snapshot_live = False
+            callback = getattr(self, "_controller_operation_failed", None)
+            if callback is not None:
+                callback()
             self.populate()
             self._show_network_error(
                 "Eliminazione",
