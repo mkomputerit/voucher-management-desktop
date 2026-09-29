@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .database import Database
-from .report_policy import ReportPurpose, report_code_value
+from .report_policy import ReportPurpose, report_code_value, voucher_code_policy
 
 
 class ReportKind(str, Enum):
@@ -329,7 +329,15 @@ def build_report_dataset(
     """
 
     purpose = _purpose_for_kind(kind)
-    raw_rows = database.report_voucher_rows(controller_id=controller_id)
+    code_policy = voucher_code_policy(
+        purpose,
+        include_code_requested=include_code_requested,
+    )
+    raw_rows = database.report_voucher_rows(
+        controller_id=controller_id,
+        include_voucher_code=code_policy.expose_code,
+        include_personal_details=kind is not ReportKind.SUMMARY,
+    )
 
     all_rows: list[ReportRow] = []
     rows: list[ReportRow] = []
@@ -346,7 +354,7 @@ def build_report_dataset(
         if clear_code:
             code_exposed = True
 
-        legacy = str(raw["controller_api_root"]).startswith("legacy-backup://")
+        legacy = bool(raw["legacy_source"])
         print_jobs = int(raw["print_jobs"] or 0)
         expired = _expired_at_report_time(
             persisted_expired=bool(raw["expired"]) and not legacy,
@@ -420,10 +428,7 @@ def build_report_dataset(
         for row in all_rows
     )
     redacted = sum(row.nominality_redacted for row in all_rows)
-    legacy_count = sum(
-        str(raw["controller_api_root"]).startswith("legacy-backup://")
-        for raw in raw_rows
-    )
+    legacy_count = sum(bool(raw["legacy_source"]) for raw in raw_rows)
     coverage_note = (
         f"Ambito: {len(all_rows)} registrazioni locali. Informazioni non determinabili: "
         f"origine creazione {unknown_origin}, utilizzo {unknown_usage}, "
