@@ -111,6 +111,40 @@ def test_voucher_upsert_preserves_local_fields(tmp_path):
         db.close()
 
 
+def test_ever_used_is_monotonic_across_controller_counter_changes(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher_id = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="ever-used",
+            code="1234567890",
+            imported_at="t1",
+            last_synced_at="t1",
+            authorized_guest_count=2,
+        )
+        db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="ever-used",
+            code="1234567890",
+            imported_at="t1",
+            last_synced_at="t2",
+            authorized_guest_count=0,
+        )
+        row = db.connection.execute(
+            "SELECT authorized_guest_count, ever_used FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["authorized_guest_count"] == 0
+        assert row["ever_used"] == 1
+    finally:
+        db.close()
+
+
 def test_same_remote_id_is_scoped_per_controller(tmp_path):
     db = _db(tmp_path)
     try:
@@ -386,8 +420,10 @@ def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
     raw.executescript(SCHEMA_SQL)
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
     raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
     raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
     raw.execute("DROP TABLE legacy_audit_events")
     raw.execute("DROP TABLE migration_runs")
     raw.execute("PRAGMA user_version = 1")
@@ -418,7 +454,7 @@ def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
             row["name"]
             for row in db.connection.execute("PRAGMA table_info(vouchers)")
         }
-        assert {"origin", "is_nominal"} <= columns
+        assert {"origin", "is_nominal", "ever_used"} <= columns
         db.integrity_check()
     finally:
         db.close()
@@ -445,8 +481,10 @@ def test_schema_two_upgrade_preserves_unknown_classification_for_existing_rows(t
     raw = sqlite3.connect(path)
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
     raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
     raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
     raw.execute("PRAGMA user_version = 2")
     raw.execute(
         "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '2')"
@@ -458,11 +496,12 @@ def test_schema_two_upgrade_preserves_unknown_classification_for_existing_rows(t
     try:
         migrated.initialize()
         row = migrated.connection.execute(
-            "SELECT origin, is_nominal FROM vouchers WHERE id=?",
+            "SELECT origin, is_nominal, ever_used FROM vouchers WHERE id=?",
             (voucher_id,),
         ).fetchone()
         assert row["origin"] == "UNKNOWN"
         assert row["is_nominal"] is None
+        assert row["ever_used"] == 0
         assert migrated.connection.execute("PRAGMA user_version").fetchone()[0] == 3
     finally:
         migrated.close()
@@ -474,8 +513,10 @@ def test_failed_schema_one_upgrade_rolls_back_partial_ddl(tmp_path, monkeypatch)
     raw.executescript(SCHEMA_SQL)
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
     raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
     raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
     raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
     raw.execute("DROP TABLE legacy_audit_events")
     raw.execute("DROP TABLE migration_runs")
     raw.execute("PRAGMA user_version = 1")
