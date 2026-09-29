@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from pathlib import Path
 from tkinter import messagebox
 
+from .sync_store import persist_refresh_snapshot_to_path
 from .unifi_api import UniFiClient
 from .workflows import (
     delete_vouchers_and_refresh,
@@ -117,6 +120,7 @@ class VoucherDeletionMixin:
         def completed(outcome) -> None:
             self.checked_ids.clear()
             self.vouchers = list(outcome.vouchers)
+            self.controller_snapshot_live = outcome.refresh_error is None
             self.populate()
 
             if outcome.refresh_error is not None:
@@ -141,13 +145,36 @@ class VoucherDeletionMixin:
                 exc,
             )
 
-        self._run_network_task(
-            "Eliminazione voucher…",
-            lambda: delete_vouchers_and_refresh(
+        controller_id = getattr(self, "active_controller_id", None)
+        paths = getattr(self, "paths", None)
+        database_path = (
+            Path(paths.database)
+            if controller_id is not None and paths is not None
+            else None
+        )
+
+        def worker():
+            outcome = delete_vouchers_and_refresh(
                 client,
                 cached,
                 current,
-            ),
+            )
+            if (
+                outcome.refresh_error is None
+                and controller_id is not None
+                and database_path is not None
+            ):
+                persist_refresh_snapshot_to_path(
+                    database_path,
+                    controller_id=controller_id,
+                    vouchers=list(outcome.vouchers),
+                    observed_at=datetime.now(timezone.utc).isoformat(),
+                )
+            return outcome
+
+        self._run_network_task(
+            "Eliminazione voucher…",
+            worker,
             completed,
             failed,
         )
@@ -159,8 +186,28 @@ class VoucherDeletionMixin:
     ) -> None:
         """Refresh after a possible partial delete, still outside Tk."""
 
+        controller_id = getattr(self, "active_controller_id", None)
+        paths = getattr(self, "paths", None)
+        database_path = (
+            Path(paths.database)
+            if controller_id is not None and paths is not None
+            else None
+        )
+
+        def worker():
+            vouchers = list(client.list_vouchers())
+            if controller_id is not None and database_path is not None:
+                persist_refresh_snapshot_to_path(
+                    database_path,
+                    controller_id=controller_id,
+                    vouchers=vouchers,
+                    observed_at=datetime.now(timezone.utc).isoformat(),
+                )
+            return vouchers
+
         def refreshed(vouchers) -> None:
             self.vouchers = list(vouchers)
+            self.controller_snapshot_live = True
             self.checked_ids.clear()
             self.populate()
             self._show_network_error(
@@ -169,6 +216,8 @@ class VoucherDeletionMixin:
             )
 
         def refresh_failed(_exc: Exception) -> None:
+            self.controller_snapshot_live = False
+            self.populate()
             self._show_network_error(
                 "Eliminazione",
                 delete_error,
@@ -176,7 +225,7 @@ class VoucherDeletionMixin:
 
         self._run_network_task(
             "Aggiornamento dopo errore…",
-            client.list_vouchers,
+            worker,
             refreshed,
             refresh_failed,
         )
