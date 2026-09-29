@@ -1095,6 +1095,10 @@ COMMIT;
             raise ValueError("UniFi voucher id is required")
         if type(is_nominal) is not bool and is_nominal is not None:
             raise ValueError("is_nominal must be true, false or null")
+        if is_nominal is True and not local_recipient:
+            raise ValueError(
+                "Un voucher nominale richiede un destinatario locale."
+            )
         if len(local_recipient) > 200:
             raise ValueError("Il destinatario locale non può superare 200 caratteri.")
         if len(local_notes) > 2000:
