@@ -206,7 +206,9 @@ def test_reviewed_archive_scrubs_credential_and_personal_text(tmp_path):
         with database.transaction() as db:
             db.execute(
                 """UPDATE vouchers
-                   SET assigned_to='Mario Rossi', notes='private note'
+                   SET assigned_to='Mario Rossi', notes='private note',
+                       created_by_app=1, is_nominal=1,
+                       classification_updated_at='2026-01-01T00:00:00+00:00'
                    WHERE id=?""",
                 (voucher_id,),
             )
@@ -230,6 +232,10 @@ def test_reviewed_archive_scrubs_credential_and_personal_text(tmp_path):
         assert row["name"] == ""
         assert row["assigned_to"] == ""
         assert row["notes"] == ""
+        assert row["is_nominal"] is None
+        assert row["classification_updated_at"] is None
+        assert row["created_by_app"] == 1
+        assert row["ever_used"] == 0
         assert row["archived_at"] == NOW
 
         event = database.connection.execute(
@@ -240,6 +246,7 @@ def test_reviewed_archive_scrubs_credential_and_personal_text(tmp_path):
         assert event is not None
         assert event["windows_user"] == r"PC\operator"
         assert '"credential_removed":true' in event["details_json"]
+        assert '"nominal_classification_removed":true' in event["details_json"]
     finally:
         database.close()
 
@@ -281,6 +288,46 @@ def test_archive_revalidates_and_skips_row_that_became_used(tmp_path):
         ).fetchone()
         assert row["code"] == "1234567890"
         assert row["archived_at"] is None
+    finally:
+        database.close()
+
+
+def test_historically_used_voucher_is_never_retention_candidate_after_current_count_returns_zero(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="used-before",
+            code="1234567890",
+            uses=1,
+        )
+        with database.transaction() as db:
+            db.execute(
+                """UPDATE vouchers
+                   SET authorized_guest_count=0, present_on_controller=0
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+
+        row = database.connection.execute(
+            "SELECT authorized_guest_count, ever_used FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["authorized_guest_count"] == 0
+        assert row["ever_used"] == 1
+        assert retention_candidates(database, now=NOW) == ()
+
+        result = archive_retention_candidates(
+            database,
+            voucher_ids=[voucher_id],
+            archived_at=NOW,
+            windows_user="operator",
+            history=_history(),
+            settings={},
+        )
+        assert result.archived_ids == ()
+        assert result.skipped_ids == (voucher_id,)
     finally:
         database.close()
 
