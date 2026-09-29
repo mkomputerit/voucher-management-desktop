@@ -58,7 +58,7 @@ class BackupOptionsDialog(tk.Toplevel):
         self.result = None
         self.data_root = data_root
         self.directory_var = tk.StringVar(self, value=default_directory)
-        self.protected_var = tk.BooleanVar(self, value=False)
+        self.protected_var = tk.BooleanVar(self, value=True)
         self.password_var = tk.StringVar(self)
         self.confirm_var = tk.StringVar(self)
         self.note_var = tk.StringVar(self)
@@ -80,7 +80,7 @@ class BackupOptionsDialog(tk.Toplevel):
         ttk.Button(folders, text="Scegli un'altra cartella…", command=self.choose_directory).pack(side="left")
         ttk.Button(folders, text="Usa predefinita", command=lambda: self.directory_var.set(default_directory)).pack(side="left", padx=8)
         ttk.Label(body, text="La cartella scelta qui vale solo per questa copia.", wraplength=560).grid(row=4, column=0, sticky="w")
-        ttk.Checkbutton(body, text="Proteggi con password (facoltativo)", variable=self.protected_var,
+        ttk.Checkbutton(body, text="Proteggi con password (consigliato, facoltativo)", variable=self.protected_var,
                         command=self._toggle_password).grid(row=5, column=0, sticky="w", pady=(14, 6))
         secret = ttk.Frame(body)
         secret.grid(row=6, column=0, sticky="ew")
