@@ -8,10 +8,7 @@ from pathlib import Path
 import pytest
 
 from voucher_management.report_policy import ReportPurpose
-from voucher_management.report_render import (
-    render_report_csv,
-    render_report_pdf,
-)
+from voucher_management.report_render import render_report_csv, render_report_pdf
 from voucher_management.reporting import (
     ReportDataset,
     ReportKind,
@@ -20,7 +17,7 @@ from voucher_management.reporting import (
 )
 
 
-def _dataset(*, code="") -> ReportDataset:
+def _dataset(*, code="", kind=ReportKind.FULL_HISTORY, purpose=ReportPurpose.AUDIT):
     row = ReportRow(
         voucher_id=1,
         controller_name="Sala & Test <Nord>",
@@ -45,6 +42,7 @@ def _dataset(*, code="") -> ReportDataset:
         status="Utilizzato",
         origin="APPLICATION",
         is_nominal=True,
+        last_synced_at="2026-09-26T11:30:00+00:00",
     )
     totals = ReportTotals(
         vouchers=1,
@@ -64,20 +62,24 @@ def _dataset(*, code="") -> ReportDataset:
         nominal_vouchers=1,
         non_nominal_vouchers=0,
         unclassified_vouchers=0,
+        unknown_origin_vouchers=0,
+        redacted_nominality_vouchers=0,
     )
     return ReportDataset(
-        kind=ReportKind.SUMMARY,
-        purpose=ReportPurpose.SUMMARY,
-        title="Riepilogo voucher",
+        kind=kind,
+        purpose=purpose,
+        title="Storico voucher",
         generated_at="2026-09-26T12:00:00+00:00",
         controller_label="Sala & Test <Nord>",
         rows=(row,),
         totals=totals,
         code_exposed=bool(code),
+        data_from="2026-09-26T11:30:00+00:00",
+        data_as_of="2026-09-26T11:30:00+00:00",
     )
 
 
-def test_csv_report_omits_voucher_column_when_policy_hides_code(tmp_path: Path):
+def test_detail_csv_hides_codes_but_keeps_sanitized_administrative_detail(tmp_path: Path):
     output = tmp_path / "report.csv"
 
     render_report_csv(_dataset(), output)
@@ -86,15 +88,34 @@ def test_csv_report_omits_voucher_column_when_policy_hides_code(tmp_path: Path):
     assert "Voucher;" not in payload
     assert "12345-67890" not in payload
     assert "Mario & Lucia <ospiti>" in payload
-    assert "Utilizzi (ultimo valore conservato);2" in payload
-    assert "Dato uso;Utilizzato;Utilizzi" in payload
+    assert "Guest autorizzati (somma ultimo conteggio);2" in payload
+    assert "Dato uso;Utilizzato;Guest autorizzati" in payload
+    assert "Dati controller aggiornati fino a;26/09/2026 13:30" in payload
+
+
+def test_summary_csv_is_aggregate_only_and_excludes_personal_detail(tmp_path: Path):
+    output = tmp_path / "summary.csv"
+    dataset = _dataset(kind=ReportKind.SUMMARY, purpose=ReportPurpose.SUMMARY)
+
+    render_report_csv(dataset, output)
+
+    payload = output.read_text(encoding="utf-8-sig")
+    assert "Mario & Lucia" not in payload
+    assert r"PC\alice" not in payload
+    assert "Destinatario" not in payload
+    assert "Creazione Voucher Management confermata;1" in payload
 
 
 def test_renderer_rejects_clear_code_for_summary_purpose(tmp_path: Path):
     output = tmp_path / "invalid.csv"
+    dataset = _dataset(
+        code="12345-67890",
+        kind=ReportKind.SUMMARY,
+        purpose=ReportPurpose.SUMMARY,
+    )
 
     with pytest.raises(ValueError, match="code policy"):
-        render_report_csv(_dataset(code="12345-67890"), output)
+        render_report_csv(dataset, output)
 
     assert not output.exists()
 
@@ -129,12 +150,9 @@ def test_pdf_report_is_atomic_valid_pdf_and_escapes_operator_text(tmp_path: Path
 
 def test_empty_pdf_report_is_still_printable(tmp_path: Path):
     base = _dataset()
-    empty = ReportDataset(
+    empty = replace(
+        base,
         kind=ReportKind.EXPIRED,
-        purpose=ReportPurpose.SUMMARY,
-        title="Voucher scaduti",
-        generated_at=base.generated_at,
-        controller_label=base.controller_label,
         rows=(),
         totals=ReportTotals(
             vouchers=0,
@@ -155,7 +173,6 @@ def test_empty_pdf_report_is_still_printable(tmp_path: Path):
             non_nominal_vouchers=0,
             unclassified_vouchers=0,
         ),
-        code_exposed=False,
     )
     output = tmp_path / "empty.pdf"
 
@@ -169,7 +186,7 @@ def test_csv_neutralizes_formula_like_operator_text(tmp_path: Path):
     dataset = _dataset()
     dangerous_row = replace(
         dataset.rows[0],
-        controller_name="=HYPERLINK(\"https://example.invalid\")",
+        controller_name='=HYPERLINK("https://example.invalid")',
         recipient="+SUM(1,1)",
         print_operators=("@operator",),
     )
