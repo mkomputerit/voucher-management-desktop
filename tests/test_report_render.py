@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from voucher_management.report_policy import ReportPurpose
-from voucher_management.report_render import render_report_csv, render_report_pdf
+from voucher_management.report_render import (
+    _detail_column_weights,
+    _detail_headers,
+    render_report_csv,
+    render_report_pdf,
+)
 from voucher_management.reporting import (
     ReportDataset,
     ReportKind,
@@ -207,3 +212,16 @@ def test_csv_neutralizes_formula_like_operator_text(tmp_path: Path):
     assert "'+SUM" in payload
     assert "'@operator" in payload
     assert "'-controller" in payload
+
+
+def test_pdf_column_weights_follow_detail_headers():
+    dataset = _dataset()
+    assert len(_detail_column_weights(dataset)) == len(_detail_headers(dataset))
+
+    handoff = replace(
+        dataset,
+        purpose=ReportPurpose.OPERATIONAL_HANDOFF,
+        code_exposed=True,
+        rows=(replace(dataset.rows[0], code="12345-67890"),),
+    )
+    assert len(_detail_column_weights(handoff)) == len(_detail_headers(handoff))
