@@ -28,7 +28,7 @@ from .pdf_fonts import (
     validate_pdf_text_support,
 )
 from .report_policy import voucher_code_policy
-from .reporting import ReportDataset
+from .reporting import ReportDataset, nominal_label, origin_label
 
 
 def _validate_dataset_policy(dataset: ReportDataset) -> None:
@@ -88,17 +88,21 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
     totals = dataset.totals
     return [
         ["Voucher nel report", str(totals.vouchers)],
-        ["Voucher utilizzati", str(totals.used_vouchers)],
+        ["Generati da Voucher Management", str(totals.generated_vouchers)],
+        ["Utilizzati almeno una volta", str(totals.used_vouchers)],
+        ["Mai osservati utilizzati", str(totals.never_used_vouchers)],
         ["Utilizzi controller osservati", str(totals.total_controller_uses)],
         ["Voucher scaduti", str(totals.expired_vouchers)],
         ["Voucher stampati", str(totals.printed_vouchers)],
+        ["Mai stampati", str(totals.never_printed)],
+        ["Stampati mai utilizzati", str(totals.printed_never_used)],
+        ["Voucher nominali", str(totals.nominal_vouchers)],
+        ["Voucher non nominali", str(totals.non_nominal_vouchers)],
+        ["Nominalità non classificata", str(totals.unclassified_vouchers)],
         ["Job di stampa", str(totals.print_jobs)],
         ["Copie fisiche", str(totals.physical_copies)],
         ["Ristampe", str(totals.reprint_jobs)],
         ["Copie da ristampa", str(totals.reprint_copies)],
-        ["Stampati mai utilizzati", str(totals.printed_never_used)],
-        ["Mai stampati", str(totals.never_printed)],
-        ["Voucher nominali", str(totals.nominal_vouchers)],
     ]
 
 
@@ -109,9 +113,12 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
     headers.extend(
         [
             "Destinatario",
+            "Origine",
+            "Nominale",
             "Creazione controller",
             "Prima acquisizione",
             "Scadenza",
+            "Mai usato",
             "Utilizzi",
             "Stampe",
             "Copie",
@@ -130,9 +137,12 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
     values.extend(
         [
             row.recipient or "—",
+            origin_label(row.origin),
+            nominal_label(row.is_nominal),
             _display_time(row.created_at),
             _display_time(row.imported_at),
             _display_time(row.expires_at),
+            "Sì" if row.ever_used else "No",
             str(row.authorized_guest_count),
             str(row.print_jobs),
             str(row.physical_copies),
@@ -333,9 +343,9 @@ def render_report_pdf(
         else:
             usable = page_width - 20 * mm
             if dataset.code_exposed:
-                weights = [0.9, 0.9, 1.45, 0.9, 0.9, 0.9, 0.48, 0.48, 0.48, 0.52, 1.0, 0.72]
+                weights = [0.8, 0.8, 1.2, 1.0, 0.62, 0.78, 0.78, 0.78, 0.52, 0.44, 0.44, 0.44, 0.48, 0.82, 0.62]
             else:
-                weights = [0.9, 1.5, 0.9, 0.9, 0.9, 0.48, 0.48, 0.48, 0.52, 1.0, 0.72]
+                weights = [0.8, 1.2, 1.0, 0.62, 0.78, 0.78, 0.78, 0.52, 0.44, 0.44, 0.44, 0.48, 0.82, 0.62]
             scale = usable / sum(weights)
             detail_table = Table(
                 rows,
@@ -363,8 +373,9 @@ def render_report_pdf(
         story.append(Spacer(1, 4 * mm))
         story.append(
             _paragraph(
-                "Nota: il numero di utilizzi è il totale osservato dal controller. "
-                "Non rappresenta l'ora esatta in cui un ospite ha utilizzato il voucher.",
+                "Nota: “Utilizzato” significa che Voucher Management ha osservato "
+                "almeno un utilizzo nello storico locale. Il totale utilizzi è l'ultimo "
+                "valore osservato dal controller e non rappresenta l'ora esatta d'uso.",
                 small,
             )
         )
