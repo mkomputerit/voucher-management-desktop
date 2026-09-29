@@ -28,7 +28,7 @@ from .pdf_fonts import (
     validate_pdf_text_support,
 )
 from .report_policy import voucher_code_policy
-from .reporting import ReportDataset, ReportKind
+from .reporting import REPORT_DESCRIPTIONS, ReportDataset, ReportKind
 
 
 def _validate_dataset_policy(dataset: ReportDataset) -> None:
@@ -131,45 +131,7 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
 
 
 def _report_note(kind: ReportKind) -> str:
-    return {
-        ReportKind.SUMMARY: (
-            "Riepilogo aggregato di tutto lo storico locale conservato."
-        ),
-        ReportKind.GENERATED: (
-            "Solo voucher la cui creazione è stata attribuita con certezza "
-            "a Voucher Management."
-        ),
-        ReportKind.GENERATED_UNUSED: (
-            "Voucher creati con certezza da Voucher Management per i quali "
-            "non è mai stato osservato un utilizzo positivo."
-        ),
-        ReportKind.USED: (
-            "Voucher per i quali almeno una sincronizzazione ha osservato "
-            "un utilizzo positivo."
-        ),
-        ReportKind.EXPIRED: (
-            "Voucher scaduti secondo lo stato o la scadenza conservata "
-            "nello storico locale."
-        ),
-        ReportKind.PRINTED: (
-            "Voucher con almeno una stampa fisica registrata localmente."
-        ),
-        ReportKind.PRINTED_UNUSED: (
-            "Voucher stampati localmente per i quali non è mai stato "
-            "osservato un utilizzo positivo."
-        ),
-        ReportKind.NEVER_PRINTED: (
-            "Voucher senza alcuna stampa fisica registrata localmente."
-        ),
-        ReportKind.NOMINAL: (
-            "Solo voucher marcati esplicitamente come Voucher nominale "
-            "durante una creazione certa."
-        ),
-        ReportKind.FULL_HISTORY: (
-            "Dettaglio completo dei voucher conservati nello storico locale."
-        ),
-    }[kind]
-
+    return REPORT_DESCRIPTIONS[kind]
 
 def _detail_columns(dataset: ReportDataset):
     """Return report-specific columns as (header, weight, formatter)."""
