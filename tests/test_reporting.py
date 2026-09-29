@@ -1,426 +1,223 @@
-"""Tests for SQLite-backed privacy-safe reporting."""
+"""Tests for SQLite-backed historical reporting."""
 
 from __future__ import annotations
 
-import sqlite3
-
 from voucher_management.database import Database
-from voucher_management.report_policy import ReportPurpose
-from voucher_management.reporting import (
-    ReportKind,
-    build_report_dataset,
-)
+from voucher_management.reporting import ReportKind, build_report_dataset
 
 
-NOW = "2026-09-26T12:00:00+00:00"
+NOW = "2026-09-29T10:00:00+00:00"
 
 
-def _database(tmp_path):
-    database = Database(tmp_path / "voucher_management.db")
-    database.initialize()
-    controller_id = database.create_controller(
-        name="Sala Assemblee",
-        api_root="https://controller.example/proxy/network/integration/v1",
+def _db(tmp_path):
+    db = Database(tmp_path / "reporting.db")
+    db.initialize()
+    controller = db.create_controller(
+        name="Reception",
+        api_root="https://controller.example",
         created_at="2026-09-01T08:00:00+00:00",
     )
-    return database, controller_id
+    return db, controller
 
 
-def _voucher(
-    database,
-    controller_id,
-    *,
-    unifi_id,
-    code,
-    name="",
-    uses=0,
-    expired=False,
-    created_at="2026-09-01T09:00:00+00:00",
-    expires_at="2026-10-01T09:00:00+00:00",
-):
-    return database.upsert_voucher(
-        controller_id=controller_id,
+def _voucher(db, controller, unifi_id, code, *, name="", used=0, expired=False):
+    return db.upsert_voucher(
+        controller_id=controller,
         unifi_id=unifi_id,
         code=code,
         name=name,
-        created_at=created_at,
+        created_at="2026-09-01T09:00:00+00:00",
         imported_at="2026-09-01T09:05:00+00:00",
         duration_minutes=60,
         authorized_guest_limit=1,
-        authorized_guest_count=uses,
-        expires_at=expires_at,
+        authorized_guest_count=used,
+        expires_at="2026-10-01T09:00:00+00:00",
         expired=expired,
         last_synced_at=NOW,
     )
 
 
-def test_summary_report_never_exposes_codes_even_when_requested(tmp_path):
-    database, controller_id = _database(tmp_path)
+def test_nominal_report_uses_explicit_flag_not_recipient_text(tmp_path):
+    db, controller = _db(tmp_path)
     try:
-        _voucher(
-            database,
-            controller_id,
-            unifi_id="v1",
-            code="1234567890",
-            name="Guest One",
+        emi = _voucher(db, controller, "emi", "1111122222", name="EMI06")
+        pinco = _voucher(db, controller, "pinco", "3333344444", name="Pinco Pallino")
+        db.mark_application_created_vouchers(
+            controller_id=controller,
+            unifi_ids=["emi"],
+            is_nominal=False,
+        )
+        db.mark_application_created_vouchers(
+            controller_id=controller,
+            unifi_ids=["pinco"],
+            is_nominal=True,
+        )
+
+        dataset = build_report_dataset(db, kind=ReportKind.NOMINAL, generated_at=NOW)
+
+        assert [row.voucher_id for row in dataset.rows] == [pinco]
+        assert dataset.rows[0].recipient == "Pinco Pallino"
+        assert dataset.rows[0].is_nominal is True
+        assert emi not in {row.voucher_id for row in dataset.rows}
+    finally:
+        db.close()
+
+
+def test_generated_unused_requires_application_provenance_and_no_observed_use(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        created_unused = _voucher(db, controller, "created-unused", "1111122222")
+        created_used = _voucher(db, controller, "created-used", "3333344444", used=2)
+        external_unused = _voucher(db, controller, "external", "5555566666")
+        db.mark_application_created_vouchers(
+            controller_id=controller,
+            unifi_ids=["created-unused", "created-used"],
+            is_nominal=False,
         )
 
         dataset = build_report_dataset(
-            database,
-            kind=ReportKind.SUMMARY,
+            db,
+            kind=ReportKind.GENERATED_UNUSED,
             generated_at=NOW,
-            include_code_requested=True,
         )
 
-        assert dataset.purpose is ReportPurpose.SUMMARY
-        assert dataset.code_exposed is False
-        assert len(dataset.rows) == 1
-        assert dataset.rows[0].code == ""
-        assert dataset.rows[0].recipient == "Guest One"
+        assert [row.voucher_id for row in dataset.rows] == [created_unused]
+        assert created_used not in {row.voucher_id for row in dataset.rows}
+        assert external_unused not in {row.voucher_id for row in dataset.rows}
     finally:
-        database.close()
+        db.close()
 
 
-def test_full_history_is_audit_and_also_hides_codes(tmp_path):
-    database, controller_id = _database(tmp_path)
+def test_used_means_ever_observed_used_even_if_latest_counter_returns_zero(tmp_path):
+    db, controller = _db(tmp_path)
     try:
-        _voucher(
-            database,
-            controller_id,
-            unifi_id="v1",
-            code="1234567890",
-        )
+        voucher_id = _voucher(db, controller, "used-history", "1111122222", used=0)
+        from voucher_management.sync_store import persist_successful_snapshot
+        from voucher_management.unifi_api import ApiVoucher
 
-        dataset = build_report_dataset(
-            database,
-            kind=ReportKind.FULL_HISTORY,
-            generated_at=NOW,
-            include_code_requested=True,
-        )
-
-        assert dataset.purpose is ReportPurpose.AUDIT
-        assert dataset.code_exposed is False
-        assert dataset.rows[0].code == ""
-    finally:
-        database.close()
-
-
-def test_report_totals_are_derived_from_atomic_usage_and_print_facts(tmp_path):
-    database, controller_id = _database(tmp_path)
-    try:
-        used = _voucher(
-            database,
-            controller_id,
-            unifi_id="used",
-            code="1111122222",
-            name="Used guest",
-            uses=3,
-        )
-        printed_unused = _voucher(
-            database,
-            controller_id,
-            unifi_id="printed",
-            code="3333344444",
-            name="Printed guest",
-        )
-        expired = _voucher(
-            database,
-            controller_id,
-            unifi_id="expired",
-            code="5555566666",
-            name="Expired guest",
-            expired=True,
-            expires_at="2026-09-10T09:00:00+00:00",
-        )
-        never_printed = _voucher(
-            database,
-            controller_id,
-            unifi_id="never",
-            code="7777788888",
-            name="Never printed",
-        )
-        assert len({used, printed_unused, expired, never_printed}) == 4
-
-        database.record_print_audit(
-            controller_id=controller_id,
-            audit_id="job-1",
-            codes=["33333-44444"],
-            output_file="first.pdf",
-            document_copies=1,
-            printed_at="2026-09-02T10:00:00+00:00",
-            windows_user="PC\\alice",
-        )
-        database.record_print_audit(
-            controller_id=controller_id,
-            audit_id="job-2",
-            codes=["33333-44444"],
-            output_file="second.pdf",
-            document_copies=2,
-            printed_at="2026-09-03T10:00:00+00:00",
-            windows_user="PC\\bob",
-        )
-
-        with database.transaction() as db:
-            db.execute(
-                "UPDATE vouchers SET assigned_to='Mario Rossi' WHERE id=?",
-                (printed_unused,),
+        def remote(used):
+            return ApiVoucher(
+                id="used-history",
+                code="1111122222",
+                recipient="",
+                duration_minutes=60,
+                create_time=1_700_000_000,
+                quota=1,
+                used=used,
+                status="VALID_MULTI",
             )
 
-        dataset = build_report_dataset(
-            database,
-            kind=ReportKind.SUMMARY,
-            generated_at=NOW,
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[remote(2)],
+            observed_at="2026-09-29T08:00:00+00:00",
+            sync_uuid="used-once",
+        )
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[remote(0)],
+            observed_at="2026-09-29T09:00:00+00:00",
+            sync_uuid="counter-reset",
         )
 
-        totals = dataset.totals
-        assert totals.vouchers == 4
-        assert totals.used_vouchers == 1
-        assert totals.total_controller_uses == 3
-        assert totals.expired_vouchers == 1
-        assert totals.printed_vouchers == 1
-        assert totals.print_jobs == 2
-        assert totals.physical_copies == 3
-        assert totals.reprint_jobs == 1
-        assert totals.reprint_copies == 2
-        assert totals.printed_never_used == 1
-        assert totals.never_printed == 3
-        assert totals.nominal_vouchers == 1
-
-        row = next(
-            item for item in dataset.rows if item.voucher_id == printed_unused
-        )
-        assert row.first_printed_at == "2026-09-02T10:00:00+00:00"
-        assert row.last_printed_at == "2026-09-03T10:00:00+00:00"
-        assert row.print_operators == ("PC\\alice", "PC\\bob")
-        assert row.assigned_to == "Mario Rossi"
-        assert row.recipient == "Mario Rossi"
-    finally:
-        database.close()
-
-
-def test_report_kinds_filter_without_changing_underlying_totals_semantics(tmp_path):
-    database, controller_id = _database(tmp_path)
-    try:
-        _voucher(
-            database,
-            controller_id,
-            unifi_id="used",
-            code="1111122222",
-            uses=1,
-        )
-        printed = _voucher(
-            database,
-            controller_id,
-            unifi_id="printed",
-            code="3333344444",
-        )
-        _voucher(
-            database,
-            controller_id,
-            unifi_id="expired",
-            code="5555566666",
-            expired=True,
-        )
-        nominal = _voucher(
-            database,
-            controller_id,
-            unifi_id="nominal",
-            code="7777788888",
-        )
-        with database.transaction() as db:
-            db.execute(
-                "UPDATE vouchers SET assigned_to='Assigned person' WHERE id=?",
-                (nominal,),
-            )
-        database.record_print_audit(
-            controller_id=controller_id,
-            audit_id="job-printed",
-            codes=["33333-44444"],
-            output_file="print.pdf",
-            document_copies=1,
-            printed_at="2026-09-02T10:00:00+00:00",
-            windows_user="PC\\alice",
-        )
-
-        expected = {
-            ReportKind.USED: {"used"},
-            ReportKind.EXPIRED: {"expired"},
-            ReportKind.PRINTED_UNUSED: {"printed"},
-            ReportKind.NEVER_PRINTED: {"used", "expired", "nominal"},
-            ReportKind.NOMINAL: {"nominal"},
-        }
-
-        for kind, expected_ids in expected.items():
-            dataset = build_report_dataset(
-                database,
-                kind=kind,
-                generated_at=NOW,
-            )
-            unifi_ids = {
-                database.connection.execute(
-                    "SELECT unifi_id FROM vouchers WHERE id=?",
-                    (row.voucher_id,),
-                ).fetchone()[0]
-                for row in dataset.rows
-            }
-            assert unifi_ids == expected_ids
-            assert dataset.totals.vouchers == len(expected_ids)
-    finally:
-        database.close()
-
-
-def test_controller_filter_never_mixes_controller_rows(tmp_path):
-    database, first_controller = _database(tmp_path)
-    second_controller = database.create_controller(
-        name="Seconda sede",
-        api_root="https://second.example/proxy/network/integration/v1",
-        created_at=NOW,
-    )
-    try:
-        _voucher(
-            database,
-            first_controller,
-            unifi_id="first",
-            code="1111122222",
-        )
-        _voucher(
-            database,
-            second_controller,
-            unifi_id="second",
-            code="3333344444",
-        )
-
-        first = build_report_dataset(
-            database,
-            kind=ReportKind.SUMMARY,
-            generated_at=NOW,
-            controller_id=first_controller,
-        )
-        all_controllers = build_report_dataset(
-            database,
-            kind=ReportKind.SUMMARY,
-            generated_at=NOW,
-        )
-
-        assert first.controller_label == "Sala Assemblee"
-        assert len(first.rows) == 1
-        assert first.rows[0].controller_name == "Sala Assemblee"
-        assert all_controllers.controller_label == "Tutti i controller"
-        assert len(all_controllers.rows) == 2
-    finally:
-        database.close()
-
-
-def test_expired_report_uses_persisted_expiration_time_offline(tmp_path):
-    database, controller_id = _database(tmp_path)
-    try:
-        voucher_id = _voucher(
-            database,
-            controller_id,
-            unifi_id="time-expired",
-            code="9999900000",
-            expired=False,
-            expires_at="2026-09-20T09:00:00+00:00",
-        )
-
-        dataset = build_report_dataset(
-            database,
-            kind=ReportKind.EXPIRED,
-            generated_at=NOW,
-        )
+        dataset = build_report_dataset(db, kind=ReportKind.USED, generated_at=NOW)
 
         assert [row.voucher_id for row in dataset.rows] == [voucher_id]
-        assert dataset.rows[0].expired is True
-        assert dataset.rows[0].status == "Scaduto"
+        assert dataset.rows[0].ever_used is True
+        assert dataset.rows[0].authorized_guest_count == 0
     finally:
-        database.close()
+        db.close()
 
 
-def test_controller_foreign_key_preserves_report_history(tmp_path):
-    database, controller_id = _database(tmp_path)
+def test_summary_exposes_local_history_totals_without_clear_codes(tmp_path):
+    db, controller = _db(tmp_path)
     try:
-        _voucher(
-            database,
-            controller_id,
-            unifi_id="kept",
-            code="1111122222",
+        _voucher(db, controller, "external", "1111122222", name="EMI06")
+        nominal = _voucher(db, controller, "nominal", "3333344444", name="Pinco Pallino")
+        db.mark_application_created_vouchers(
+            controller_id=controller,
+            unifi_ids=["nominal"],
+            is_nominal=True,
         )
 
-        with database.transaction() as db:
-            try:
-                db.execute(
-                    "DELETE FROM controllers WHERE id=?",
-                    (controller_id,),
-                )
-            except sqlite3.IntegrityError:
-                pass
-            else:
-                raise AssertionError(
-                    "referenced controller deletion must be blocked"
-                )
-
         dataset = build_report_dataset(
-            database,
-            kind=ReportKind.FULL_HISTORY,
-            generated_at=NOW,
-        )
-
-        assert len(dataset.rows) == 1
-        assert dataset.rows[0].controller_name == "Sala Assemblee"
-    finally:
-        database.close()
-
-
-def test_empty_scoped_report_keeps_controller_label(tmp_path):
-    database, controller_id = _database(tmp_path)
-    try:
-        dataset = build_report_dataset(
-            database,
+            db,
             kind=ReportKind.SUMMARY,
             generated_at=NOW,
-            controller_id=controller_id,
+            include_code_requested=True,
         )
 
-        assert dataset.rows == ()
-        assert dataset.controller_label == "Sala Assemblee"
+        assert dataset.controller_label == "Tutto lo storico locale"
+        assert dataset.code_exposed is False
+        assert all(row.code == "" for row in dataset.rows)
+        assert dataset.totals.vouchers == 2
+        assert dataset.totals.generated_vouchers == 1
+        assert dataset.totals.nominal_vouchers == 1
+        assert dataset.totals.unclassified_vouchers == 1
     finally:
-        database.close()
+        db.close()
 
 
-
-def test_retention_archived_row_remains_in_history_with_archived_status(tmp_path):
-    database, controller_id = _database(tmp_path)
+def test_printed_unused_uses_historical_usage_not_only_current_counter(tmp_path):
+    db, controller = _db(tmp_path)
     try:
-        voucher_id = _voucher(
-            database,
-            controller_id,
-            unifi_id="archived",
-            code="1234567890",
-            name="Old guest",
-            created_at="2025-01-01T09:00:00+00:00",
+        voucher_id = _voucher(db, controller, "printed", "1111122222", used=0)
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="job-1",
+            codes=["11111-22222"],
+            output_file="voucher.pdf",
+            document_copies=1,
+            printed_at="2026-09-02T10:00:00+00:00",
+            windows_user="PC\\alice",
         )
-        with database.transaction() as db:
-            db.execute(
-                """UPDATE vouchers
-                   SET code=?, name='', assigned_to='', notes='', archived_at=?
-                   WHERE id=?""",
-                (
-                    f"ARCHIVED-{voucher_id}",
-                    "2026-09-27T08:00:00+00:00",
-                    voucher_id,
-                ),
-            )
-
         dataset = build_report_dataset(
-            database,
-            kind=ReportKind.FULL_HISTORY,
+            db,
+            kind=ReportKind.PRINTED_UNUSED,
             generated_at=NOW,
         )
-
-        row = next(item for item in dataset.rows if item.voucher_id == voucher_id)
-        assert row.status == "Archiviato"
-        assert row.archived_at == "2026-09-27T08:00:00+00:00"
-        assert row.code == ""
-        assert row.recipient == ""
+        assert [row.voucher_id for row in dataset.rows] == [voucher_id]
     finally:
-        database.close()
+        db.close()
+
+
+def test_expired_report_uses_expiry_time_offline(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="expired-by-time",
+            code="9999900000",
+            imported_at="2026-09-01T09:05:00+00:00",
+            created_at="2026-09-01T09:00:00+00:00",
+            duration_minutes=60,
+            authorized_guest_limit=1,
+            authorized_guest_count=0,
+            expires_at="2026-09-20T09:00:00+00:00",
+            expired=False,
+            last_synced_at=NOW,
+        )
+        dataset = build_report_dataset(db, kind=ReportKind.EXPIRED, generated_at=NOW)
+        assert [row.voucher_id for row in dataset.rows] == [voucher_id]
+    finally:
+        db.close()
+
+
+def test_controller_scope_filters_historical_rows(tmp_path):
+    db, first = _db(tmp_path)
+    second = db.create_controller(name="Seconda sede", api_root="https://b.example", created_at=NOW)
+    try:
+        _voucher(db, first, "first", "1111122222")
+        _voucher(db, second, "second", "3333344444")
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+            controller_id=first,
+        )
+        assert len(dataset.rows) == 1
+        assert dataset.controller_label == "Reception"
+    finally:
+        db.close()
