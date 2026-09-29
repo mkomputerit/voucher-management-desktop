@@ -285,6 +285,86 @@ def test_uncertain_create_keeps_guard_and_blocks_second_create(monkeypatch):
     assert "esito da verificare" in shown[-1][0][1]
 
 
+def test_confirmed_create_is_not_reported_failed_when_local_reporting_persistence_fails(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+    warnings = []
+    network_errors = []
+
+    class Guard:
+        def __init__(self):
+            self.pending = False
+
+        def begin(self):
+            self.pending = True
+
+        def clear(self):
+            self.pending = False
+            return True
+
+    guard = Guard()
+    created = SimpleNamespace(id="created-1")
+    fake = SimpleNamespace(
+        client=object(),
+        create_guard=guard,
+        vouchers=[],
+        checked_ids=set(),
+        filter_var=SimpleNamespace(set=lambda value: None),
+        populate=lambda: None,
+        active_controller_id=7,
+        paths=SimpleNamespace(database=tmp_path / "db.sqlite"),
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: network_errors.append(args),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "CreateDialog",
+        lambda parent: SimpleNamespace(
+            result={
+                "recipient": "Pinco Pallino",
+                "quantity": 1,
+                "is_nominal": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "create_vouchers_and_refresh",
+        lambda *args, **kwargs: creation_ui.CreateOutcome(
+            created=(created,),
+            vouchers=(created,),
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "persist_create_result_to_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("synthetic local persistence failure")
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+
+    VoucherApp.create(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert guard.pending is False
+    assert network_errors == []
+    assert warnings
+    assert "UniFi ha confermato la creazione" in warnings[-1][0][1]
+    assert "Non ripetere la creazione" in warnings[-1][0][1]
+
+
 def test_manual_refresh_clears_pending_create_guard(monkeypatch):
     tasks = []
 
