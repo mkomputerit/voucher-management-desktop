@@ -322,7 +322,10 @@ WHERE authorized_guest_count > 0
        FROM voucher_sync_observations AS uso
        WHERE uso.voucher_id=vouchers.id
          AND uso.field_name='authorized_guest_count'
-         AND CAST(COALESCE(uso.new_value, '0') AS INTEGER) > 0
+         AND (
+             CAST(COALESCE(uso.previous_value, '0') AS INTEGER) > 0
+             OR CAST(COALESCE(uso.new_value, '0') AS INTEGER) > 0
+         )
    );
 CREATE INDEX IF NOT EXISTS idx_vouchers_origin ON vouchers(origin);
 CREATE INDEX IF NOT EXISTS idx_vouchers_nominal ON vouchers(is_nominal);
