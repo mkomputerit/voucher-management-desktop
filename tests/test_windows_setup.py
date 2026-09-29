@@ -12,8 +12,9 @@ def test_nsis_setup_wraps_reviewed_shared_deployment_contract():
     )
 
     assert "RequestExecutionLevel admin" in script
+    assert "SetRegView 64" in script
     assert '$PROGRAMFILES64\\Voucher Management' in script
-    assert '$COMMONAPPDATA\\${PRODUCT_DATA_DIR}' in script
+    assert '$COMMONPROGRAMDATA\\${PRODUCT_DATA_DIR}' in script
     assert "Install-VoucherManagement.ps1" in script
     assert "Uninstall-VoucherManagement.ps1" in script
     assert "Voucher Management Operators" in script
