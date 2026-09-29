@@ -44,6 +44,7 @@ class CreateDialog(tk.Toplevel):
         self.data = tk.StringVar()
         self.down = tk.StringVar()
         self.up = tk.StringVar()
+        self.is_nominal = tk.BooleanVar(value=False)
 
         frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True)
@@ -144,9 +145,24 @@ class CreateDialog(tk.Toplevel):
                 width=12,
             ).grid(row=row, column=1, sticky="w")
 
+        ttk.Checkbutton(
+            frame,
+            text="Voucher nominale",
+            variable=self.is_nominal,
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Label(
+            frame,
+            text=(
+                "Classificazione locale per la reportistica. "
+                "Non viene inviata al Controller UniFi."
+            ),
+            style="Muted.TLabel",
+            wraplength=360,
+        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
         buttons = ttk.Frame(frame)
         buttons.grid(
-            row=8,
+            row=10,
             column=0,
             columnspan=2,
             sticky="e",
@@ -176,6 +192,7 @@ class CreateDialog(tk.Toplevel):
                 data_mb=self.data.get(),
                 down_mbps=self.down.get(),
                 up_mbps=self.up.get(),
+                is_nominal=self.is_nominal.get(),
             )
         except (TypeError, ValueError, tk.TclError):
             messagebox.showerror(
