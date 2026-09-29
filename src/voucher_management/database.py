@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 BACKUP_AUDIT_DESTINATIONS = frozenset(
     {
@@ -97,6 +97,10 @@ CREATE TABLE IF NOT EXISTS vouchers (
     last_synced_at TEXT NOT NULL,
     assigned_to TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
+    created_by_app INTEGER CHECK (created_by_app IS NULL OR created_by_app IN (0, 1)),
+    is_nominal INTEGER CHECK (is_nominal IS NULL OR is_nominal IN (0, 1)),
+    classification_updated_at TEXT,
+    ever_used INTEGER NOT NULL DEFAULT 0 CHECK (ever_used IN (0, 1)),
     archived_at TEXT,
     UNIQUE (controller_id, unifi_id)
 );
@@ -292,6 +296,35 @@ ON legacy_audit_events(resolution_status, occurred_at);
 """
 
 
+MIGRATION_2_TO_3_SQL = """
+ALTER TABLE vouchers ADD COLUMN created_by_app INTEGER
+    CHECK (created_by_app IS NULL OR created_by_app IN (0, 1));
+ALTER TABLE vouchers ADD COLUMN is_nominal INTEGER
+    CHECK (is_nominal IS NULL OR is_nominal IN (0, 1));
+ALTER TABLE vouchers ADD COLUMN classification_updated_at TEXT;
+ALTER TABLE vouchers ADD COLUMN ever_used INTEGER NOT NULL DEFAULT 0
+    CHECK (ever_used IN (0, 1));
+
+UPDATE vouchers
+SET ever_used=1
+WHERE authorized_guest_count > 0
+   OR EXISTS (
+       SELECT 1
+       FROM voucher_sync_observations AS observation
+       WHERE observation.voucher_id=vouchers.id
+         AND observation.field_name='authorized_guest_count'
+         AND CAST(COALESCE(observation.new_value, '0') AS INTEGER) > 0
+   );
+
+CREATE INDEX IF NOT EXISTS idx_vouchers_created_by_app
+ON vouchers(created_by_app);
+CREATE INDEX IF NOT EXISTS idx_vouchers_is_nominal
+ON vouchers(is_nominal);
+CREATE INDEX IF NOT EXISTS idx_vouchers_ever_used
+ON vouchers(ever_used);
+"""
+
+
 @dataclass(frozen=True)
 class PrintAuditSummary:
     """Aggregated local print facts used by the duplicate-print warning."""
@@ -333,6 +366,7 @@ class Database:
             raise RuntimeError(
                 f"Database schema {current} is newer than supported {SCHEMA_VERSION}"
             )
+
         if current == 0:
             with self.transaction():
                 self.connection.executescript(SCHEMA_SQL)
@@ -341,12 +375,10 @@ class Database:
                     "INSERT OR REPLACE INTO app_metadata(key, value) VALUES (?, ?)",
                     ("schema_version", str(SCHEMA_VERSION)),
                 )
-        elif current == 1:
+            return
+
+        if current == 1:
             try:
-                # sqlite3.executescript() controls transaction boundaries on
-                # its own. Put BEGIN/COMMIT inside the script so an interrupted
-                # schema upgrade cannot leave only part of the v2 evidence
-                # schema installed.
                 self.connection.executescript(
                     "BEGIN IMMEDIATE;\n"
                     + MIGRATION_1_TO_2_SQL
@@ -360,7 +392,26 @@ COMMIT;
             except Exception:
                 self.connection.rollback()
                 raise
-        elif current < SCHEMA_VERSION:
+            current = 2
+
+        if current == 2:
+            try:
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + MIGRATION_2_TO_3_SQL
+                    + """
+PRAGMA user_version = 3;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '3');
+COMMIT;
+"""
+                )
+            except Exception:
+                self.connection.rollback()
+                raise
+            current = 3
+
+        if current != SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database schema migration {current}->{SCHEMA_VERSION} is not implemented"
             )
@@ -769,6 +820,7 @@ COMMIT;
             duration_minutes, authorized_guest_limit, authorized_guest_count,
             activated_at, expires_at, int(expired), data_limit_mb,
             download_limit_kbps, upload_limit_kbps, last_synced_at, last_synced_at,
+            int(authorized_guest_count > 0),
         )
         def write(db: sqlite3.Connection) -> int:
             db.execute(
@@ -776,8 +828,9 @@ COMMIT;
                        controller_id, unifi_id, code, name, created_at, imported_at,
                        duration_minutes, authorized_guest_limit, authorized_guest_count,
                        activated_at, expires_at, expired, data_limit_mb,
-                       download_limit_kbps, upload_limit_kbps, last_seen_at, last_synced_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       download_limit_kbps, upload_limit_kbps, last_seen_at, last_synced_at,
+                       ever_used
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(controller_id, unifi_id) DO UPDATE SET
                        code=excluded.code, name=excluded.name, created_at=excluded.created_at,
                        duration_minutes=excluded.duration_minutes,
@@ -789,7 +842,11 @@ COMMIT;
                        upload_limit_kbps=excluded.upload_limit_kbps,
                        present_on_controller=1, archived_at=NULL,
                        last_seen_at=excluded.last_seen_at,
-                       last_synced_at=excluded.last_synced_at""",
+                       last_synced_at=excluded.last_synced_at,
+                       ever_used=CASE
+                           WHEN vouchers.ever_used=1 OR excluded.ever_used=1 THEN 1
+                           ELSE 0
+                       END""",
                 values,
             )
             row = db.execute(
@@ -797,6 +854,66 @@ COMMIT;
                 (controller_id, unifi_id),
             ).fetchone()
             return int(row["id"])
+
+        if connection is not None:
+            return write(connection)
+        with self.transaction() as db:
+            return write(db)
+
+    def mark_vouchers_created_by_app(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+        is_nominal: bool,
+        classified_at: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
+        """Attach application-owned reporting facts to confirmed created vouchers.
+
+        UniFi does not know whether a voucher is nominal. The flag is therefore
+        local administrative metadata and is written only after the controller
+        has returned a definitive creation result. Existing rows from older
+        versions remain NULL rather than being guessed.
+        """
+
+        normalized_ids = tuple(
+            dict.fromkeys(str(value or "").strip() for value in unifi_ids)
+        )
+        if not normalized_ids or any(not value for value in normalized_ids):
+            raise ValueError("at least one valid voucher id is required")
+        timestamp = str(classified_at or "").strip()
+        if not timestamp:
+            raise ValueError("classification timestamp is required")
+
+        placeholders = ",".join("?" for _ in normalized_ids)
+
+        def write(db: sqlite3.Connection) -> int:
+            rows = db.execute(
+                f"""SELECT id, unifi_id FROM vouchers
+                    WHERE controller_id=? AND unifi_id IN ({placeholders})""",
+                (int(controller_id), *normalized_ids),
+            ).fetchall()
+            found = {str(row["unifi_id"]) for row in rows}
+            missing = set(normalized_ids) - found
+            if missing:
+                raise RuntimeError(
+                    "created voucher classification requires persisted voucher rows"
+                )
+
+            db.execute(
+                f"""UPDATE vouchers
+                    SET created_by_app=1, is_nominal=?,
+                        classification_updated_at=?
+                    WHERE controller_id=? AND unifi_id IN ({placeholders})""",
+                (
+                    int(bool(is_nominal)),
+                    timestamp,
+                    int(controller_id),
+                    *normalized_ids,
+                ),
+            )
+            return len(rows)
 
         if connection is not None:
             return write(connection)
@@ -1036,6 +1153,10 @@ COMMIT;
                     v.code,
                     v.name,
                     v.assigned_to,
+                    v.created_by_app,
+                    v.is_nominal,
+                    v.classification_updated_at,
+                    v.ever_used,
                     v.created_at,
                     v.imported_at,
                     v.duration_minutes,
