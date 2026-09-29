@@ -208,7 +208,7 @@ def _status(
         return "Utilizzato"
     if print_jobs > 0:
         return "Stampato"
-    return "Mai stampato"
+    return "Senza stampe registrate"
 
 
 def origin_label(origin: str) -> str:
