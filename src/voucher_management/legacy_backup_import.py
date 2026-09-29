@@ -929,6 +929,23 @@ def execute_legacy_backup_import(
                     migration_uuid=migration_uuid,
                 )
 
+                # A resolved legacy "generate" event is positive evidence that
+                # the voucher was created by an earlier Voucher Management
+                # installation. Nominality did not exist as an explicit fact,
+                # so it deliberately remains unclassified.
+                with database.transaction() as db:
+                    db.execute(
+                        """UPDATE vouchers
+                           SET origin='LEGACY_APPLICATION'
+                           WHERE id IN (
+                               SELECT DISTINCT voucher_id
+                               FROM legacy_audit_events
+                               WHERE resolution_status='RESOLVED'
+                                 AND event_type='generate'
+                                 AND voucher_id IS NOT NULL
+                           )"""
+                    )
+
         current_minimized_ids = _minimized_voucher_ids_for_migration(
             database,
             evidence.migration_uuid,
