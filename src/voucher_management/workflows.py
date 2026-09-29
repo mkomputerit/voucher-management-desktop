@@ -49,10 +49,11 @@ class DeleteBlock:
 
 @dataclass(frozen=True)
 class DeleteOutcome:
-    """Result of a successful controller delete operation."""
+    """Result of a confirmed controller delete and its local reconciliation."""
 
     vouchers: tuple[ApiVoucher, ...]
     refresh_error: UniFiApiError | None = None
+    local_persistence_error: Exception | None = None
 
 
 
