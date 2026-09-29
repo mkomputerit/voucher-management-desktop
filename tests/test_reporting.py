@@ -1026,3 +1026,31 @@ def test_absence_sync_does_not_make_usage_evidence_look_fresher(tmp_path):
         assert history.data_as_of == "2026-09-01T09:00:00+00:00"
     finally:
         db.close()
+
+
+def test_verified_controller_absence_is_visible_in_report_status(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "absent-status",
+            "4545454545",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET present_on_controller=0, last_synced_at=?
+                   WHERE id=?""",
+                ("2026-09-30T08:00:00+00:00", voucher_id),
+            )
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+        row = next(row for row in dataset.rows if row.voucher_id == voucher_id)
+        assert row.status == "Senza stampe registrate · non presente su UniFi"
+    finally:
+        db.close()
