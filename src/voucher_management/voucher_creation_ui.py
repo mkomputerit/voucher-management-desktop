@@ -56,7 +56,12 @@ class VoucherCreationMixin:
         cached = list(self.vouchers)
         params = dict(dialog.result)
         controller_id = getattr(self, "active_controller_id", None)
-        database_path = Path(self.paths.database)
+        paths = getattr(self, "paths", None)
+        database_path = (
+            Path(paths.database)
+            if controller_id is not None and paths is not None
+            else None
+        )
 
         def worker():
             outcome = create_vouchers_and_refresh(
@@ -64,7 +69,7 @@ class VoucherCreationMixin:
                 cached,
                 params,
             )
-            if controller_id is not None:
+            if controller_id is not None and database_path is not None:
                 persist_create_result_to_path(
                     database_path,
                     controller_id=controller_id,
