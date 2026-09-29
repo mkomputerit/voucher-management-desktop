@@ -22,6 +22,10 @@ from tkinter import messagebox
 
 from . import __version__
 from .background_tasks import BackgroundResult, start_background_task
+from .create_reporting_recovery import (
+    reconcile_pending_create_reporting,
+    reconcile_pending_create_reporting_to_path,
+)
 from .database import Database
 from .dialogs import PrintCopiesDialog, ReprintConfirmDialog
 from .history import HistoryError, HistoryService
@@ -178,6 +182,17 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             self.paths.logs,
             int(self.settings.get("log_retention_days", 30)),
         )
+        try:
+            if reconcile_pending_create_reporting(
+                self.database,
+                self.paths.pending_create_reporting,
+            ):
+                self.logger.info("create_reporting_reconciled_on_startup")
+        except Exception as exc:
+            self.logger.error(
+                "create_reporting_startup_reconcile_failed type=%s",
+                type(exc).__name__,
+            )
         self._cleanup_orphan_pdf_temps()
         self.history = HistoryService(
             self.paths.history,
@@ -598,22 +613,49 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         def worker():
             snapshot = list(refresh_vouchers(client))
+            archive_error = None
             if controller_id is not None:
-                persist_refresh_snapshot_to_path(
-                    database_path,
-                    controller_id=controller_id,
-                    vouchers=snapshot,
-                    observed_at=datetime.now(timezone.utc).isoformat(),
-                )
-            return snapshot
+                try:
+                    persist_refresh_snapshot_to_path(
+                        database_path,
+                        controller_id=controller_id,
+                        vouchers=snapshot,
+                        observed_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    reconcile_pending_create_reporting_to_path(
+                        database_path,
+                        self.paths.pending_create_reporting,
+                        controller_id=controller_id,
+                    )
+                except Exception as exc:
+                    archive_error = exc
+            return snapshot, archive_error
 
-        def completed(vouchers) -> None:
+        def completed(result) -> None:
+            vouchers, archive_error = result
             snapshot = list(vouchers)
             self.vouchers = snapshot
             self.controller_snapshot_live = True
-            callback = getattr(self, "_controller_operation_succeeded", None)
-            if callback is not None:
-                callback()
+            if archive_error is None:
+                callback = getattr(self, "_controller_operation_succeeded", None)
+                if callback is not None:
+                    callback()
+            else:
+                callback = getattr(self, "_controller_operation_stale", None)
+                if callback is not None:
+                    callback(archive_failed=True)
+                self.logger.error(
+                    "refresh_archive_persistence_failed type=%s",
+                    type(archive_error).__name__,
+                )
+                messagebox.showwarning(
+                    "Controller aggiornato • archivio locale da verificare",
+                    "La controller ha restituito correttamente l'elenco aggiornato, "
+                    "ma non è stato possibile salvarlo completamente nello storico "
+                    "locale. I numeri Home sono live; i Report potrebbero essere "
+                    "incompleti finché un aggiornamento non riesce.",
+                    parent=self,
+                )
             try:
                 self.create_guard.clear()
             except CreateMutationGuardError as exc:
