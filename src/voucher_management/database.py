@@ -110,6 +110,9 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_code ON vouchers(controller_id, code);
 CREATE INDEX IF NOT EXISTS idx_vouchers_expired ON vouchers(controller_id, expired);
 CREATE INDEX IF NOT EXISTS idx_vouchers_usage ON vouchers(controller_id, authorized_guest_count);
 CREATE INDEX IF NOT EXISTS idx_vouchers_expires ON vouchers(expires_at);
+CREATE INDEX IF NOT EXISTS idx_vouchers_created_by_app ON vouchers(created_by_app);
+CREATE INDEX IF NOT EXISTS idx_vouchers_is_nominal ON vouchers(is_nominal);
+CREATE INDEX IF NOT EXISTS idx_vouchers_ever_used ON vouchers(ever_used);
 
 CREATE TABLE IF NOT EXISTS sync_runs (
     id INTEGER PRIMARY KEY,
