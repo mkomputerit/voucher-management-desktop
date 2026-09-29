@@ -91,7 +91,8 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Generati da Voucher Management", str(totals.generated_vouchers)],
         ["Utilizzati almeno una volta", str(totals.used_vouchers)],
         ["Mai osservati utilizzati", str(totals.never_used_vouchers)],
-        ["Utilizzi controller osservati", str(totals.total_controller_uses)],
+        ["Utilizzo non determinabile", str(totals.usage_unknown_vouchers)],
+        ["Utilizzi (ultimo valore conservato)", str(totals.total_controller_uses)],
         ["Voucher scaduti", str(totals.expired_vouchers)],
         ["Voucher stampati", str(totals.printed_vouchers)],
         ["Mai stampati", str(totals.never_printed)],
@@ -118,6 +119,7 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
             "Creazione controller",
             "Prima acquisizione",
             "Scadenza",
+            "Dato uso",
             "Utilizzato",
             "Utilizzi",
             "Stampe",
@@ -142,8 +144,13 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
             _display_time(row.created_at),
             _display_time(row.imported_at),
             _display_time(row.expires_at),
-            "Sì" if row.ever_used else "No",
-            str(row.authorized_guest_count),
+            "Osservato" if row.usage_observed else "Non disponibile",
+            (
+                "Sì"
+                if row.ever_used
+                else ("No" if row.usage_observed else "—")
+            ),
+            str(row.authorized_guest_count) if row.usage_observed else "—",
             str(row.print_jobs),
             str(row.physical_copies),
             str(row.reprint_jobs),
@@ -343,9 +350,9 @@ def render_report_pdf(
         else:
             usable = page_width - 20 * mm
             if dataset.code_exposed:
-                weights = [0.8, 0.8, 1.2, 1.0, 0.62, 0.78, 0.78, 0.78, 0.52, 0.44, 0.44, 0.44, 0.48, 0.82, 0.62]
+                weights = [0.72, 0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
             else:
-                weights = [0.8, 1.2, 1.0, 0.62, 0.78, 0.78, 0.78, 0.52, 0.44, 0.44, 0.44, 0.48, 0.82, 0.62]
+                weights = [0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
             scale = usable / sum(weights)
             detail_table = Table(
                 rows,
@@ -373,9 +380,11 @@ def render_report_pdf(
         story.append(Spacer(1, 4 * mm))
         story.append(
             _paragraph(
-                "Nota: “Utilizzato” significa che Voucher Management ha osservato "
-                "almeno un utilizzo nello storico locale. Il totale utilizzi è l'ultimo "
-                "valore osservato dal controller e non rappresenta l'ora esatta d'uso.",
+                "Nota: “Mai utilizzato” viene dichiarato solo quando Voucher Management "
+                "ha effettivamente osservato il dato d'uso e non ha mai visto un valore "
+                "positivo. Se manca questa evidenza, il report mostra “uso non "
+                "determinabile”. Il numero utilizzi è l'ultimo valore conservato e non "
+                "rappresenta l'ora esatta d'uso.",
                 small,
             )
         )
