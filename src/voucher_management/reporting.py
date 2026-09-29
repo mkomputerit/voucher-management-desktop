@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Iterable
 
 from .database import Database
@@ -385,3 +386,27 @@ def build_report_dataset(
         data_from=sync_times[0] if sync_times else "",
         data_as_of=sync_times[-1] if sync_times else "",
     )
+
+
+def build_report_dataset_from_path(
+    database_path: Path,
+    *,
+    kind: ReportKind,
+    generated_at: str,
+    controller_id: int | None = None,
+    include_code_requested: bool = False,
+) -> ReportDataset:
+    """Build one report through a worker-owned SQLite connection."""
+
+    database = Database(Path(database_path))
+    try:
+        database.initialize()
+        return build_report_dataset(
+            database,
+            kind=kind,
+            generated_at=generated_at,
+            controller_id=controller_id,
+            include_code_requested=include_code_requested,
+        )
+    finally:
+        database.close()
