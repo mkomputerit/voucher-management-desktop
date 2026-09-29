@@ -892,6 +892,12 @@ def test_printed_unused_requires_controller_observation_after_first_print(tmp_pa
             generated_at=NOW,
         )
         assert stale.rows == ()
+        stale_summary = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+        )
+        assert stale_summary.totals.printed_never_used == 0
 
         with db.transaction() as tx:
             tx.execute(
@@ -912,6 +918,12 @@ def test_printed_unused_requires_controller_observation_after_first_print(tmp_pa
             generated_at=NOW,
         )
         assert [row.voucher_id for row in observed_after_print.rows] == [voucher_id]
+        fresh_summary = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+        )
+        assert fresh_summary.totals.printed_never_used == 1
     finally:
         db.close()
 
