@@ -600,3 +600,30 @@ def test_legacy_evidence_ready_generation_blocks_before_materialization(tmp_path
         assert result.skipped_ids == (voucher_id,)
     finally:
         database.close()
+
+
+def test_retention_candidate_exposes_last_actual_presence_not_absence_sync(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="retention-freshness",
+            code="7373737373",
+        )
+        with database.transaction() as db:
+            db.execute(
+                """UPDATE vouchers
+                   SET last_seen_at=?, last_synced_at=?
+                   WHERE id=?""",
+                (OLD, NOW, voucher_id),
+            )
+
+        candidates = retention_candidates(database, now=NOW)
+        candidate = next(
+            item for item in candidates if item.voucher_id == voucher_id
+        )
+        assert candidate.last_seen_at == OLD
+        assert candidate.last_synced_at == NOW
+    finally:
+        database.close()
