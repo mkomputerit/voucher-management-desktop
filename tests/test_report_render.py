@@ -98,7 +98,7 @@ def test_detail_csv_hides_codes_but_keeps_sanitized_administrative_detail(tmp_pa
     assert "Descrizione UniFi;Destinatario locale;Origine" in payload
     assert "EMI06 & Sala <Nord>" in payload
     assert "Dato uso;Utilizzato;Guest autorizzati" in payload
-    assert "Ultima osservazione per voucher - più recente;" in payload
+    assert "Ultima presenza osservata per voucher - più recente;" in payload
     assert "26/09/2026" in payload
 
 
