@@ -309,6 +309,7 @@ def test_validate_create_params_normalizes_usage_modes(
         "data_mb": 1024,
         "down_mbps": 50,
         "up_mbps": 25,
+        "is_nominal": False,
     }
 
 
@@ -344,6 +345,21 @@ def test_validate_create_params_rejects_invalid_limits(field, value):
 
     with pytest.raises(ValueError):
         validate_create_params(**values)
+
+
+def test_validate_create_params_carries_explicit_nominal_flag():
+    params = validate_create_params(
+        recipient="Pinco Pallino",
+        quantity=1,
+        mode="Monouso",
+        quota=2,
+        expire_number=24,
+        expire_unit="Ore",
+        is_nominal=True,
+    )
+
+    assert params["recipient"] == "Pinco Pallino"
+    assert params["is_nominal"] is True
 
 
 def test_validate_create_params_keeps_optional_limits_unlimited():
