@@ -93,7 +93,7 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Utilizzati almeno una volta", str(totals.used_vouchers)],
         ["Nessun utilizzo rilevato", str(totals.never_used_vouchers)],
         ["Utilizzo non determinabile", str(totals.usage_unknown_vouchers)],
-        ["Guest autorizzati (somma ultimo conteggio)", str(totals.total_controller_uses)],
+        ["Utilizzi/guest autorizzati (somma ultimo conteggio osservato)", str(totals.total_controller_uses)],
         ["Voucher scaduti", str(totals.expired_vouchers)],
         ["Voucher stampati", str(totals.printed_vouchers)],
         ["Senza stampe registrate", str(totals.never_printed)],
@@ -115,7 +115,8 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
         headers.append("Voucher")
     headers.extend(
         [
-            "Destinatario",
+            "Descrizione UniFi",
+            "Destinatario locale",
             "Origine",
             "Nominale",
             "Creazione controller",
@@ -141,6 +142,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
         values.append(row.code)
     values.extend(
         [
+            row.controller_description or "—",
             row.recipient or "—",
             origin_label(row.origin),
             nominal_label(
@@ -188,11 +190,14 @@ def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
                 [_csv_cell("Ambito"), _csv_cell(dataset.controller_label)]
             )
             writer.writerow(
-                [_csv_cell("Dati controller dal"), _csv_cell(_display_time(dataset.data_from))]
+                [
+                    _csv_cell("Ultima osservazione per voucher - più vecchia"),
+                    _csv_cell(_display_time(dataset.data_from)),
+                ]
             )
             writer.writerow(
                 [
-                    _csv_cell("Dati controller aggiornati fino a"),
+                    _csv_cell("Ultima osservazione per voucher - più recente"),
                     _csv_cell(_display_time(dataset.data_as_of)),
                 ]
             )
@@ -242,6 +247,7 @@ def render_report_pdf(
             for row in dataset.rows
             for value in (
                 row.controller_name,
+                row.controller_description,
                 row.recipient,
                 row.status,
                 ", ".join(row.print_operators),
@@ -316,7 +322,7 @@ def render_report_pdf(
                 (
                     f"Generato: {_display_time(dataset.generated_at)}"
                     f"  |  Ambito: {dataset.controller_label}"
-                    f"  |  Ultime osservazioni controller nell’ambito: {_display_time(dataset.data_from)} - {_display_time(dataset.data_as_of)}"
+                    f"  |  Ultime osservazioni per voucher: {_display_time(dataset.data_from)} - {_display_time(dataset.data_as_of)}"
                 ),
                 subtitle_style,
             )
