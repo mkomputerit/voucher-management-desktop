@@ -215,9 +215,11 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
         assert all(row["present_on_controller"] == 0 for row in rows)
         assert all(row["expired"] == 1 for row in rows)
         assert all(row["archived_at"] is None for row in rows)
-        assert all(row["origin"] == "LEGACY_APPLICATION" for row in rows)
+        assert all(row["origin"] == "CONTROLLER" for row in rows)
         assert all(row["is_nominal"] is None for row in rows)
         assert all(row["usage_observed"] == 0 for row in rows)
+        # Legacy "generate" rows prove PDF generation, not who created the
+        # voucher on UniFi; creation provenance must therefore not be invented.
         imported_pdf = (
             paths.prints
             / "Imported"
