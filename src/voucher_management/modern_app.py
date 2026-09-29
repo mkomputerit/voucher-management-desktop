@@ -34,6 +34,7 @@ from .data_maintenance_ui import DataMaintenanceMixin
 from .backup_options_ui import default_backup_directory, validate_backup_directory
 from .controller_connection_ui import ControllerConnectionMixin
 from .voucher_deletion_ui import VoucherDeletionMixin
+from .voucher_local_metadata_ui import VoucherLocalMetadataMixin, local_metadata_summary
 from .workspace_state import build_controller_workspace_status
 from .workspace_overview import load_recent_workspace_activity
 
@@ -957,6 +958,7 @@ class ModernVoucherApp(
     DataMaintenanceMixin,
     ControllerConnectionMixin,
     VoucherDeletionMixin,
+    VoucherLocalMetadataMixin,
     VoucherApp,
 ):
     """Windows 11 operator shell around the stable voucher engine."""
@@ -1467,6 +1469,12 @@ class ModernVoucherApp(
             command=self.open_existing_pdf,
         )
         self.open_pdf_button.pack(side="left", padx=(8, 0))
+        self.local_data_button = ttk.Button(
+            secondary_actions,
+            text="Dati locali…",
+            command=self.edit_local_voucher_metadata,
+        )
+        self.local_data_button.pack(side="left", padx=(8, 0))
         self.delete_button = ttk.Button(
             secondary_actions,
             text="Elimina",
@@ -1529,6 +1537,7 @@ class ModernVoucherApp(
             "check",
             "code",
             "name",
+            "local",
             "created",
             "firstprint",
             "duration",
@@ -1548,7 +1557,8 @@ class ModernVoucherApp(
         self.tree.column("check", width=42, anchor="center", stretch=False)
         definitions = (
             ("code", "Voucher", 110, False),
-            ("name", "Destinatario", 220, True),
+            ("name", "Descrizione UniFi", 180, True),
+            ("local", "Dati locali", 200, True),
             ("created", "Creazione", 132, False),
             ("firstprint", "Prima stampa", 132, False),
             ("duration", "Durata", 78, False),
@@ -1563,7 +1573,7 @@ class ModernVoucherApp(
                 key,
                 width=width,
                 minwidth=60,
-                anchor="w" if key == "name" else "center",
+                anchor="w" if key in {"name", "local"} else "center",
                 stretch=stretch,
             )
         self.tree.tag_configure(
@@ -3302,10 +3312,23 @@ class ModernVoucherApp(
             return
         valid_ids = {v.id for v in self.vouchers if not self._is_expired(v)}
         self.checked_ids.intersection_update(valid_ids)
+        metadata_by_id = {}
+        controller_id = getattr(self, "active_controller_id", None)
+        if controller_id is not None:
+            try:
+                metadata_by_id = self.database.voucher_local_metadata_map(
+                    controller_id=int(controller_id),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "local_voucher_metadata_load_failed type=%s",
+                    type(exc).__name__,
+                )
         candidates = []
         for voucher in self.vouchers:
             expired = self._is_expired(voucher)
             stat = stats.get(voucher.code_formatted)
+            metadata = metadata_by_id.get(str(voucher.id))
             state = "SCADUTO" if expired else self._print_state(stat)
             if filt == "Da stampare" and (expired or state == "STAMPATO"):
                 continue
@@ -3313,13 +3336,36 @@ class ModernVoucherApp(
                 continue
             if filt == "Scaduti" and not expired:
                 continue
-            if query and query not in f"{voucher.recipient} {voucher.code_formatted}".lower():
+            local_search = (
+                f"{metadata.assigned_to} {metadata.notes} "
+                f"{local_metadata_summary(metadata)}"
+                if metadata is not None
+                else ""
+            )
+            if query and query not in (
+                f"{voucher.recipient} {voucher.code_formatted} {local_search}"
+            ).lower():
                 continue
-            candidates.append((-voucher.create_time, voucher, stat, state))
-        for _created, voucher, stat, state in sorted(candidates, key=lambda row: row[0]):
+            candidates.append((-voucher.create_time, voucher, stat, state, metadata))
+        for _created, voucher, stat, state, metadata in sorted(
+            candidates,
+            key=lambda row: row[0],
+        ):
             expired = state == "SCADUTO"
             mark = "—" if expired else ("☑" if voucher.id in self.checked_ids else "☐")
-            values = (mark, voucher.code_formatted, voucher.recipient or "-", time_label(voucher.create_time), audit_time_label(stat.first_print_utc if stat else ""), duration_label(voucher.duration_minutes), voucher.usage_label, state, stat.printed_copies if stat else 0, time_label(voucher.end_time))
+            values = (
+                mark,
+                voucher.code_formatted,
+                voucher.recipient or "-",
+                local_metadata_summary(metadata),
+                time_label(voucher.create_time),
+                audit_time_label(stat.first_print_utc if stat else ""),
+                duration_label(voucher.duration_minutes),
+                voucher.usage_label,
+                state,
+                stat.printed_copies if stat else 0,
+                time_label(voucher.end_time),
+            )
             tags = ("expired",) if expired else (("unprinted",) if state == "DA STAMPARE" else (("pdfready",) if state == "PDF CREATO" else ()))
             iid = self.tree.insert("", "end", values=values, tags=tags)
             self.by_iid[iid] = voucher
