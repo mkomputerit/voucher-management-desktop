@@ -270,6 +270,10 @@ class VoucherLocalMetadataMixin:
     def edit_local_voucher_metadata(self) -> None:
         """Edit one voucher's local classification/notes using stable UniFi id."""
 
+        if getattr(self, "_background_results", None) is not None:
+            self.bell()
+            return
+
         controller_id = getattr(self, "active_controller_id", None)
         if controller_id is None:
             messagebox.showinfo(
