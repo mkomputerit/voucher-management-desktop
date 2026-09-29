@@ -35,6 +35,8 @@ def build_controller_workspace_status(
     last_successful_sync_at: str = "",
     busy_label: str = "",
     failed: bool = False,
+    stale: bool = False,
+    archive_failed: bool = False,
 ) -> ControllerWorkspaceStatus:
     """Return a human-facing state without exposing API/TLS implementation detail."""
 
@@ -56,6 +58,30 @@ def build_controller_workspace_status(
                 f"I dati locali restano disponibili. Ultimo aggiornamento: "
                 f"{last_sync}."
             ),
+        )
+    if connected and (stale or archive_failed):
+        if archive_failed and stale:
+            detail = (
+                f"{name} è collegato, ma la fotografia controller deve essere "
+                f"riconciliata e l'archivio locale va verificato. Ultimo "
+                f"aggiornamento durevole: {last_sync}."
+            )
+        elif archive_failed:
+            detail = (
+                f"{name} è collegato e i dati live sono disponibili, ma "
+                f"l'archivio locale non è stato aggiornato. Ultimo "
+                f"aggiornamento durevole: {last_sync}."
+            )
+        else:
+            detail = (
+                f"{name} è collegato, ma l'elenco corrente deve essere "
+                f"sincronizzato di nuovo. Ultimo aggiornamento durevole: "
+                f"{last_sync}."
+            )
+        return ControllerWorkspaceStatus(
+            key="stale",
+            title="Dati da verificare",
+            detail=detail,
         )
     if connected:
         return ControllerWorkspaceStatus(
