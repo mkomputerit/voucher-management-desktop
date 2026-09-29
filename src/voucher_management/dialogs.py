@@ -44,6 +44,7 @@ class CreateDialog(tk.Toplevel):
         self.data = tk.StringVar()
         self.down = tk.StringVar()
         self.up = tk.StringVar()
+        self.nominal = tk.BooleanVar(value=False)
 
         frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True)
@@ -75,8 +76,14 @@ class CreateDialog(tk.Toplevel):
                 pady=4,
             )
 
+        ttk.Checkbutton(
+            frame,
+            text="Voucher nominale",
+            variable=self.nominal,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 8))
+
         ttk.Label(frame, text="Utilizzo").grid(
-            row=2,
+            row=3,
             column=0,
             sticky="w",
             pady=4,
@@ -87,12 +94,12 @@ class CreateDialog(tk.Toplevel):
             state="readonly",
             values=("Monouso", "Multiuso", "Multiuso illimitato"),
             width=22,
-        ).grid(row=2, column=1, sticky="w")
+        ).grid(row=4, column=1, sticky="w")
 
         ttk.Label(
             frame,
             text="Numero utilizzi (Multiuso)",
-        ).grid(row=3, column=0, sticky="w", pady=4)
+        ).grid(row=4, column=0, sticky="w", pady=4)
         ttk.Spinbox(
             frame,
             from_=2,
@@ -102,13 +109,13 @@ class CreateDialog(tk.Toplevel):
         ).grid(row=3, column=1, sticky="w")
 
         ttk.Label(frame, text="Scadenza").grid(
-            row=4,
+            row=5,
             column=0,
             sticky="w",
             pady=4,
         )
         expiry = ttk.Frame(frame)
-        expiry.grid(row=4, column=1, sticky="w")
+        expiry.grid(row=5, column=1, sticky="w")
         ttk.Spinbox(
             expiry,
             from_=1,
@@ -130,7 +137,7 @@ class CreateDialog(tk.Toplevel):
                 ("Download Mbps (vuoto = illimitato)", self.down),
                 ("Upload Mbps (vuoto = illimitato)", self.up),
             ),
-            5,
+            6,
         ):
             ttk.Label(frame, text=label).grid(
                 row=row,
@@ -146,7 +153,7 @@ class CreateDialog(tk.Toplevel):
 
         buttons = ttk.Frame(frame)
         buttons.grid(
-            row=8,
+            row=9,
             column=0,
             columnspan=2,
             sticky="e",
@@ -176,6 +183,7 @@ class CreateDialog(tk.Toplevel):
                 data_mb=self.data.get(),
                 down_mbps=self.down.get(),
                 up_mbps=self.up.get(),
+                is_nominal=self.nominal.get(),
             )
         except (TypeError, ValueError, tk.TclError):
             messagebox.showerror(
