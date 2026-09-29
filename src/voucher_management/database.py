@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 BACKUP_AUDIT_DESTINATIONS = frozenset(
     {
@@ -97,6 +97,9 @@ CREATE TABLE IF NOT EXISTS vouchers (
     last_synced_at TEXT NOT NULL,
     assigned_to TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'CONTROLLER'
+        CHECK (origin IN ('CONTROLLER', 'APPLICATION', 'LEGACY_APPLICATION', 'UNKNOWN')),
+    is_nominal INTEGER CHECK (is_nominal IS NULL OR is_nominal IN (0, 1)),
     archived_at TEXT,
     UNIQUE (controller_id, unifi_id)
 );
@@ -291,6 +294,15 @@ CREATE INDEX IF NOT EXISTS idx_legacy_audit_resolution
 ON legacy_audit_events(resolution_status, occurred_at);
 """
 
+MIGRATION_2_TO_3_SQL = """
+ALTER TABLE vouchers ADD COLUMN origin TEXT NOT NULL DEFAULT 'UNKNOWN'
+    CHECK (origin IN ('CONTROLLER', 'APPLICATION', 'LEGACY_APPLICATION', 'UNKNOWN'));
+ALTER TABLE vouchers ADD COLUMN is_nominal INTEGER
+    CHECK (is_nominal IS NULL OR is_nominal IN (0, 1));
+CREATE INDEX IF NOT EXISTS idx_vouchers_origin ON vouchers(origin);
+CREATE INDEX IF NOT EXISTS idx_vouchers_nominal ON vouchers(is_nominal);
+
+
 
 @dataclass(frozen=True)
 class PrintAuditSummary:
@@ -341,7 +353,9 @@ class Database:
                     "INSERT OR REPLACE INTO app_metadata(key, value) VALUES (?, ?)",
                     ("schema_version", str(SCHEMA_VERSION)),
                 )
-        elif current == 1:
+            return
+
+        if current == 1:
             try:
                 # sqlite3.executescript() controls transaction boundaries on
                 # its own. Put BEGIN/COMMIT inside the script so an interrupted
@@ -357,10 +371,29 @@ VALUES ('schema_version', '2');
 COMMIT;
 """
                 )
+                current = 2
             except Exception:
                 self.connection.rollback()
                 raise
-        elif current < SCHEMA_VERSION:
+
+        if current == 2:
+            try:
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + MIGRATION_2_TO_3_SQL
+                    + """
+PRAGMA user_version = 3;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '3');
+COMMIT;
+"""
+                )
+                current = 3
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current < SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database schema migration {current}->{SCHEMA_VERSION} is not implemented"
             )
@@ -803,6 +836,47 @@ COMMIT;
         with self.transaction() as db:
             return write(db)
 
+    def mark_application_created_vouchers(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+        is_nominal: bool,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        """Attach application-only reporting facts to a confirmed create result.
+
+        UniFi does not know whether a voucher is nominal and does not distinguish
+        vouchers created by this application from vouchers created elsewhere.
+        These fields are therefore local administrative facts and must survive
+        later controller synchronizations unchanged.
+        """
+
+        ids = tuple(dict.fromkeys(str(value).strip() for value in unifi_ids if str(value).strip()))
+        if not ids:
+            return
+
+        placeholders = ",".join("?" for _ in ids)
+        params = ("APPLICATION", int(bool(is_nominal)), int(controller_id), *ids)
+
+        def write(db: sqlite3.Connection) -> None:
+            cursor = db.execute(
+                f"""UPDATE vouchers
+                    SET origin=?, is_nominal=?
+                    WHERE controller_id=? AND unifi_id IN ({placeholders})""",
+                params,
+            )
+            if cursor.rowcount != len(ids):
+                raise RuntimeError(
+                    "confirmed created vouchers are missing from the local snapshot"
+                )
+
+        if connection is not None:
+            write(connection)
+            return
+        with self.transaction() as db:
+            write(db)
+
     def print_summary(self, voucher_id: int) -> PrintAuditSummary:
         """Return immutable print totals used before allowing a duplicate."""
 
@@ -1036,6 +1110,19 @@ COMMIT;
                     v.code,
                     v.name,
                     v.assigned_to,
+                    v.origin,
+                    v.is_nominal,
+                    CASE
+                        WHEN v.authorized_guest_count > 0 THEN 1
+                        WHEN EXISTS (
+                            SELECT 1
+                            FROM voucher_sync_observations AS uso
+                            WHERE uso.voucher_id=v.id
+                              AND uso.field_name='authorized_guest_count'
+                              AND CAST(COALESCE(uso.new_value, '0') AS INTEGER) > 0
+                        ) THEN 1
+                        ELSE 0
+                    END AS ever_used,
                     v.created_at,
                     v.imported_at,
                     v.duration_minutes,
