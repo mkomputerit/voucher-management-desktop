@@ -12,34 +12,47 @@ from .report_policy import ReportPurpose, report_code_value
 
 
 class ReportKind(str, Enum):
-    """Operator-facing report views over the same durable facts."""
+    """Operator-facing historical views over durable local facts."""
 
     SUMMARY = "summary"
+    GENERATED = "generated"
+    GENERATED_UNUSED = "generated_unused"
     USED = "used"
     EXPIRED = "expired"
+    PRINTED = "printed"
     PRINTED_UNUSED = "printed_unused"
     NEVER_PRINTED = "never_printed"
     NOMINAL = "nominal"
+    UNCLASSIFIED = "unclassified"
     FULL_HISTORY = "full_history"
 
 
 REPORT_TITLES = {
-    ReportKind.SUMMARY: "Riepilogo voucher",
+    ReportKind.SUMMARY: "Riepilogo storico voucher",
+    ReportKind.GENERATED: "Voucher generati da Voucher Management",
+    ReportKind.GENERATED_UNUSED: "Voucher generati e mai utilizzati",
     ReportKind.USED: "Voucher utilizzati",
     ReportKind.EXPIRED: "Voucher scaduti",
+    ReportKind.PRINTED: "Voucher stampati",
     ReportKind.PRINTED_UNUSED: "Voucher stampati mai utilizzati",
     ReportKind.NEVER_PRINTED: "Voucher mai stampati",
     ReportKind.NOMINAL: "Voucher nominali",
+    ReportKind.UNCLASSIFIED: "Voucher non classificati",
     ReportKind.FULL_HISTORY: "Storico completo voucher",
 }
 
 
+APPLICATION_ORIGINS = frozenset({"APPLICATION", "LEGACY_APPLICATION"})
+
+
 @dataclass(frozen=True)
 class ReportTotals:
-    """Aggregates calculated from atomic voucher and print facts."""
+    """Aggregates calculated only from rows represented by this dataset."""
 
     vouchers: int
+    generated_vouchers: int
     used_vouchers: int
+    never_used_vouchers: int
     total_controller_uses: int
     expired_vouchers: int
     printed_vouchers: int
@@ -50,26 +63,23 @@ class ReportTotals:
     printed_never_used: int
     never_printed: int
     nominal_vouchers: int
+    non_nominal_vouchers: int
+    unclassified_vouchers: int
 
 
 @dataclass(frozen=True)
 class ReportRow:
-    """One report-safe voucher row.
-
-    The code field is already filtered through report_policy before the row
-    leaves the reporting boundary. Summary/audit renderers therefore never
-    receive the raw reusable credential.
-    """
+    """One report-safe durable voucher row."""
 
     voucher_id: int
     controller_name: str
     code: str
     recipient: str
-    assigned_to: str
     created_at: str
     imported_at: str
     expires_at: str
     authorized_guest_count: int
+    ever_used: bool
     print_jobs: int
     physical_copies: int
     reprint_jobs: int
@@ -81,6 +91,8 @@ class ReportRow:
     present_on_controller: bool
     archived_at: str
     status: str
+    origin: str
+    is_nominal: bool | None
 
 
 @dataclass(frozen=True)
@@ -98,11 +110,7 @@ class ReportDataset:
 
 
 def _purpose_for_kind(kind: ReportKind) -> ReportPurpose:
-    return (
-        ReportPurpose.AUDIT
-        if kind is ReportKind.FULL_HISTORY
-        else ReportPurpose.SUMMARY
-    )
+    return ReportPurpose.AUDIT if kind is ReportKind.FULL_HISTORY else ReportPurpose.SUMMARY
 
 
 def _operators(value: object) -> tuple[str, ...]:
@@ -150,33 +158,58 @@ def _status(
     *,
     archived: bool,
     expired: bool,
-    uses: int,
+    ever_used: bool,
     print_jobs: int,
 ) -> str:
     if archived:
         return "Archiviato"
     if expired:
         return "Scaduto"
-    if uses > 0:
+    if ever_used:
         return "Utilizzato"
     if print_jobs > 0:
         return "Stampato"
     return "Mai stampato"
 
 
+def origin_label(origin: str) -> str:
+    return {
+        "APPLICATION": "Voucher Management",
+        "LEGACY_APPLICATION": "Voucher Management (storico)",
+        "CONTROLLER": "Controller / esterno",
+        "UNKNOWN": "Non determinata",
+    }.get(str(origin or "").strip(), "Non determinata")
+
+
+def nominal_label(value: bool | None) -> str:
+    if value is True:
+        return "Sì"
+    if value is False:
+        return "No"
+    return "Non classificato"
+
+
 def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind in {ReportKind.SUMMARY, ReportKind.FULL_HISTORY}:
         return True
+    if kind is ReportKind.GENERATED:
+        return row.origin in APPLICATION_ORIGINS
+    if kind is ReportKind.GENERATED_UNUSED:
+        return row.origin in APPLICATION_ORIGINS and not row.ever_used
     if kind is ReportKind.USED:
-        return row.authorized_guest_count > 0
+        return row.ever_used
     if kind is ReportKind.EXPIRED:
         return row.expired
+    if kind is ReportKind.PRINTED:
+        return row.print_jobs > 0
     if kind is ReportKind.PRINTED_UNUSED:
-        return row.print_jobs > 0 and row.authorized_guest_count == 0
+        return row.print_jobs > 0 and not row.ever_used
     if kind is ReportKind.NEVER_PRINTED:
         return row.print_jobs == 0
     if kind is ReportKind.NOMINAL:
-        return bool(row.assigned_to.strip())
+        return row.is_nominal is True
+    if kind is ReportKind.UNCLASSIFIED:
+        return row.is_nominal is None
     raise ValueError(f"Unsupported report kind: {kind}")
 
 
@@ -184,22 +217,21 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
     materialized = tuple(rows)
     return ReportTotals(
         vouchers=len(materialized),
-        used_vouchers=sum(row.authorized_guest_count > 0 for row in materialized),
-        total_controller_uses=sum(
-            row.authorized_guest_count for row in materialized
-        ),
+        generated_vouchers=sum(row.origin in APPLICATION_ORIGINS for row in materialized),
+        used_vouchers=sum(row.ever_used for row in materialized),
+        never_used_vouchers=sum(not row.ever_used for row in materialized),
+        total_controller_uses=sum(row.authorized_guest_count for row in materialized),
         expired_vouchers=sum(row.expired for row in materialized),
         printed_vouchers=sum(row.print_jobs > 0 for row in materialized),
         print_jobs=sum(row.print_jobs for row in materialized),
         physical_copies=sum(row.physical_copies for row in materialized),
         reprint_jobs=sum(row.reprint_jobs for row in materialized),
         reprint_copies=sum(row.reprint_copies for row in materialized),
-        printed_never_used=sum(
-            row.print_jobs > 0 and row.authorized_guest_count == 0
-            for row in materialized
-        ),
+        printed_never_used=sum(row.print_jobs > 0 and not row.ever_used for row in materialized),
         never_printed=sum(row.print_jobs == 0 for row in materialized),
-        nominal_vouchers=sum(bool(row.assigned_to.strip()) for row in materialized),
+        nominal_vouchers=sum(row.is_nominal is True for row in materialized),
+        non_nominal_vouchers=sum(row.is_nominal is False for row in materialized),
+        unclassified_vouchers=sum(row.is_nominal is None for row in materialized),
     )
 
 
@@ -211,11 +243,12 @@ def build_report_dataset(
     controller_id: int | None = None,
     include_code_requested: bool = False,
 ) -> ReportDataset:
-    """Build one report without inventing facts absent from SQLite.
+    """Build historical reports from facts Voucher Management actually retained.
 
-    Controller usage counters are current/last-observed totals. Their value is
-    never presented as an exact use timestamp. Print facts come only from the
-    local physical-print audit.
+    "Used" means at least one use was observed in the retained controller
+    history. Print facts come exclusively from the local physical-print audit.
+    Nominality and creation provenance are application-owned classifications;
+    they are never inferred from a recipient string.
     """
 
     purpose = _purpose_for_kind(kind)
@@ -236,24 +269,26 @@ def build_report_dataset(
             code_exposed = True
 
         print_jobs = int(raw["print_jobs"] or 0)
-        uses = int(raw["authorized_guest_count"] or 0)
         expired = _expired_at_report_time(
             persisted_expired=bool(raw["expired"]),
             expires_at=raw["expires_at"],
             generated_at=generated_at,
         )
+        nominal_raw = raw["is_nominal"]
+        is_nominal = None if nominal_raw is None else bool(nominal_raw)
         assigned_to = str(raw["assigned_to"] or "").strip()
         recipient = assigned_to or str(raw["name"] or "").strip()
+        ever_used = bool(raw["ever_used"])
         row = ReportRow(
             voucher_id=int(raw["voucher_id"]),
             controller_name=controller_name,
             code=clear_code,
             recipient=recipient,
-            assigned_to=assigned_to,
             created_at=str(raw["created_at"] or ""),
             imported_at=str(raw["imported_at"] or ""),
             expires_at=str(raw["expires_at"] or ""),
-            authorized_guest_count=uses,
+            authorized_guest_count=int(raw["authorized_guest_count"] or 0),
+            ever_used=ever_used,
             print_jobs=print_jobs,
             physical_copies=int(raw["physical_copies"] or 0),
             reprint_jobs=int(raw["reprint_jobs"] or 0),
@@ -267,27 +302,21 @@ def build_report_dataset(
             status=_status(
                 archived=bool(raw["archived_at"]),
                 expired=expired,
-                uses=uses,
+                ever_used=ever_used,
                 print_jobs=print_jobs,
             ),
+            origin=str(raw["origin"] or "UNKNOWN"),
+            is_nominal=is_nominal,
         )
         if _matches(kind, row):
             rows.append(row)
 
     if controller_id is None:
-        controller_label = "Tutti i controller"
+        controller_label = "Tutto lo storico locale"
     else:
-        # Resolve from the controller table first so an empty scoped report
-        # still shows the selected controller. The row-derived fallback keeps
-        # old/partially named data readable; the final generic label is used
-        # only when neither source provides a display name.
         controller_label = (
             database.controller_name(controller_id)
-            or (
-                next(iter(controllers))
-                if len(controllers) == 1
-                else "Controller selezionato"
-            )
+            or (next(iter(controllers)) if len(controllers) == 1 else "Controller selezionato")
         )
 
     materialized = tuple(rows)
