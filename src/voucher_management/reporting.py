@@ -209,16 +209,19 @@ def _status(
     archived: bool,
     expired: bool,
     ever_used: bool,
+    usage_observed: bool,
     print_jobs: int,
 ) -> str:
     if archived:
         return "Archiviato"
     if expired:
         return "Scaduto"
-    if ever_used:
+    if usage_observed and ever_used:
         return "Utilizzato"
     if print_jobs > 0:
         return "Stampato"
+    if not usage_observed:
+        return "Utilizzo non determinabile"
     return "Senza stampe registrate"
 
 
@@ -253,7 +256,7 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
             and not row.ever_used
         )
     if kind is ReportKind.USED:
-        return row.ever_used
+        return row.usage_observed and row.ever_used
     if kind is ReportKind.EXPIRED:
         return row.expired
     if kind is ReportKind.PRINTED:
@@ -287,7 +290,9 @@ def _totals(
     return ReportTotals(
         vouchers=len(materialized),
         generated_vouchers=sum(row.origin in APPLICATION_ORIGINS for row in materialized),
-        used_vouchers=sum(row.ever_used for row in materialized),
+        used_vouchers=sum(
+            row.usage_observed and row.ever_used for row in materialized
+        ),
         never_used_vouchers=sum(
             row.usage_observed and not row.ever_used for row in materialized
         ),
@@ -386,10 +391,11 @@ def _build_report_dataset_snapshot(
         assigned_to = str(raw["assigned_to"] or "").strip()
         controller_description = str(raw["name"] or "").strip()
         ever_used = bool(raw["ever_used"])
-        # Positive historical use is itself usage evidence. Older/migrated
-        # rows may carry a conservative coverage flag, but they must never be
-        # classified simultaneously as "used" and "usage unknown".
-        usage_observed = bool(raw["usage_observed"]) or ever_used
+        # usage_observed is the coverage/provenance gate. A contradictory
+        # migrated row may carry ever_used=1 while its usage provenance is
+        # explicitly unavailable; reporting must remain conservative and keep
+        # that row in "usage unknown" rather than promoting it to confirmed use.
+        usage_observed = bool(raw["usage_observed"])
         row = ReportRow(
             voucher_id=int(raw["voucher_id"]),
             controller_name=controller_name,
@@ -415,6 +421,7 @@ def _build_report_dataset_snapshot(
                 archived=bool(raw["archived_at"]),
                 expired=expired,
                 ever_used=ever_used,
+                usage_observed=usage_observed,
                 print_jobs=print_jobs,
             ),
             origin=str(raw["origin"] or "UNKNOWN"),
