@@ -171,7 +171,7 @@ def _candidate_rows(
            JOIN controllers AS c ON c.id=v.controller_id
            WHERE v.archived_at IS NULL
              AND v.present_on_controller=0
-             AND v.authorized_guest_count=0
+             AND v.ever_used=0
              AND NOT EXISTS (
                  SELECT 1 FROM voucher_prints AS vp WHERE vp.voucher_id=v.id
              )
@@ -351,7 +351,7 @@ def archive_retention_candidates(
                    WHERE v.id=?
                      AND v.archived_at IS NULL
                      AND v.present_on_controller=0
-                     AND v.authorized_guest_count=0
+                     AND v.ever_used=0
                      AND NOT EXISTS (
                          SELECT 1 FROM voucher_prints AS vp
                          WHERE vp.voucher_id=v.id
