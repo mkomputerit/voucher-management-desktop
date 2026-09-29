@@ -289,9 +289,9 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind is ReportKind.NEVER_PRINTED:
         return row.print_jobs == 0
     if kind is ReportKind.NOMINAL:
-        return row.is_nominal is True
+        return row.is_nominal is True and not row.nominality_redacted
     if kind is ReportKind.NON_NOMINAL:
-        return row.is_nominal is False
+        return row.is_nominal is False and not row.nominality_redacted
     if kind is ReportKind.UNCLASSIFIED:
         return row.is_nominal is None and not row.nominality_redacted
     if kind is ReportKind.USAGE_UNKNOWN:
@@ -346,8 +346,14 @@ def _totals(
             for row in materialized
         ),
         never_printed=sum(row.print_jobs == 0 for row in materialized),
-        nominal_vouchers=sum(row.is_nominal is True for row in materialized),
-        non_nominal_vouchers=sum(row.is_nominal is False for row in materialized),
+        nominal_vouchers=sum(
+            row.is_nominal is True and not row.nominality_redacted
+            for row in materialized
+        ),
+        non_nominal_vouchers=sum(
+            row.is_nominal is False and not row.nominality_redacted
+            for row in materialized
+        ),
         unclassified_vouchers=sum(
             row.is_nominal is None and not row.nominality_redacted
             for row in materialized
