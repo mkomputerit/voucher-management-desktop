@@ -27,7 +27,7 @@ from .onboarding_ui import schedule_first_run_onboarding, startup_onboarding_sta
 from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
 from .report_ui import ReportDialog
-from .reporting import ReportKind, build_report_dataset
+from .reporting import ReportKind, build_report_dataset_from_path
 from .retention_ui import RetentionMixin
 from .utils import format_fingerprint
 from .data_maintenance_ui import DataMaintenanceMixin
@@ -1620,9 +1620,9 @@ class ModernVoucherApp(
             metrics.columnconfigure(column, weight=1)
         report_metrics = (
             ("Conservati", self.report_total_var),
-            ("Generati da VM", self.report_generated_var),
+            ("Creazione VM conf.", self.report_generated_var),
             ("Utilizzati", self.report_used_var),
-            ("Mai utilizzati", self.report_never_used_var),
+            ("Mai osservati usati", self.report_never_used_var),
             ("Stampati", self.report_printed_var),
             ("Scaduti", self.report_expired_var),
             ("Nominali", self.report_nominal_var),
@@ -1666,9 +1666,9 @@ class ModernVoucherApp(
         ttk.Label(
             actions,
             text=(
-                "Riepilogo storico, generati dal software, mai utilizzati, "
-                "utilizzati, scaduti, stampati, nominali, non classificati, "
-                "uso non determinabile e storico completo."
+                "Riepilogo aggregato, creazioni VM confermate, mai osservati "
+                "utilizzati, utilizzati, scaduti, stampati, nominali, dati non "
+                "determinabili e storico completo."
             ),
             style="Muted.TLabel",
             wraplength=720,
@@ -2945,32 +2945,70 @@ class ModernVoucherApp(
     def _refresh_report_summary(self) -> None:
         if not hasattr(self, "report_total_var"):
             return
-        try:
-            dataset = build_report_dataset(
-                self.database,
+        variables = (
+            self.report_total_var,
+            self.report_generated_var,
+            self.report_used_var,
+            self.report_never_used_var,
+            self.report_printed_var,
+            self.report_expired_var,
+            self.report_nominal_var,
+            self.report_unclassified_var,
+        )
+        if getattr(self, "_background_results", None) is not None:
+            return
+
+        for variable in variables:
+            variable.set("…")
+        self.report_data_quality_var.set("Calcolo archivio locale…")
+
+        database_path = Path(self.paths.database)
+        generated_at = datetime.now().astimezone().isoformat()
+
+        def worker():
+            return build_report_dataset_from_path(
+                database_path,
                 kind=ReportKind.SUMMARY,
-                generated_at=datetime.now().astimezone().isoformat(),
+                generated_at=generated_at,
                 controller_id=None,
             )
-        except Exception as exc:
+
+        def completed(dataset) -> None:
+            totals = dataset.totals
+            self.report_total_var.set(str(totals.vouchers))
+            self.report_generated_var.set(str(totals.generated_vouchers))
+            self.report_used_var.set(str(totals.used_vouchers))
+            self.report_never_used_var.set(str(totals.never_used_vouchers))
+            self.report_printed_var.set(str(totals.printed_vouchers))
+            self.report_expired_var.set(str(totals.expired_vouchers))
+            self.report_nominal_var.set(str(totals.nominal_vouchers))
+            self.report_unclassified_var.set(str(totals.unclassified_vouchers))
+            self.report_data_quality_var.set(
+                "Dati non determinabili: "
+                f"uso {totals.usage_unknown_vouchers} • "
+                f"origine {totals.unknown_origin_vouchers} • "
+                f"nominalità {totals.unclassified_vouchers} • "
+                f"rimossa per privacy {totals.redacted_nominality_vouchers} • "
+                f"dati controller fino a {audit_time_label(dataset.data_as_of)}"
+            )
+
+        def failed(exc: Exception) -> None:
             self.logger.warning(
                 "report_workspace_summary_failed type=%s",
                 type(exc).__name__,
             )
-            return
-        totals = dataset.totals
-        self.report_total_var.set(str(totals.vouchers))
-        self.report_generated_var.set(str(totals.generated_vouchers))
-        self.report_used_var.set(str(totals.used_vouchers))
-        self.report_never_used_var.set(str(totals.never_used_vouchers))
-        self.report_printed_var.set(str(totals.printed_vouchers))
-        self.report_expired_var.set(str(totals.expired_vouchers))
-        self.report_nominal_var.set(str(totals.nominal_vouchers))
-        self.report_unclassified_var.set(str(totals.unclassified_vouchers))
-        self.report_data_quality_var.set(
-            "Dati non determinabili: "
-            f"uso {totals.usage_unknown_vouchers} • "
-            f"nominalità {totals.unclassified_vouchers}"
+            for variable in variables:
+                variable.set("—")
+            self.report_data_quality_var.set(
+                "Archivio report non disponibile: nessun dato precedente "
+                "viene mostrato come valido."
+            )
+
+        self._run_background_task(
+            "Calcolo report…",
+            worker,
+            completed,
+            failed,
         )
 
     def _update_operator_summary(self, stats) -> None:
