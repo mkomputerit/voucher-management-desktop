@@ -160,12 +160,18 @@ class VoucherCreationMixin:
                 and outcome.snapshot_complete
                 and not outcome.reconciliation_required
             )
-            if self.controller_snapshot_live:
+            if getattr(outcome, "local_persistence_error", None) is not None:
+                callback = getattr(self, "_controller_operation_stale", None)
+                if callback is not None:
+                    callback(archive_failed=True)
+            elif self.controller_snapshot_live:
                 callback = getattr(self, "_controller_operation_succeeded", None)
+                if callback is not None:
+                    callback()
             else:
                 callback = getattr(self, "_controller_operation_stale", None)
-            if callback is not None:
-                callback()
+                if callback is not None:
+                    callback()
 
             if outcome.uncertain_error is not None:
                 self.checked_ids.clear()
