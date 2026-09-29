@@ -1340,7 +1340,7 @@ class ModernVoucherApp(
         )
         for key, label, width, anchor in (
             ("code", "Voucher", 125, "center"),
-            ("recipient", "Destinatario", 300, "w"),
+            ("recipient", "Descrizione UniFi", 300, "w"),
             ("state", "Stato", 125, "center"),
             ("expires", "Scadenza", 145, "center"),
             ("created", "Creato", 145, "center"),
