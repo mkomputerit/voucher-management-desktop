@@ -622,9 +622,16 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                         vouchers=snapshot,
                         observed_at=datetime.now(timezone.utc).isoformat(),
                     )
+                    marker_path = getattr(
+                        self.paths,
+                        "pending_create_reporting",
+                        Path(database_path).with_name(
+                            "pending_create_reporting.json"
+                        ),
+                    )
                     reconcile_pending_create_reporting_to_path(
                         database_path,
-                        self.paths.pending_create_reporting,
+                        marker_path,
                         controller_id=controller_id,
                     )
                 except Exception as exc:
@@ -632,7 +639,19 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             return snapshot, archive_error
 
         def completed(result) -> None:
-            vouchers, archive_error = result
+            if (
+                isinstance(result, tuple)
+                and len(result) == 2
+                and (
+                    result[1] is None
+                    or isinstance(result[1], Exception)
+                )
+            ):
+                vouchers, archive_error = result
+            else:
+                # Compatibility with thin adapters/tests that invoke the
+                # success callback directly with a voucher sequence.
+                vouchers, archive_error = result, None
             snapshot = list(vouchers)
             self.vouchers = snapshot
             self.controller_snapshot_live = True
@@ -644,7 +663,8 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 callback = getattr(self, "_controller_operation_stale", None)
                 if callback is not None:
                     callback(archive_failed=True)
-                self.logger.error(
+                logger = getattr(self, "logger", LOGGER)
+                logger.error(
                     "refresh_archive_persistence_failed type=%s",
                     type(archive_error).__name__,
                 )
