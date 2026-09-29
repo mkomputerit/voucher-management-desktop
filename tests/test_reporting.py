@@ -1213,3 +1213,33 @@ def test_naive_persisted_times_follow_utc_contract(tmp_path):
         assert [row.voucher_id for row in expired.rows] == [voucher_id]
     finally:
         db.close()
+
+
+def test_privacy_redacted_report_never_exports_stale_local_recipient(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "redacted-recipient",
+            "8383838383",
+            name="Descrizione UniFi non locale",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET assigned_to=?, is_nominal=1, nominality_redacted=1
+                   WHERE id=?""",
+                ("Dato locale che deve restare nascosto", voucher_id),
+            )
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.NOMINALITY_REDACTED,
+            generated_at=NOW,
+        )
+        assert [row.voucher_id for row in dataset.rows] == [voucher_id]
+        assert dataset.rows[0].recipient == ""
+        assert dataset.rows[0].controller_description == "Descrizione UniFi non locale"
+    finally:
+        db.close()
