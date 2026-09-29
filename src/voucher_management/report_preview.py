@@ -5,10 +5,28 @@ from tkinter import filedialog, messagebox, ttk
 from .pdf_preview import PdfPreview
 
 
+def report_result_message(result_count: int | None) -> str:
+    """Describe result cardinality without treating a valid empty report as an error."""
+
+    if result_count is None:
+        return "La stampa del report non modifica lo stato dei voucher."
+    if result_count == 0:
+        return (
+            "Nessun voucher soddisfa i criteri scelti. Il PDF conserva criteri, "
+            "ambito e copertura dati per spiegare correttamente il risultato zero."
+        )
+    noun = "voucher" if result_count == 1 else "voucher"
+    return (
+        f"{result_count} {noun} nel report. "
+        "La stampa del report non modifica lo stato dei voucher."
+    )
+
+
 class ReportPreview(PdfPreview):
-    def __init__(self, app, pdf_path, temporary_directory):
+    def __init__(self, app, pdf_path, temporary_directory, *, result_count=None):
         self._closing = False
         self._temporary_directory = temporary_directory
+        self._result_count = result_count
         super().__init__(app, pdf_path, [], None, app.settings)
         self.title("Anteprima report - Salva o stampa")
         self.protocol("WM_DELETE_WINDOW", self.destroy)
@@ -20,7 +38,11 @@ class ReportPreview(PdfPreview):
         bottom = self.print_button.master
         for widget in bottom.grid_slaves(row=1):
             widget.destroy()
-        ttk.Label(bottom, text="Il report consulta lo storico locale. La stampa del report non modifica lo stato dei voucher.", wraplength=680).grid(row=1, column=0, columnspan=6, sticky="w", pady=8)
+        ttk.Label(
+            bottom,
+            text=report_result_message(self._result_count),
+            wraplength=680,
+        ).grid(row=1, column=0, columnspan=6, sticky="w", pady=8)
         ttk.Button(bottom, text="Salva PDF…", command=self._save).grid(row=2, column=0, pady=8)
         ttk.Button(bottom, text="Chiudi", command=self.destroy).grid(row=2, column=4, pady=8)
 
