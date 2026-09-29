@@ -313,6 +313,7 @@ def test_create_result_persists_application_origin_and_nominal_flag(tmp_path):
         snapshot=[created],
         created=[created],
         snapshot_complete=True,
+        snapshot_observed=True,
         is_nominal=True,
         observed_at="2026-09-29T08:01:00+00:00",
     )
@@ -351,6 +352,7 @@ def test_partial_create_result_does_not_mark_unseen_local_rows_absent(tmp_path):
         snapshot=[voucher("existing"), created],
         created=[created],
         snapshot_complete=False,
+        snapshot_observed=True,
         is_nominal=False,
         observed_at="2026-09-29T08:05:00+00:00",
     )
@@ -365,6 +367,111 @@ def test_partial_create_result_does_not_mark_unseen_local_rows_absent(tmp_path):
             )
         }
         assert rows["existing"]["present_on_controller"] == 1
+        assert rows["created"]["origin"] == "APPLICATION"
+        assert rows["created"]["is_nominal"] == 0
+    finally:
+        check.close()
+
+
+def test_create_snapshot_and_classification_roll_back_together_on_failure(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "create-atomic.sqlite"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    db.close()
+
+    original = Database.mark_application_created_vouchers
+
+    def fail_after_upsert(self, **kwargs):
+        if kwargs.get("connection") is not None:
+            raise RuntimeError("synthetic classification failure")
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(
+        Database,
+        "mark_application_created_vouchers",
+        fail_after_upsert,
+    )
+
+    try:
+        persist_create_result_to_path(
+            path,
+            controller_id=controller,
+            snapshot=[voucher("atomic")],
+            created=[voucher("atomic")],
+            snapshot_complete=True,
+            snapshot_observed=True,
+            is_nominal=True,
+            observed_at="2026-09-29T10:00:00+00:00",
+        )
+    except RuntimeError as exc:
+        assert "synthetic classification failure" in str(exc)
+    else:
+        raise AssertionError("classification failure must abort the transaction")
+
+    check = Database(path)
+    try:
+        check.initialize()
+        assert check.connection.execute(
+            "SELECT COUNT(*) FROM vouchers WHERE unifi_id='atomic'"
+        ).fetchone()[0] == 0
+        assert check.connection.execute(
+            "SELECT COUNT(*) FROM sync_runs"
+        ).fetchone()[0] == 0
+    finally:
+        check.close()
+
+
+def test_stale_successful_create_snapshot_upserts_positive_rows_without_absence(
+    tmp_path,
+):
+    path = tmp_path / "create-stale.sqlite"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    persist_successful_snapshot(
+        db,
+        controller_id=controller,
+        vouchers=[voucher("existing"), voucher("other")],
+        observed_at="2026-09-29T08:00:00+00:00",
+        sync_uuid="before-stale-create",
+    )
+    db.close()
+
+    created = voucher("created")
+    persist_create_result_to_path(
+        path,
+        controller_id=controller,
+        snapshot=[voucher("existing"), created],
+        created=[created],
+        snapshot_complete=False,
+        snapshot_observed=True,
+        is_nominal=False,
+        observed_at="2026-09-29T08:05:00+00:00",
+    )
+
+    check = Database(path)
+    try:
+        check.initialize()
+        rows = {
+            row["unifi_id"]: row
+            for row in check.connection.execute(
+                """SELECT unifi_id, present_on_controller, origin, is_nominal
+                   FROM vouchers"""
+            )
+        }
+        assert rows["other"]["present_on_controller"] == 1
         assert rows["created"]["origin"] == "APPLICATION"
         assert rows["created"]["is_nominal"] == 0
     finally:
