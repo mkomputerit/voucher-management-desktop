@@ -165,3 +165,17 @@ def test_home_metrics_do_not_present_local_cache_as_live_controller_state():
     assert fake.home_active_var.get() == "—"
     assert fake.home_used_var.get() == "—"
     assert fake.home_expired_var.get() == "—"
+
+
+def test_controller_failure_invalidates_live_home_metrics():
+    calls = []
+    fake = SimpleNamespace(
+        _controller_status_failed=False,
+        controller_snapshot_live=True,
+        _refresh_controller_workspace_status=lambda: calls.append("status"),
+        populate=lambda: calls.append("populate"),
+    )
+    ModernVoucherApp._controller_operation_failed(fake)
+    assert fake._controller_status_failed is True
+    assert fake.controller_snapshot_live is False
+    assert calls == ["status", "populate"]
