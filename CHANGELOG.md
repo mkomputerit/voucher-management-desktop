@@ -2,6 +2,21 @@
 
 ## 5.1.0 - Unreleased
 
+- Separate the operational Home from historical reporting: Home counters/recent
+  vouchers now populate only after a fresh controller snapshot in the current
+  session, while Report defaults to the complete durable local archive.
+- Add an explicit "Voucher nominale" flag to voucher creation. The classification
+  is local-only, never sent to UniFi, and is persisted only after a definitive
+  create result; older/external rows remain unclassified instead of being guessed
+  from recipient text.
+- Upgrade SQLite to schema 3 with durable application-creation classification and
+  sticky `ever_used` evidence. Migration reconstructs historical usage from
+  current counters and prior sync observations without inventing use timestamps.
+- Rebuild administrative reports around durable facts: add generated-by-app,
+  generated-and-never-used and printed views; make used/never-used historical,
+  make nominal reports depend on the explicit flag, and expose unclassified
+  nominality in the historical summary.
+
 - Print only the recipient value inside each cut voucher, without the
   "Destinatario:" prefix.
 - Complete first-run setup with a backup step for the default folder and the
