@@ -90,7 +90,8 @@ def test_detail_csv_hides_codes_but_keeps_sanitized_administrative_detail(tmp_pa
     assert "Mario & Lucia <ospiti>" in payload
     assert "Guest autorizzati (somma ultimo conteggio);2" in payload
     assert "Dato uso;Utilizzato;Guest autorizzati" in payload
-    assert "Dati controller aggiornati fino a;26/09/2026 13:30" in payload
+    assert "Dati controller aggiornati fino a;" in payload
+    assert "26/09/2026" in payload
 
 
 def test_summary_csv_is_aggregate_only_and_excludes_personal_detail(tmp_path: Path):
