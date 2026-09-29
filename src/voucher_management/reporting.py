@@ -242,7 +242,10 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
         physical_copies=sum(row.physical_copies for row in materialized),
         reprint_jobs=sum(row.reprint_jobs for row in materialized),
         reprint_copies=sum(row.reprint_copies for row in materialized),
-        printed_never_used=sum(row.print_jobs > 0 and not row.ever_used for row in materialized),
+        printed_never_used=sum(
+            row.print_jobs > 0 and row.usage_observed and not row.ever_used
+            for row in materialized
+        ),
         never_printed=sum(row.print_jobs == 0 for row in materialized),
         nominal_vouchers=sum(row.is_nominal is True for row in materialized),
         non_nominal_vouchers=sum(row.is_nominal is False for row in materialized),
