@@ -205,8 +205,9 @@ backup on close. Existing installations can set these in Settings > Backup.
 Closing offers **Create backup and close**, **Exit without backup**, or **Cancel**.
 The dialog shows the default folder; selecting another folder changes only that
 copy, not the saved preference. Password protection is optional for both manual
-and shutdown copies: unchecked creates a readable `.zip`, checked creates an
-AES-GCM `.vmbk` and requires matching passwords of at least 12 characters.
+and shutdown copies, but it is selected by default: leaving it selected creates
+an AES-GCM `.vmbk` and requires matching passwords of at least 12 characters;
+explicitly unchecking it creates a readable `.zip`.
 Home shows the last verified successful backup recorded locally and provides a
 manual backup action. A failed attempt does not replace that timestamp. After a
 restore, the saved destination is reset to the local fallback folder; choose a
