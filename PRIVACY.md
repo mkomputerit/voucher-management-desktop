@@ -8,6 +8,9 @@ The application may process:
 - controller/API endpoint configured by the user;
 - operator authentication material required for the active session;
 - hotspot voucher identifiers and recipient labels returned by the configured controller;
+- local reporting classifications, including whether a newly created voucher was
+  explicitly marked "Voucher nominale" and whether creation was definitively
+  attributed to Voucher Management;
 - local PDF/print audit metadata;
 - generated PDFs and user-selected logo files.
 
@@ -18,6 +21,15 @@ request has an uncertain remote result. It contains only a fixed state marker:
 no API key, controller address, voucher code, recipient or creation parameters.
 It is excluded from portable backups and is removed only after a definitive
 result or a successful operator-triggered controller refresh.
+
+Voucher nominality is application-owned administrative metadata. UniFi does
+not distinguish nominal from non-nominal vouchers, so Voucher Management records
+the flag only when the operator explicitly selects it during a definitive local
+creation. Older or externally discovered vouchers remain "not classified"; the
+application does not infer nominality from a recipient such as a person's name.
+The reporting database also keeps a sticky "ever used" fact once a successful
+controller observation reports a positive usage count. This supports historical
+"never used" reports without inventing an exact guest-use timestamp.
 
 Print history deliberately stores the recipient label in clear text together
 with audit metadata so an operator can identify who a generated voucher sheet
