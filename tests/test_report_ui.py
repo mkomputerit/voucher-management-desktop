@@ -108,17 +108,18 @@ def test_report_query_and_renderer_both_run_inside_background_worker(
     assert tasks[0]["label"] == "Generazione report…"
     assert tasks[0]["busy_scope"] is dialog._set_busy
 
-    result = tasks[0]["worker"]()
+    result_path, result_dataset = tasks[0]["worker"]()
 
-    assert result.suffix == ".pdf"
-    assert result != output  # PDF preview does not prompt for a save location.
+    assert result_path.suffix == ".pdf"
+    assert result_path != output  # PDF preview does not prompt for a save location.
+    assert result_dataset is dataset
     assert events[0][0] == "build"
     assert events[0][1] == database_path
     assert events[0][2]["controller_id"] == 7
     assert events[1] == (
         "render",
         dataset,
-        result,
+        result_path,
         "Sala Assemblee",
     )
 
