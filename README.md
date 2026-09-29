@@ -68,7 +68,8 @@ The application currently provides:
   remain read-only while the operator may maintain a separate local recipient,
   local notes and nominal/non-nominal/unclassified state. None of these local
   fields are written back to UniFi, and reports keep UniFi description separate
-  from local recipient instead of inferring one from the other;
+  from local recipient instead of inferring one from the other. Classifying a
+  voucher as nominal requires an explicit local recipient;
 - review-driven voucher retention with a conservative 180-day default:
   used, printed or PDF-generated vouchers are protected, while approved
   old/absent unused rows with no generated PDF are minimized without deleting
