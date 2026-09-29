@@ -9,9 +9,11 @@
   is local-only, never sent to UniFi, and is persisted only after a definitive
   create result; older/external rows remain unclassified instead of being guessed
   from recipient text.
-- Upgrade SQLite to schema 3 with durable application-creation classification and
-  sticky `ever_used` evidence. Migration reconstructs historical usage from
-  current counters and prior sync observations without inventing use timestamps.
+- Upgrade SQLite to schema 3 with explicit voucher origin
+  (`APPLICATION` / `CONTROLLER` / `LEGACY` / undetermined), explicit
+  nominal classification and sticky `ever_used` evidence. Migration reconstructs
+  historical usage from current counters and prior sync observations without
+  guessing the origin of older rows or inventing use timestamps.
 - Rebuild administrative reports around durable facts: add generated-by-app,
   generated-and-never-used and printed views; make used/never-used historical,
   make nominal reports depend on the explicit flag, and expose unclassified
