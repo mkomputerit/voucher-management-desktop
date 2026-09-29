@@ -2,6 +2,24 @@
 
 ## 5.1.0 - Unreleased
 
+- Build each report from one stable SQLite read snapshot so filtering, totals,
+  personal-detail enrichment and freshness metadata cannot observe different
+  database instants.
+- Make usage reporting conservative and mutually exclusive: trusted usage
+  coverage gates both positive and negative usage claims; contradictory legacy
+  flags remain "utilizzo non determinabile" rather than being promoted.
+- Use the voucher's last actual presence (last_seen_at) for report freshness
+  instead of a later synchronization that may only have observed its absence.
+  "Stampati - nessun utilizzo rilevato" now requires a controller observation
+  at or after the first recorded print.
+- Count report print jobs as distinct document submissions rather than summing
+  voucher/job relations. Keep physical voucher copies and reprint jobs as
+  separately labelled units in both PDF and CSV.
+- Make privacy redaction dominate stale nominal flags, label migration-generated
+  operator entries as historical imports, expose verified controller absence in
+  row status, and use provenance-safe wording for creation/evidence timestamps
+  recovered from legacy backups.
+
 - Add local-only enrichment for vouchers discovered on UniFi: controller
   description/code/id remain read-only while local recipient, notes and
   nominal/non-nominal/unclassified classification can be maintained without
