@@ -216,6 +216,37 @@ def test_historically_used_voucher_never_becomes_retention_candidate_after_count
         database.close()
 
 
+def test_usage_indeterminate_row_is_never_offered_for_retention(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="usage-unknown",
+            code="9090909090",
+        )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET usage_observed=0 WHERE id=?",
+                (voucher_id,),
+            )
+
+        assert retention_candidates(database, now=NOW) == ()
+
+        result = archive_retention_candidates(
+            database,
+            voucher_ids=[voucher_id],
+            archived_at=NOW,
+            windows_user="operator",
+            history=_history(),
+            settings={},
+        )
+        assert result.archived_ids == ()
+        assert result.skipped_ids == (voucher_id,)
+    finally:
+        database.close()
+
+
 def test_expiry_is_conservative_age_basis_when_present(tmp_path):
     database, controller = _database(tmp_path)
     try:
@@ -246,7 +277,8 @@ def test_reviewed_archive_scrubs_credential_and_personal_text(tmp_path):
         with database.transaction() as db:
             db.execute(
                 """UPDATE vouchers
-                   SET assigned_to='Mario Rossi', notes='private note'
+                   SET assigned_to='Mario Rossi', notes='private note',
+                       is_nominal=1
                    WHERE id=?""",
                 (voucher_id,),
             )
@@ -270,6 +302,7 @@ def test_reviewed_archive_scrubs_credential_and_personal_text(tmp_path):
         assert row["name"] == ""
         assert row["assigned_to"] == ""
         assert row["notes"] == ""
+        assert row["is_nominal"] is None
         assert row["archived_at"] == NOW
 
         event = database.connection.execute(
