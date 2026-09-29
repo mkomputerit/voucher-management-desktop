@@ -117,7 +117,7 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(
             shell,
             text=(
-                "Nota: “mai osservato utilizzato” descrive solo ciò che Voucher "
+                "Nota: “Nessun utilizzo rilevato” descrive solo ciò che Voucher "
                 "Management ha visto fino all'ultima osservazione controller "
                 "riportata nel file. Se l'evidenza manca, il voucher resta in "
                 "“Uso non determinabile”. La nominalità è una classificazione "
