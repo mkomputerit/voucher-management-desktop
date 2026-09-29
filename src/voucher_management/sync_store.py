@@ -50,6 +50,7 @@ def _upsert_api_voucher(
     voucher: ApiVoucher,
     observed_at: str,
     connection,
+    origin: str | None = "CONTROLLER",
 ) -> int:
     """Persist one API voucher without changing application-owned metadata."""
 
@@ -69,7 +70,7 @@ def _upsert_api_voucher(
         data_limit_mb=voucher.data_mb,
         download_limit_kbps=voucher.down_kbps,
         upload_limit_kbps=voucher.up_kbps,
-        origin="CONTROLLER",
+        origin=origin,
         last_synced_at=observed_at,
         connection=connection,
     )
@@ -84,6 +85,7 @@ def persist_successful_snapshot(
     sync_uuid: str | None = None,
     created_unifi_ids: tuple[str, ...] = (),
     created_is_nominal: bool = False,
+    new_row_origin: str | None = "CONTROLLER",
 ) -> str:
     """Persist one complete successful UniFi voucher-list snapshot.
 
@@ -126,6 +128,7 @@ def persist_successful_snapshot(
                 voucher=voucher,
                 observed_at=observed_at,
                 connection=tx,
+                origin=new_row_origin,
             )
             if old is None:
                 continue
@@ -294,6 +297,7 @@ def persist_creation_result_to_path(
                 observed_at=observed_at,
                 created_unifi_ids=created_ids,
                 created_is_nominal=bool(is_nominal),
+                new_row_origin="CONTROLLER" if created_ids else None,
             )
         elif created:
             with database.transaction() as tx:
