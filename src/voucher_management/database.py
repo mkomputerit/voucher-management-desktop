@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS vouchers (
     authorized_guest_limit INTEGER CHECK (authorized_guest_limit IS NULL OR authorized_guest_limit >= 1),
     authorized_guest_count INTEGER NOT NULL DEFAULT 0 CHECK (authorized_guest_count >= 0),
     ever_used INTEGER NOT NULL DEFAULT 0 CHECK (ever_used IN (0, 1)),
+    usage_observed INTEGER NOT NULL DEFAULT 1 CHECK (usage_observed IN (0, 1)),
     activated_at TEXT,
     expires_at TEXT,
     expired INTEGER NOT NULL DEFAULT 0 CHECK (expired IN (0, 1)),
@@ -110,6 +111,7 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_code ON vouchers(controller_id, code);
 CREATE INDEX IF NOT EXISTS idx_vouchers_expired ON vouchers(controller_id, expired);
 CREATE INDEX IF NOT EXISTS idx_vouchers_usage ON vouchers(controller_id, authorized_guest_count);
 CREATE INDEX IF NOT EXISTS idx_vouchers_ever_used ON vouchers(ever_used);
+CREATE INDEX IF NOT EXISTS idx_vouchers_usage_observed ON vouchers(usage_observed);
 CREATE INDEX IF NOT EXISTS idx_vouchers_expires ON vouchers(expires_at);
 CREATE INDEX IF NOT EXISTS idx_vouchers_origin ON vouchers(origin);
 CREATE INDEX IF NOT EXISTS idx_vouchers_nominal ON vouchers(is_nominal);
@@ -305,6 +307,13 @@ ALTER TABLE vouchers ADD COLUMN is_nominal INTEGER
     CHECK (is_nominal IS NULL OR is_nominal IN (0, 1));
 ALTER TABLE vouchers ADD COLUMN ever_used INTEGER NOT NULL DEFAULT 0
     CHECK (ever_used IN (0, 1));
+ALTER TABLE vouchers ADD COLUMN usage_observed INTEGER NOT NULL DEFAULT 1
+    CHECK (usage_observed IN (0, 1));
+UPDATE vouchers
+SET usage_observed=0
+WHERE controller_id IN (
+    SELECT id FROM controllers WHERE api_root LIKE 'legacy-backup://%'
+);
 UPDATE vouchers
 SET ever_used=1
 WHERE authorized_guest_count > 0
@@ -817,7 +826,7 @@ COMMIT;
         values = (
             controller_id, unifi_id, code, name, created_at, imported_at,
             duration_minutes, authorized_guest_limit, authorized_guest_count,
-            int(authorized_guest_count > 0),
+            int(authorized_guest_count > 0), 1,
             activated_at, expires_at, int(expired), data_limit_mb,
             download_limit_kbps, upload_limit_kbps, last_synced_at, last_synced_at,
         )
@@ -826,9 +835,10 @@ COMMIT;
                 """INSERT INTO vouchers (
                        controller_id, unifi_id, code, name, created_at, imported_at,
                        duration_minutes, authorized_guest_limit, authorized_guest_count,
-                       ever_used, activated_at, expires_at, expired, data_limit_mb,
-                       download_limit_kbps, upload_limit_kbps, last_seen_at, last_synced_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ever_used, usage_observed, activated_at, expires_at, expired,
+                       data_limit_mb, download_limit_kbps, upload_limit_kbps,
+                       last_seen_at, last_synced_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(controller_id, unifi_id) DO UPDATE SET
                        code=excluded.code, name=excluded.name, created_at=excluded.created_at,
                        duration_minutes=excluded.duration_minutes,
@@ -838,6 +848,7 @@ COMMIT;
                            WHEN vouchers.ever_used=1
                                 OR excluded.authorized_guest_count>0
                            THEN 1 ELSE 0 END,
+                       usage_observed=1,
                        activated_at=excluded.activated_at, expires_at=excluded.expires_at,
                        expired=excluded.expired, data_limit_mb=excluded.data_limit_mb,
                        download_limit_kbps=excluded.download_limit_kbps,
@@ -1164,6 +1175,7 @@ COMMIT;
                     v.origin,
                     v.is_nominal,
                     v.ever_used,
+                    v.usage_observed,
                     v.created_at,
                     v.imported_at,
                     v.duration_minutes,
