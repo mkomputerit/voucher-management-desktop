@@ -1,10 +1,12 @@
 """Regression tests for controller-read-only/local-only voucher enrichment."""
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from voucher_management.database import Database
+from voucher_management import voucher_local_metadata_ui as metadata_ui
 from voucher_management.voucher_local_metadata_ui import (
     classification_label,
     classification_value,
@@ -301,5 +303,75 @@ def test_metadata_map_omits_notes_unless_search_explicitly_requests_them(tmp_pat
         assert ordinary["voucher-1"].controller_description == ""
         assert searched["voucher-1"].notes == "Nota riservata ricercabile"
         assert searched["voucher-1"].controller_description == ""
+    finally:
+        database.close()
+
+
+def test_successful_local_metadata_update_deselects_only_handled_voucher(
+    monkeypatch,
+    tmp_path,
+):
+    database, controller_id = _database(tmp_path)
+    try:
+        voucher = SimpleNamespace(id="voucher-1")
+        other = SimpleNamespace(id="voucher-2")
+        database.upsert_voucher(
+            controller_id=controller_id,
+            unifi_id="voucher-2",
+            code="2222233333",
+            name="OTHER",
+            imported_at=NOW,
+            last_synced_at=NOW,
+        )
+        refreshed = []
+        populated = []
+        fake = SimpleNamespace(
+            _background_results=None,
+            active_controller_id=controller_id,
+            controller_snapshot_live=True,
+            tree=SimpleNamespace(focus=lambda: "row-1"),
+            by_iid={"row-1": voucher},
+            vouchers=[voucher, other],
+            checked_ids={"voucher-1", "voucher-2"},
+            database=database,
+            wait_window=lambda dialog: None,
+            _windows_operator_identity=lambda: "TEST\\operator",
+            populate=lambda: populated.append(True),
+            _refresh_report_summary=lambda: refreshed.append(True),
+        )
+
+        class Dialog:
+            def __init__(self, *args, **kwargs):
+                self.result = ("Mario Rossi", "Nota locale", True)
+
+        monkeypatch.setattr(metadata_ui, "VoucherLocalMetadataDialog", Dialog)
+        monkeypatch.setattr(
+            metadata_ui.messagebox,
+            "showinfo",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            metadata_ui.messagebox,
+            "showerror",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            metadata_ui.messagebox,
+            "showwarning",
+            lambda *args, **kwargs: None,
+        )
+
+        metadata_ui.VoucherLocalMetadataMixin.edit_local_voucher_metadata(fake)
+
+        assert fake.checked_ids == {"voucher-2"}
+        assert populated == [True]
+        assert refreshed == [True]
+        saved = database.voucher_local_metadata(
+            controller_id=controller_id,
+            unifi_id="voucher-1",
+        )
+        assert saved is not None
+        assert saved.is_nominal is True
+        assert saved.assigned_to == "Mario Rossi"
     finally:
         database.close()
