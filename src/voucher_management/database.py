@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 BACKUP_AUDIT_DESTINATIONS = frozenset(
     {
@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS vouchers (
     is_nominal INTEGER CHECK (is_nominal IS NULL OR is_nominal IN (0, 1)),
     nominality_redacted INTEGER NOT NULL DEFAULT 0
         CHECK (nominality_redacted IN (0, 1)),
+    revoked_for_security_at TEXT,
     archived_at TEXT,
     UNIQUE (controller_id, unifi_id)
 );
@@ -186,10 +187,24 @@ ON voucher_prints(voucher_id, printed_at);
 
 CREATE TABLE IF NOT EXISTS retention_policy (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    unused_unprinted_days INTEGER NOT NULL DEFAULT 180 CHECK (unused_unprinted_days >= 1),
+    unused_unprinted_days INTEGER
+        CHECK (unused_unprinted_days IS NULL OR unused_unprinted_days BETWEEN 1 AND 3650),
+    printed_unused_revoke_days INTEGER
+        CHECK (
+            printed_unused_revoke_days IS NULL
+            OR printed_unused_revoke_days BETWEEN 1 AND 3650
+        ),
+    configured INTEGER NOT NULL DEFAULT 0 CHECK (configured IN (0, 1)),
     protect_used INTEGER NOT NULL DEFAULT 1 CHECK (protect_used = 1),
     protect_printed INTEGER NOT NULL DEFAULT 1 CHECK (protect_printed = 1),
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    CHECK (
+        configured=0
+        OR (
+            unused_unprinted_days IS NOT NULL
+            AND printed_unused_revoke_days IS NOT NULL
+        )
+    )
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -345,6 +360,18 @@ SET origin='UNKNOWN'
 WHERE origin='LEGACY_APPLICATION';
 """
 
+
+MIGRATION_4_TO_5_POLICY_SQL = """
+ALTER TABLE vouchers ADD COLUMN revoked_for_security_at TEXT;
+ALTER TABLE retention_policy ADD COLUMN printed_unused_revoke_days INTEGER
+    CHECK (
+        printed_unused_revoke_days IS NULL
+        OR printed_unused_revoke_days BETWEEN 1 AND 3650
+    );
+ALTER TABLE retention_policy ADD COLUMN configured INTEGER NOT NULL DEFAULT 0
+    CHECK (configured IN (0, 1));
+"""
+
 @dataclass(frozen=True)
 class PrintAuditSummary:
     """Aggregated local print facts used by the duplicate-print warning."""
@@ -497,6 +524,55 @@ COMMIT;
 """
                 )
                 current = 4
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 4:
+            try:
+                voucher_columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                policy_columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(retention_policy)"
+                    )
+                }
+                statements: list[str] = []
+                if "revoked_for_security_at" not in voucher_columns:
+                    statements.append(
+                        "ALTER TABLE vouchers ADD COLUMN revoked_for_security_at TEXT;"
+                    )
+                if "printed_unused_revoke_days" not in policy_columns:
+                    statements.append(
+                        """ALTER TABLE retention_policy
+                           ADD COLUMN printed_unused_revoke_days INTEGER
+                           CHECK (
+                               printed_unused_revoke_days IS NULL
+                               OR printed_unused_revoke_days BETWEEN 1 AND 3650
+                           );"""
+                    )
+                if "configured" not in policy_columns:
+                    statements.append(
+                        """ALTER TABLE retention_policy
+                           ADD COLUMN configured INTEGER NOT NULL DEFAULT 0
+                           CHECK (configured IN (0, 1));"""
+                    )
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + "\n".join(statements)
+                    + """
+PRAGMA user_version = 5;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '5');
+COMMIT;
+"""
+                )
+                current = 5
             except Exception:
                 self.connection.rollback()
                 raise
@@ -668,29 +744,37 @@ COMMIT;
         self,
         *,
         unused_unprinted_days: int,
+        printed_unused_revoke_days: int,
         observed_at: str,
         connection: sqlite3.Connection | None = None,
     ) -> None:
-        """Persist the only currently supported conservative retention policy."""
+        """Persist both explicit lifecycle thresholds selected by the operator."""
 
-        days = int(unused_unprinted_days)
-        if not 1 <= days <= 3650:
+        local_days = int(unused_unprinted_days)
+        revoke_days = int(printed_unused_revoke_days)
+        if not 1 <= local_days <= 3650:
             raise ValueError(
-                "La retention voucher deve essere compresa tra 1 e 3650 giorni"
+                "La retention locale deve essere compresa tra 1 e 3650 giorni"
+            )
+        if not 1 <= revoke_days <= 3650:
+            raise ValueError(
+                "La revoca di sicurezza deve essere compresa tra 1 e 3650 giorni"
             )
 
         def write(db: sqlite3.Connection) -> None:
             db.execute(
                 """INSERT INTO retention_policy (
-                       id, unused_unprinted_days, protect_used,
-                       protect_printed, updated_at
-                   ) VALUES (1, ?, 1, 1, ?)
+                       id, unused_unprinted_days, printed_unused_revoke_days,
+                       configured, protect_used, protect_printed, updated_at
+                   ) VALUES (1, ?, ?, 1, 1, 1, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        unused_unprinted_days=excluded.unused_unprinted_days,
+                       printed_unused_revoke_days=excluded.printed_unused_revoke_days,
+                       configured=1,
                        protect_used=1,
                        protect_printed=1,
                        updated_at=excluded.updated_at""",
-                (days, observed_at),
+                (local_days, revoke_days, observed_at),
             )
 
         if connection is not None:
