@@ -16,7 +16,6 @@ from .retention import RETENTION_INTRO_KEY
 from .settings import DEFAULT_SETTINGS, SettingsStore
 
 
-DEFAULT_VOUCHER_RETENTION_DAYS = 180
 ONBOARDING_IN_PROGRESS_KEY = "onboarding_in_progress"
 SHARED_FRESH_START_KEY = "shared_per_user_migration_decision"
 SHARED_FRESH_START_VALUE = "fresh_start"
@@ -47,7 +46,8 @@ class OnboardingDraft:
     pdf_notes: str = ""
     backup_directory: str = ""
     backup_on_close: bool = True
-    unused_unprinted_days: int = DEFAULT_VOUCHER_RETENTION_DAYS
+    unused_unprinted_days: int | None = None
+    printed_unused_revoke_days: int | None = None
 
 
 def legacy_installation_has_evidence(paths, settings: dict) -> bool:
@@ -147,10 +147,19 @@ def validate_onboarding_draft(draft: OnboardingDraft) -> OnboardingDraft:
         raise ValueError("Inserire il nome della struttura")
     if not wifi_title:
         raise ValueError("Inserire il titolo Wi-Fi")
-    days = int(draft.unused_unprinted_days)
-    if not 1 <= days <= 3650:
+    if draft.unused_unprinted_days is None:
+        raise ValueError("Impostare la retention locale dei voucher")
+    if draft.printed_unused_revoke_days is None:
+        raise ValueError("Impostare la soglia di revoca dei voucher stampati")
+    local_days = int(draft.unused_unprinted_days)
+    revoke_days = int(draft.printed_unused_revoke_days)
+    if not 1 <= local_days <= 3650:
         raise ValueError(
-            "La retention voucher deve essere compresa tra 1 e 3650 giorni"
+            "La retention locale deve essere compresa tra 1 e 3650 giorni"
+        )
+    if not 1 <= revoke_days <= 3650:
+        raise ValueError(
+            "La revoca di sicurezza deve essere compresa tra 1 e 3650 giorni"
         )
     return OnboardingDraft(
         installation_name=installation_name,
@@ -165,7 +174,8 @@ def validate_onboarding_draft(draft: OnboardingDraft) -> OnboardingDraft:
         pdf_notes=draft.pdf_notes.strip(),
         backup_directory=draft.backup_directory.strip(),
         backup_on_close=bool(draft.backup_on_close),
-        unused_unprinted_days=days,
+        unused_unprinted_days=local_days,
+        printed_unused_revoke_days=revoke_days,
     )
 
 
@@ -199,6 +209,7 @@ def complete_onboarding(
     with database.transaction() as db:
         database.upsert_retention_policy(
             unused_unprinted_days=clean.unused_unprinted_days,
+            printed_unused_revoke_days=clean.printed_unused_revoke_days,
             observed_at=observed_at,
             connection=db,
         )
