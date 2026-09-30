@@ -432,6 +432,12 @@ def persist_successful_snapshot(
             )
             changes.append((old["id"], "present_on_controller", 1, 0))
 
+        database.reconcile_security_revocations(
+            controller_id=int(controller_id),
+            observed_at=observed_at,
+            connection=tx,
+        )
+
         for voucher_id, field, old_value, new_value in changes:
             tx.execute(
                 """INSERT INTO voucher_sync_observations
