@@ -489,8 +489,8 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
 def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
     monkeypatch,
 ):
-    current = SimpleNamespace(code_formatted="11111-22222")
-    other = SimpleNamespace(code_formatted="33333-44444")
+    current = SimpleNamespace(id="v1", code_formatted="11111-22222")
+    other = SimpleNamespace(id="v2", code_formatted="33333-44444")
     resolved = SimpleNamespace(
         path=Path("Print") / "Voucher_Group.pdf",
         linked_codes=("11111-22222", "33333-44444"),
@@ -536,7 +536,7 @@ def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
 
 def test_open_existing_pdf_maps_typed_linkage_failure_to_ui(monkeypatch):
     shown = []
-    current = SimpleNamespace(code_formatted="11111-22222")
+    current = SimpleNamespace(id="v1", code_formatted="11111-22222")
     fake = SimpleNamespace(
         selected=lambda: [current],
         vouchers=[current],
@@ -1416,3 +1416,57 @@ def test_manual_refresh_keeps_create_guard_when_local_snapshot_persistence_fails
     tasks[0]["success"](result)
 
     assert guard.pending is True
+
+
+def test_open_existing_pdf_includes_absent_durable_vouchers_in_linkage(
+    monkeypatch,
+):
+    current = SimpleNamespace(id="live", code_formatted="11111-22222")
+    historical = SimpleNamespace(id="absent", code_formatted="33333-44444")
+    captured = {}
+    fake = SimpleNamespace(
+        selected=lambda: [current],
+        vouchers=[current],
+        active_controller_id=7,
+        database=object(),
+        history=object(),
+        settings={},
+        paths=SimpleNamespace(prints=Path("Print")),
+        _preview=lambda *args: None,
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "load_local_vouchers",
+        lambda database, controller_id: [current, historical],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "resolve_existing_pdf",
+        lambda voucher, all_vouchers, **kwargs: (
+            captured.setdefault(
+                "ids",
+                {item.id for item in all_vouchers},
+            )
+            or SimpleNamespace(
+                path=Path("Print") / "Voucher_Group.pdf",
+                linked_codes=("11111-22222", "33333-44444"),
+            )
+        ),
+    )
+
+    # Use an explicit resolver to avoid the setdefault return value above.
+    def resolve(voucher, all_vouchers, **kwargs):
+        captured["ids"] = {item.id for item in all_vouchers}
+        return SimpleNamespace(
+            path=Path("Print") / "Voucher_Group.pdf",
+            linked_codes=("11111-22222", "33333-44444"),
+        )
+
+    monkeypatch.setattr(app_module, "resolve_existing_pdf", resolve)
+    VoucherApp.open_existing_pdf(fake)
+
+    assert captured["ids"] == {"live", "absent"}
