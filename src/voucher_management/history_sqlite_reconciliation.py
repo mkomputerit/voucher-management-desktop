@@ -69,17 +69,6 @@ def mark_history_print_reconciliation_pending_to_path(
         database.close()
 
 
-def clear_history_print_reconciliation_pending_to_path(
-    database_path: Path,
-) -> None:
-    database = Database(Path(database_path))
-    try:
-        database.initialize()
-        _mark(database, pending=False)
-    finally:
-        database.close()
-
-
 def _build_plans(
     database: Database,
     history: HistoryService,
