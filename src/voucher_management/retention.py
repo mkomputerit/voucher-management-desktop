@@ -248,6 +248,16 @@ def durable_legacy_generation_blockers(
     return frozenset(int(row["voucher_id"]) for row in rows)
 
 
+def _history_code(value: object) -> str:
+    """Return the exact presentation form used by HMAC print history."""
+
+    text = str(value or "").strip()
+    canonical = text.replace("-", "")
+    if len(canonical) == 10:
+        return f"{canonical[:5]}-{canonical[5:]}"
+    return text
+
+
 def generated_retention_blockers(
     database: Database,
     *,
@@ -273,7 +283,7 @@ def generated_retention_blockers(
         requested,
     ).fetchall()
     code_by_id = {
-        int(row["id"]): str(row["code"])
+        int(row["id"]): _history_code(row["code"])
         for row in rows
         if str(row["code"] or "").strip()
     }
