@@ -2332,7 +2332,7 @@ class ModernVoucherApp(
             )
             return
         self.settings_retention_summary_var.set(
-            "I voucher mai usati e mai stampati diventano candidati dopo "
+            "I voucher senza utilizzi rilevati e senza stampe registrate diventano candidati dopo "
             f"{int(policy['unused_unprinted_days'])} giorni."
         )
 
@@ -3003,7 +3003,7 @@ class ModernVoucherApp(
                 f"origine {totals.unknown_origin_vouchers} • "
                 f"nominalità non classificata {totals.unclassified_vouchers} • "
                 f"rimossa per privacy {totals.redacted_nominality_vouchers} • "
-                "ultime osservazioni per voucher: "
+                "ultime presenze osservate per voucher: "
                 f"{audit_time_label(dataset.data_from)} - "
                 f"{audit_time_label(dataset.data_as_of)}"
             )
