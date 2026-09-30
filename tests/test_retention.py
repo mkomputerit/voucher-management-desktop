@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from voucher_management.database import Database
 from voucher_management.history import HistoryError
 from voucher_management.retention import (
