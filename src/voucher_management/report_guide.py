@@ -17,6 +17,8 @@ REPORT_GUIDE = {
     ReportKind.USAGE_UNKNOWN: ("Verifica dati: utilizzo sconosciuto", "Non ci sono dati sufficienti per stabilire l'utilizzo. Non vanno contati come inutilizzati. Sincronizzare aggiorna i voucher ancora identificabili sul controller."),
     ReportKind.ORIGIN_UNKNOWN: ("Verifica dati: origine sconosciuta", "Manca una conferma di creazione tramite questa applicazione. Una sincronizzazione non ricostruisce chi abbia creato un vecchio voucher."),
     ReportKind.NOMINALITY_REDACTED: ("Verifica dati: nominalità rimossa", "Classificazione rimossa dalla procedura di conservazione per privacy. Non viene ricostruita dal destinatario."),
+    ReportKind.SECURITY_REVOCATION_CANDIDATES: ("Quali voucher devo revocare per sicurezza?", "Voucher stampati, ancora attivi su UniFi, con uso osservato a zero, osservazione successiva alla stampa e ultima stampa più vecchia della soglia configurata. Le identità ambigue vengono escluse e restano da verificare."),
+    ReportKind.SECURITY_REVOKED: ("Quali voucher sono stati revocati per sicurezza?", "Storico dei voucher rimossi da UniFi tramite il workflow di revoca di sicurezza. Il record locale rimane disponibile per audit e potrà essere minimizzato successivamente dalla retention locale."),
 }
 
 HISTORY_NOTICE = (
