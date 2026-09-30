@@ -121,6 +121,17 @@ class VoucherCreationMixin:
                 )
             except Exception as exc:
                 marker_error = exc
+                # The reporting marker is the preferred durable recovery path.
+                # If it cannot be written, escalate the pre-existing mutation
+                # guard *before* SQLite persistence so a hard crash cannot
+                # reopen creation with un-attributable confirmed vouchers.
+                try:
+                    self.create_guard.mark_confirmed_unreconciled()
+                except CreateMutationGuardError as guard_exc:
+                    self.logger.error(
+                        "create_guard_manual_recovery_mark_failed type=%s",
+                        type(guard_exc).__name__,
+                    )
 
             try:
                 persist_create_result_to_path(
@@ -144,13 +155,22 @@ class VoucherCreationMixin:
                 )
 
             # SQLite now contains the same confirmed UUID/classification facts
-            # atomically. A leftover marker is redundant and may be cleared.
+            # atomically. A leftover reporting marker is redundant and may be
+            # cleared. If that marker had failed earlier, SQLite persistence is
+            # now the durable recovery fact, so release the escalated mutation
+            # guard here instead of waiting for a UI callback.
             try:
                 clear_pending_create_reporting(marker_path)
             except OSError:
                 # Reconciliation is idempotent; leaving the marker behind is
                 # safer than converting a confirmed create into a failure.
                 pass
+            if marker_error is not None:
+                try:
+                    self.create_guard.clear()
+                except CreateMutationGuardError:
+                    # The completion callback retries and warns the operator.
+                    pass
             return replace(outcome, recovery_marker_error=None)
 
         def completed(outcome) -> None:
