@@ -1,9 +1,10 @@
 """Durable guard for uncertain controller-side voucher creation.
 
-The marker intentionally contains no voucher data, API credentials, controller
-addresses, or operator-entered fields. Its existence alone means that a create
-request may have crossed the network boundary without a definitive response,
-so another create is blocked until the operator performs a successful refresh.
+Before the controller responds, the marker contains only the word "pending".
+After a confirmed create it may be upgraded with privacy-safe reconciliation
+facts (controller-local id, UniFi voucher UUIDs, nominality and timestamp).
+Voucher codes, recipients, API credentials and controller addresses are never
+stored. Its existence blocks another create until reconciliation is complete.
 """
 
 from __future__ import annotations
@@ -137,15 +138,28 @@ class CreateMutationGuard:
             raise CreateMutationGuardError(
                 "Recovery della creazione confermata danneggiato"
             ) from exc
-        return (
+        valid = (
             isinstance(payload, dict)
             and payload.get("format") == 1
             and type(payload.get("controller_id")) is int
+            and int(payload.get("controller_id")) > 0
             and isinstance(payload.get("voucher_ids"), list)
             and bool(payload.get("voucher_ids"))
+            and all(
+                isinstance(value, str) and bool(value.strip())
+                for value in payload.get("voucher_ids", [])
+            )
+            and len({
+                value.strip() for value in payload.get("voucher_ids", [])
+            }) == len(payload.get("voucher_ids", []))
             and type(payload.get("is_nominal")) is bool
             and bool(str(payload.get("confirmed_at") or "").strip())
         )
+        if not valid:
+            raise CreateMutationGuardError(
+                "Recovery della creazione confermata non valido"
+            )
+        return True
 
     def clear(self) -> bool:
         """Clear the marker after a definitive result or successful refresh."""
