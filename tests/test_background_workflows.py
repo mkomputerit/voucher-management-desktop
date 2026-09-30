@@ -1359,6 +1359,13 @@ def test_confirmed_create_with_no_sqlite_and_no_recovery_marker_stays_blocked(
 
     VoucherApp.create(fake)
     result = tasks[0]["worker"]()
+
+    # The guard must already be durable before control returns to Tk; a crash
+    # between worker completion and the UI callback must remain fail-closed.
+    assert guard.pending is True
+    assert guard.requires_manual_recovery is True
+    assert guard.state == guard.MANUAL_RECOVERY_STATE
+
     tasks[0]["success"](result)
 
     assert guard.pending is True
@@ -1451,3 +1458,74 @@ def test_open_existing_pdf_uses_durable_history_for_absent_linked_vouchers(
     VoucherApp.open_existing_pdf(fake)
 
     assert captured["all_vouchers"] == [current, absent]
+
+
+def test_marker_failure_does_not_leave_manual_block_when_sqlite_persists(
+    monkeypatch,
+    tmp_path,
+):
+    from voucher_management.mutation_guard import CreateMutationGuard
+
+    tasks = []
+    guard = CreateMutationGuard(tmp_path / "pending_create_guard")
+    created = SimpleNamespace(id="created-durable")
+    fake = SimpleNamespace(
+        client=object(),
+        create_guard=guard,
+        vouchers=[],
+        checked_ids=set(),
+        filter_var=SimpleNamespace(set=lambda value: None),
+        populate=lambda: None,
+        active_controller_id=7,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_reporting=tmp_path / "pending_create_reporting.json",
+        ),
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "CreateDialog",
+        lambda parent: SimpleNamespace(
+            result={"recipient": "Guest", "quantity": 1, "is_nominal": False}
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "create_vouchers_and_refresh",
+        lambda *args, **kwargs: creation_ui.CreateOutcome(
+            created=(created,),
+            vouchers=(created,),
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "write_pending_create_reporting",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("marker unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "persist_create_result_to_path",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "showinfo",
+        lambda *args, **kwargs: None,
+    )
+
+    VoucherApp.create(fake)
+    result = tasks[0]["worker"]()
+
+    assert guard.pending is False
+    assert guard.requires_manual_recovery is False
+
+    tasks[0]["success"](result)
+    assert guard.pending is False
