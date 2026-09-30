@@ -1049,7 +1049,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         resolved only against voucher codes already present in SQLite.
         """
 
-        candidates = self._historical_voucher_candidates()
+        candidates = VoucherApp._historical_voucher_candidates(self)
         details = self.history.resolve_pending_print(
             [voucher.code_formatted for voucher in candidates],
             self.settings,
@@ -1112,7 +1112,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         voucher = selected[0]
         try:
-            historical_candidates = self._historical_voucher_candidates()
+            historical_candidates = VoucherApp._historical_voucher_candidates(self)
         except Exception as exc:
             self.logger.warning(
                 "historical_pdf_candidates_failed type=%s",
