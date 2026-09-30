@@ -796,6 +796,158 @@ THIS IS NOT VALID SQL;
 
 
 
+def test_schema_four_upgrade_adds_explicit_policy_and_revocation_audit(tmp_path):
+    path = tmp_path / "schema-four.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(
+        """
+        CREATE TABLE app_metadata(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE vouchers(
+            id INTEGER PRIMARY KEY,
+            revoked_probe TEXT
+        );
+        CREATE TABLE retention_policy(
+            id INTEGER PRIMARY KEY,
+            unused_unprinted_days INTEGER NOT NULL,
+            protect_used INTEGER NOT NULL DEFAULT 1 CHECK (protect_used=1),
+            protect_printed INTEGER NOT NULL DEFAULT 1 CHECK (protect_printed=1),
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO retention_policy(
+            id, unused_unprinted_days, protect_used, protect_printed, updated_at
+        ) VALUES (1, 180, 1, 1, 'legacy-policy');
+        INSERT INTO app_metadata(key, value) VALUES ('schema_version', '4');
+        PRAGMA user_version = 4;
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    db = Database(path)
+    try:
+        db.initialize()
+        voucher_columns = {
+            row["name"]
+            for row in db.connection.execute("PRAGMA table_info(vouchers)")
+        }
+        policy_columns = {
+            row["name"]
+            for row in db.connection.execute(
+                "PRAGMA table_info(retention_policy)"
+            )
+        }
+        tables = {
+            row[0]
+            for row in db.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "revoked_for_security_at" in voucher_columns
+        assert {"printed_unused_revoke_days", "configured"} <= policy_columns
+        assert "security_revocations" in tables
+        policy = db.retention_policy()
+        assert policy["unused_unprinted_days"] == 180
+        assert policy["printed_unused_revoke_days"] is None
+        assert policy["configured"] == 0
+        assert db.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0] == SCHEMA_VERSION
+    finally:
+        db.close()
+
+
+def test_security_revocation_reconciliation_confirms_only_absent_voucher(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="Sala",
+            api_root="https://controller.example",
+            created_at="2026-09-01T08:00:00+00:00",
+        )
+        absent = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="absent-after-delete",
+            code="1111122222",
+            imported_at="2026-09-01T08:00:00+00:00",
+            last_synced_at="2026-09-01T08:00:00+00:00",
+        )
+        present = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="still-present",
+            code="3333344444",
+            imported_at="2026-09-01T08:00:00+00:00",
+            last_synced_at="2026-09-01T08:00:00+00:00",
+        )
+        for voucher_id, job_id in ((absent, "job-a"), (present, "job-b")):
+            cursor = db.connection.execute(
+                """INSERT INTO print_jobs(
+                       print_job_uuid, created_at, submitted_at, windows_user,
+                       output_file, document_copies, status
+                   ) VALUES (?, '2026-09-01T09:00:00+00:00',
+                       '2026-09-01T09:00:00+00:00', 'operator',
+                       'voucher.pdf', 1, 'AUDITED')""",
+                (job_id,),
+            )
+            db.connection.execute(
+                """INSERT INTO voucher_prints(
+                       print_job_id, voucher_id, printed_at, windows_user,
+                       physical_copies, print_sequence, is_reprint
+                   ) VALUES (?, ?, '2026-09-01T09:00:00+00:00',
+                       'operator', 1, 1, 0)""",
+                (cursor.lastrowid, voucher_id),
+            )
+        db.connection.commit()
+
+        db.prepare_security_revocations(
+            controller_id=controller,
+            unifi_ids=["absent-after-delete", "still-present"],
+            operation_uuid="security-op",
+            requested_at="2026-09-30T10:00:00+00:00",
+            requested_by=r"PC\operator",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET present_on_controller=0 WHERE id=?",
+                (absent,),
+            )
+
+        confirmed, cancelled = db.reconcile_security_revocations(
+            controller_id=controller,
+            observed_at="2026-09-30T10:05:00+00:00",
+        )
+        assert confirmed == (absent,)
+        assert cancelled == (present,)
+
+        absent_row = db.connection.execute(
+            "SELECT revoked_for_security_at FROM vouchers WHERE id=?",
+            (absent,),
+        ).fetchone()
+        assert absent_row["revoked_for_security_at"] == (
+            "2026-09-30T10:05:00+00:00"
+        )
+        statuses = {
+            row["voucher_id"]: row["status"]
+            for row in db.connection.execute(
+                "SELECT voucher_id, status FROM security_revocations"
+            )
+        }
+        assert statuses == {absent: "CONFIRMED", present: "CANCELLED"}
+        event = db.connection.execute(
+            """SELECT event_type, windows_user, details_json
+               FROM voucher_events
+               WHERE voucher_id=? AND event_type='SECURITY_REVOKED'""",
+            (absent,),
+        ).fetchone()
+        assert event["event_type"] == "SECURITY_REVOKED"
+        assert event["windows_user"] == r"PC\operator"
+        assert '"reason":"printed_unused"' in event["details_json"]
+    finally:
+        db.close()
+
+
 def test_application_session_records_clean_close_and_backup_outcome(tmp_path):
     db = _db(tmp_path)
     try:
