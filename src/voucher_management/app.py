@@ -1017,6 +1017,30 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             windows_user=self._windows_operator_identity(),
         )
 
+    def _historical_voucher_candidates(self) -> list[ApiVoucher]:
+        """Merge live vouchers with durable non-minimized controller history.
+
+        Historical PDF linkage and crash recovery must use the same candidate
+        population. A voucher that disappeared from the current controller list
+        can still be physically present inside an archived PDF and therefore
+        must remain auditable.
+        """
+
+        candidates_by_id = {
+            str(item.id): item for item in self.vouchers
+        }
+        controller_id = getattr(self, "active_controller_id", None)
+        if controller_id is None:
+            return list(candidates_by_id.values())
+
+        durable = load_local_vouchers(
+            self.database,
+            controller_id=int(controller_id),
+        )
+        for item in durable:
+            candidates_by_id.setdefault(str(item.id), item)
+        return list(candidates_by_id.values())
+
     def _record_pending_print_sqlite_and_finalize(self) -> bool:
         """Complete SQLite audit for a submitted crash-recovery marker.
 
@@ -1025,8 +1049,9 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         resolved only against voucher codes already present in SQLite.
         """
 
+        candidates = self._historical_voucher_candidates()
         details = self.history.resolve_pending_print(
-            [voucher.code_formatted for voucher in self.vouchers],
+            [voucher.code_formatted for voucher in candidates],
             self.settings,
         )
         if details is None:
@@ -1086,36 +1111,26 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             return
 
         voucher = selected[0]
-        candidates_by_id = {
-            str(item.id): item for item in self.vouchers
-        }
-        controller_id = getattr(self, "active_controller_id", None)
-        if controller_id is not None:
-            try:
-                durable_candidates = load_local_vouchers(
-                    self.database,
-                    controller_id=int(controller_id),
-                )
-            except Exception as exc:
-                self.logger.warning(
-                    "historical_pdf_candidates_failed type=%s",
-                    type(exc).__name__,
-                )
-                messagebox.showerror(
-                    "Apri PDF",
-                    "Impossibile verificare tutti i voucher storicamente "
-                    "collegabili al PDF. L'anteprima viene sospesa per evitare "
-                    "una ristampa con audit incompleto.",
-                    parent=self,
-                )
-                return
-            for item in durable_candidates:
-                candidates_by_id.setdefault(str(item.id), item)
+        try:
+            historical_candidates = self._historical_voucher_candidates()
+        except Exception as exc:
+            self.logger.warning(
+                "historical_pdf_candidates_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Apri PDF",
+                "Impossibile verificare tutti i voucher storicamente "
+                "collegabili al PDF. L'anteprima viene sospesa per evitare "
+                "una ristampa con audit incompleto.",
+                parent=self,
+            )
+            return
 
         try:
             resolved = resolve_existing_pdf(
                 voucher,
-                list(candidates_by_id.values()),
+                historical_candidates,
                 history=self.history,
                 settings=self.settings,
                 prints_root=self.paths.prints,
