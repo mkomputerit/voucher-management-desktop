@@ -825,12 +825,13 @@ def test_retention_candidate_exposes_last_actual_presence_not_absence_sync(tmp_p
             remote_id="retention-freshness",
             code="7373737373",
         )
+        absence_observed = "2026-03-01T08:00:00+00:00"
         with database.transaction() as db:
             db.execute(
                 """UPDATE vouchers
                    SET last_seen_at=?, last_synced_at=?
                    WHERE id=?""",
-                (OLD, NOW, voucher_id),
+                (OLD, absence_observed, voucher_id),
             )
 
         candidates = retention_candidates(database, now=NOW)
@@ -838,7 +839,8 @@ def test_retention_candidate_exposes_last_actual_presence_not_absence_sync(tmp_p
             item for item in candidates if item.voucher_id == voucher_id
         )
         assert candidate.last_seen_at == OLD
-        assert candidate.last_synced_at == NOW
+        assert candidate.last_synced_at == absence_observed
+        assert candidate.age_basis == absence_observed
     finally:
         database.close()
 
