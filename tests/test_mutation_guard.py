@@ -65,3 +65,18 @@ def test_create_guard_can_store_privacy_safe_confirmed_reporting_recovery(
     assert "recipient" not in serialized
     assert "code" not in serialized
     assert "api" not in serialized
+
+
+def test_corrupted_reporting_recovery_fails_closed(tmp_path: Path):
+    path = tmp_path / "pending_create_guard"
+    guard = CreateMutationGuard(path)
+    guard.begin()
+    path.write_text('{"format":1,"controller_id":7', encoding="utf-8")
+
+    with pytest.raises(
+        CreateMutationGuardError,
+        match="Recovery della creazione confermata danneggiato",
+    ):
+        _ = guard.has_reporting_recovery
+
+    assert guard.pending is True
