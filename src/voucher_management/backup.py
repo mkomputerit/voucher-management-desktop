@@ -970,6 +970,7 @@ class BackupService:
         # application ProgramData root, not on C:\\ProgramData itself.
         # Keep every restore work item below that protected root so restore
         # never requires administrator rights merely to create staging files.
+        had_existing_root = self.paths.user_root.exists()
         work_root = self.paths.user_root / ".restore-work"
         rollback_root = self.paths.user_root / "Rollback"
         work_root.mkdir(parents=True, exist_ok=True)
@@ -992,7 +993,6 @@ class BackupService:
             )
         )
         rollback_build = rollback_build_root / "snapshot"
-        had_existing_root = self.paths.user_root.exists()
         rollback_ready = False
 
         try:
