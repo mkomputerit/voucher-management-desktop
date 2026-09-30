@@ -190,6 +190,16 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 self.paths.pending_create_reporting,
             ):
                 self.logger.info("create_reporting_reconciled_on_startup")
+            if (
+                self.create_guard.has_reporting_recovery
+                and reconcile_pending_create_reporting(
+                    self.database,
+                    self.create_guard.path,
+                )
+            ):
+                self.logger.info(
+                    "create_reporting_guard_reconciled_on_startup"
+                )
         except Exception as exc:
             self.logger.error(
                 "create_reporting_startup_reconcile_failed type=%s",
@@ -679,12 +689,25 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                         ),
                     )
                     marker_was_pending = Path(marker_path).exists()
-                    reconciled = reconcile_pending_create_reporting_to_path(
-                        database_path,
-                        marker_path,
-                        controller_id=resolved_controller_id,
+                    guard_recovery_pending = (
+                        self.create_guard.has_reporting_recovery
                     )
-                    if marker_was_pending and not reconciled:
+                    reconciled = False
+                    if marker_was_pending:
+                        reconciled = reconcile_pending_create_reporting_to_path(
+                            database_path,
+                            marker_path,
+                            controller_id=resolved_controller_id,
+                        )
+                    elif guard_recovery_pending:
+                        reconciled = reconcile_pending_create_reporting_to_path(
+                            database_path,
+                            self.create_guard.path,
+                            controller_id=resolved_controller_id,
+                        )
+                    if (
+                        marker_was_pending or guard_recovery_pending
+                    ) and not reconciled:
                         raise RuntimeError(
                             "Pending create reporting marker is not reconciled"
                         )
