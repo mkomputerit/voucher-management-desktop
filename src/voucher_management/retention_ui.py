@@ -237,6 +237,12 @@ class RetentionReviewDialog(tk.Toplevel):
 
     def _refresh(self) -> None:
         self.tree.delete(*self.tree.get_children())
+        if not retention_policy_configured(self.app.database):
+            self._candidates = {}
+            self.status.set(
+                "Policy da configurare: inserire entrambe le soglie e salvare."
+            )
+            return
         try:
             candidates = reviewable_retention_candidates(
                 self.app.database,
@@ -280,20 +286,34 @@ class RetentionReviewDialog(tk.Toplevel):
 
     def _save_policy(self) -> None:
         try:
-            days = int(self.days.get())
-            policy = update_retention_days(
+            local_days = int(self.days.get().strip())
+            revoke_days = int(self.revoke_days.get().strip())
+            policy = configure_retention_policy(
                 self.app.database,
-                days=days,
+                unused_unprinted_days=local_days,
+                printed_unused_revoke_days=revoke_days,
                 now=self._now(),
             )
         except (TypeError, ValueError):
             messagebox.showerror(
                 "Conservazione",
-                "Inserire un numero di giorni tra 1 e 3650.",
+                "Inserire entrambe le soglie con un numero tra 1 e 3650 giorni.",
                 parent=self,
             )
             return
         self.days.set(str(policy.unused_unprinted_days))
+        self.revoke_days.set(str(policy.printed_unused_revoke_days))
+        self._refresh()
+
+    def _open_security_revocation(self) -> None:
+        if not retention_policy_configured(self.app.database):
+            messagebox.showinfo(
+                "Revoca sicurezza",
+                "Configurare e salvare entrambe le soglie prima di usare la revoca.",
+                parent=self,
+            )
+            return
+        SecurityRevocationDialog(self.app, parent=self)
         self._refresh()
 
     def _archive_selected(self) -> None:
@@ -377,14 +397,16 @@ class RetentionReviewDialog(tk.Toplevel):
 
 
 class RetentionMixin:
-    """Compose retention onboarding and review into the Windows shell."""
+    """Compose lifecycle-policy review into the Windows shell."""
 
     def show_retention_intro_if_needed(self) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        ensure_retention_policy(self.database, now=now)
+        if not retention_policy_configured(self.database):
+            self.after_idle(lambda: RetentionReviewDialog(self))
+            return
         if retention_intro_seen(self.database):
             return
 
+        now = datetime.now(timezone.utc).isoformat()
         dialog = RetentionIntroDialog(self)
         if dialog.result is None:
             return
@@ -394,8 +416,4 @@ class RetentionMixin:
             self.open_retention_review()
 
     def open_retention_review(self, *, parent=None) -> None:
-        ensure_retention_policy(
-            self.database,
-            now=datetime.now(timezone.utc).isoformat(),
-        )
         RetentionReviewDialog(self, parent=parent)
