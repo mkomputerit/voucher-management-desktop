@@ -996,6 +996,39 @@ COMMIT;
         return frozenset(str(row["unifi_id"]) for row in rows)
 
 
+    def historically_printed_remote_ids(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+    ) -> frozenset[str]:
+        """Return selected voucher ids with durable SQLite physical-print audit."""
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        if not ids:
+            return frozenset()
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.connection.execute(
+            f"""SELECT v.unifi_id
+                FROM vouchers AS v
+                WHERE v.controller_id=?
+                  AND v.unifi_id IN ({placeholders})
+                  AND EXISTS (
+                      SELECT 1
+                      FROM voucher_prints AS vp
+                      WHERE vp.voucher_id=v.id
+                  )""",
+            (int(controller_id), *ids),
+        ).fetchall()
+        return frozenset(str(row["unifi_id"]) for row in rows)
+
+
     def usage_unknown_remote_ids(
         self,
         *,
