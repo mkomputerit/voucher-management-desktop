@@ -7,13 +7,15 @@ from types import SimpleNamespace
 from voucher_management.database import Database
 from voucher_management.history import HistoryError
 from voucher_management.retention import (
-    DEFAULT_UNUSED_UNPRINTED_DAYS,
     archive_retention_candidates,
+    configure_retention_policy,
     ensure_retention_policy,
     mark_retention_intro_seen,
     retention_candidates,
     retention_intro_seen,
     reviewable_retention_candidates,
+    security_revocation_candidates,
+    prepare_security_revocation_operation,
     update_retention_days,
 )
 
@@ -48,7 +50,7 @@ def _history(*, generated_codes=()):
 
     return SimpleNamespace(stats_for_codes=stats_for_codes)
 
-def _database(tmp_path):
+def _database(tmp_path, *, configure=True):
     database = Database(tmp_path / "retention.db")
     database.initialize()
     controller_id = database.create_controller(
@@ -56,6 +58,13 @@ def _database(tmp_path):
         api_root="https://controller.example",
         created_at=OLD,
     )
+    if configure:
+        configure_retention_policy(
+            database,
+            unused_unprinted_days=180,
+            printed_unused_revoke_days=60,
+            now=NOW,
+        )
     return database, controller_id
 
 
@@ -93,34 +102,37 @@ def _voucher(
     return voucher_id
 
 
-def test_default_policy_is_created_once_with_fixed_protections(tmp_path):
-    database, _controller = _database(tmp_path)
+def test_policy_is_never_invented_and_requires_explicit_configuration(tmp_path):
+    database, _controller = _database(tmp_path, configure=False)
     try:
-        first = ensure_retention_policy(database, now=NOW)
-        second = ensure_retention_policy(
-            database,
-            now="2026-09-27T09:00:00+00:00",
-        )
+        with pytest.raises(RuntimeError, match="non è ancora configurata"):
+            ensure_retention_policy(database, now=NOW)
 
-        assert first.unused_unprinted_days == DEFAULT_UNUSED_UNPRINTED_DAYS
-        assert first.protect_used is True
-        assert first.protect_printed is True
-        assert second.updated_at == first.updated_at
+        policy = configure_retention_policy(
+            database,
+            unused_unprinted_days=180,
+            printed_unused_revoke_days=60,
+            now=NOW,
+        )
+        assert policy.unused_unprinted_days == 180
+        assert policy.printed_unused_revoke_days == 60
+        assert policy.configured is True
+        assert policy.protect_used is True
+        assert policy.protect_printed is True
     finally:
         database.close()
 
 
-def test_policy_edit_can_change_only_age_threshold(tmp_path):
+def test_policy_edit_preserves_security_threshold(tmp_path):
     database, _controller = _database(tmp_path)
     try:
-        ensure_retention_policy(database, now=NOW)
         policy = update_retention_days(
             database,
             days=365,
             now="2026-09-27T09:00:00+00:00",
         )
-
         assert policy.unused_unprinted_days == 365
+        assert policy.printed_unused_revoke_days == 60
         assert policy.protect_used is True
         assert policy.protect_printed is True
     finally:
@@ -257,49 +269,49 @@ def test_usage_indeterminate_row_is_never_offered_for_retention(tmp_path):
         database.close()
 
 
-def test_absence_without_post_expiry_observation_is_not_retention_proof(tmp_path):
+def test_recent_controller_absence_is_not_old_enough_for_local_retention(tmp_path):
     database, controller = _database(tmp_path)
     try:
         voucher_id = _voucher(
             database,
             controller,
-            remote_id="vanished-before-proof",
+            remote_id="recent-absence",
             code="8181818181",
-            imported_at="2026-01-01T08:00:00+00:00",
-            created_at="2026-01-01T08:00:00+00:00",
-            expires_at="2026-01-02T08:00:00+00:00",
+            imported_at=OLD,
+            created_at=OLD,
+            expires_at=None,
             expired=False,
         )
         with database.transaction() as db:
             db.execute(
                 """UPDATE vouchers
                    SET present_on_controller=0,
-                       last_seen_at='2026-01-01T12:00:00+00:00',
-                       last_synced_at='2026-01-03T08:00:00+00:00'
+                       last_synced_at='2026-09-20T08:00:00+00:00'
                    WHERE id=?""",
                 (voucher_id,),
             )
-
         assert retention_candidates(database, now=NOW) == ()
     finally:
         database.close()
 
 
-def test_expiry_is_conservative_age_basis_when_present(tmp_path):
+def test_local_retention_does_not_require_voucher_expiry(tmp_path):
     database, controller = _database(tmp_path)
     try:
-        _voucher(
+        voucher_id = _voucher(
             database,
             controller,
-            remote_id="future-expiry",
-            code="1111122222",
+            remote_id="no-expiry",
+            code="1717171717",
             created_at=OLD,
             imported_at=OLD,
-            expires_at="2026-12-01T08:00:00+00:00",
+            expires_at=None,
             expired=False,
         )
-
-        assert retention_candidates(database, now=NOW) == ()
+        assert [item.voucher_id for item in retention_candidates(
+            database,
+            now=NOW,
+        )] == [voucher_id]
     finally:
         database.close()
 
@@ -417,6 +429,199 @@ def test_archived_row_is_not_offered_again(tmp_path):
         )
 
         assert retention_candidates(database, now=NOW) == ()
+    finally:
+        database.close()
+
+
+def test_security_revocation_candidates_require_old_print_and_post_print_observation(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="printed-live",
+            code="1212121212",
+            created_at=OLD,
+            imported_at=OLD,
+            expires_at=None,
+            expired=False,
+            present=True,
+        )
+        database.record_print_audit(
+            controller_id=controller,
+            audit_id="security-print",
+            codes=["12121-21212"],
+            output_file="voucher.pdf",
+            document_copies=1,
+            printed_at="2026-06-01T08:00:00+00:00",
+            windows_user="operator",
+        )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET last_seen_at=? WHERE id=?",
+                (NOW, voucher_id),
+            )
+
+        candidates = security_revocation_candidates(
+            database,
+            now=NOW,
+            controller_id=controller,
+        )
+        assert [item.voucher_id for item in candidates] == [voucher_id]
+        assert candidates[0].last_printed_at == "2026-06-01T08:00:00+00:00"
+    finally:
+        database.close()
+
+
+def test_security_revocation_excludes_used_unknown_recent_and_unobserved_after_print(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        cases = {}
+        for remote_id, code in (
+            ("used", "1313131313"),
+            ("unknown", "1414141414"),
+            ("recent-print", "1515151515"),
+            ("stale-observation", "1616161616"),
+        ):
+            cases[remote_id] = _voucher(
+                database,
+                controller,
+                remote_id=remote_id,
+                code=code,
+                created_at=OLD,
+                imported_at=OLD,
+                expires_at=None,
+                expired=False,
+                present=True,
+            )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET ever_used=1, authorized_guest_count=1 WHERE id=?",
+                (cases["used"],),
+            )
+            db.execute(
+                "UPDATE vouchers SET usage_observed=0 WHERE id=?",
+                (cases["unknown"],),
+            )
+        for remote_id, code, stamp in (
+            ("used", "13131-31313", "2026-06-01T08:00:00+00:00"),
+            ("unknown", "14141-41414", "2026-06-01T08:00:00+00:00"),
+            ("recent-print", "15151-51515", "2026-09-20T08:00:00+00:00"),
+            ("stale-observation", "16161-61616", "2026-06-01T08:00:00+00:00"),
+        ):
+            database.record_print_audit(
+                controller_id=controller,
+                audit_id=f"job-{remote_id}",
+                codes=[code],
+                output_file=f"{remote_id}.pdf",
+                document_copies=1,
+                printed_at=stamp,
+                windows_user="operator",
+            )
+        with database.transaction() as db:
+            for key in ("used", "unknown", "recent-print"):
+                db.execute(
+                    "UPDATE vouchers SET last_seen_at=? WHERE id=?",
+                    (NOW, cases[key]),
+                )
+            db.execute(
+                "UPDATE vouchers SET last_seen_at=? WHERE id=?",
+                ("2026-05-01T08:00:00+00:00", cases["stale-observation"]),
+            )
+
+        assert security_revocation_candidates(
+            database,
+            now=NOW,
+            controller_id=controller,
+        ) == ()
+    finally:
+        database.close()
+
+
+def test_identity_review_required_blocks_security_revocation(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="review-required",
+            code="1818181818",
+            expires_at=None,
+            expired=False,
+            present=True,
+        )
+        database.record_print_audit(
+            controller_id=controller,
+            audit_id="review-print",
+            codes=["18181-81818"],
+            output_file="review.pdf",
+            document_copies=1,
+            printed_at="2026-06-01T08:00:00+00:00",
+            windows_user="operator",
+        )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET last_seen_at=? WHERE id=?",
+                (NOW, voucher_id),
+            )
+            db.execute(
+                """INSERT INTO voucher_events(
+                       event_uuid, voucher_id, event_type, occurred_at,
+                       source, details_json
+                   ) VALUES ('review-required-event', ?,
+                       'LEGACY_IDENTITY_REVIEW_REQUIRED', ?, 'SYSTEM', '{}')""",
+                (voucher_id, NOW),
+            )
+        assert security_revocation_candidates(
+            database,
+            now=NOW,
+            controller_id=controller,
+        ) == ()
+    finally:
+        database.close()
+
+
+def test_prepare_security_revocation_operation_revalidates_and_persists_intent(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="security-ready",
+            code="1919191919",
+            expires_at=None,
+            expired=False,
+            present=True,
+        )
+        database.record_print_audit(
+            controller_id=controller,
+            audit_id="security-ready-print",
+            codes=["19191-91919"],
+            output_file="ready.pdf",
+            document_copies=1,
+            printed_at="2026-06-01T08:00:00+00:00",
+            windows_user="operator",
+        )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET last_seen_at=? WHERE id=?",
+                (NOW, voucher_id),
+            )
+
+        remote_ids = prepare_security_revocation_operation(
+            database,
+            controller_id=controller,
+            voucher_ids=[voucher_id],
+            operation_uuid="security-operation",
+            requested_at=NOW,
+            windows_user=r"PC\operator",
+        )
+        assert remote_ids == ("security-ready",)
+        row = database.connection.execute(
+            "SELECT status, requested_by FROM security_revocations"
+        ).fetchone()
+        assert row["status"] == "PREPARED"
+        assert row["requested_by"] == r"PC\operator"
     finally:
         database.close()
 
