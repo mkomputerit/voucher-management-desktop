@@ -20,7 +20,6 @@ from .backup_options_ui import ask_backup_options, default_backup_directory
 from .history import HistoryError
 from .history_exchange import HistoryExchangeError, HistoryExchangeService
 from .history_sqlite_reconciliation import (
-    clear_history_print_reconciliation_pending_to_path,
     mark_history_print_reconciliation_pending_to_path,
     reconcile_history_print_audits_to_path,
 )
@@ -666,14 +665,11 @@ class DataMaintenanceMixin:
                         adopt_identity=plan.can_adopt_identity,
                     )
                 except Exception:
-                    try:
-                        clear_history_print_reconciliation_pending_to_path(
-                            database_path,
-                        )
-                    except Exception:
-                        # A stale pending marker only blocks reports; that is
-                        # safer than clearing a marker whose state is uncertain.
-                        pass
+                    # Keep the fail-closed marker. Even though apply_import()
+                    # attempts to roll its file changes back, an I/O failure
+                    # during that rollback is itself an uncertain state.
+                    # Startup/sync will inspect the actual history and clear the
+                    # marker only after successful reconciliation.
                     raise
 
                 try:
