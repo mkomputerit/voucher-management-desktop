@@ -7,6 +7,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from .create_reporting_recovery import reconcile_pending_create_reporting_to_path
+from .history_sqlite_reconciliation import reconcile_history_print_audits_to_path
 from .sync_store import (
     PersistedControllerSnapshot,
     persist_connection_snapshot_to_path,
@@ -111,6 +112,10 @@ class ControllerConnectionMixin:
                     database_path,
                     marker_path,
                     controller_id=persisted.controller_id,
+                )
+                reconcile_history_print_audits_to_path(
+                    database_path,
+                    self.history,
                 )
             except Exception as exc:
                 archive_error = exc
