@@ -16,7 +16,7 @@ from .locking import LockTimeout, exclusive_file_lock
 PENDING_KEY = "history_print_reconciliation_pending"
 VERSION_KEY = "history_print_reconciliation_version"
 RECONCILIATION_VERSION = "1"
-IMPORTED_OPERATOR = "Storico importato"
+IMPORTED_OPERATOR = "Storico importato · operatore non disponibile"
 
 
 class HistorySqliteReconciliationError(RuntimeError):
