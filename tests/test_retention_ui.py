@@ -15,8 +15,8 @@ def test_retention_intro_is_skipped_after_installation_ack(monkeypatch):
 
     monkeypatch.setattr(
         retention_ui,
-        "ensure_retention_policy",
-        lambda database, now: calls.append(("ensure", database, now)),
+        "retention_policy_configured",
+        lambda database: True,
     )
     monkeypatch.setattr(
         retention_ui,
@@ -33,7 +33,7 @@ def test_retention_intro_is_skipped_after_installation_ack(monkeypatch):
 
     RetentionMixin.show_retention_intro_if_needed(fake)
 
-    assert calls and calls[0][0] == "ensure"
+    assert calls == []
 
 
 def test_retention_intro_continue_marks_installation_seen(monkeypatch):
@@ -45,8 +45,8 @@ def test_retention_intro_continue_marks_installation_seen(monkeypatch):
 
     monkeypatch.setattr(
         retention_ui,
-        "ensure_retention_policy",
-        lambda database, now: calls.append(("ensure", database, now)),
+        "retention_policy_configured",
+        lambda database: True,
     )
     monkeypatch.setattr(
         retention_ui,
@@ -66,7 +66,7 @@ def test_retention_intro_continue_marks_installation_seen(monkeypatch):
 
     RetentionMixin.show_retention_intro_if_needed(fake)
 
-    assert [entry[0] for entry in calls] == ["ensure", "seen"]
+    assert [entry[0] for entry in calls] == ["seen"]
 
 
 def test_retention_intro_review_marks_seen_then_opens_advanced_review(monkeypatch):
@@ -78,8 +78,8 @@ def test_retention_intro_review_marks_seen_then_opens_advanced_review(monkeypatc
 
     monkeypatch.setattr(
         retention_ui,
-        "ensure_retention_policy",
-        lambda database, now: calls.append(("ensure", database, now)),
+        "retention_policy_configured",
+        lambda database: True,
     )
     monkeypatch.setattr(
         retention_ui,
@@ -99,7 +99,7 @@ def test_retention_intro_review_marks_seen_then_opens_advanced_review(monkeypatc
 
     RetentionMixin.show_retention_intro_if_needed(fake)
 
-    assert [entry[0] for entry in calls] == ["ensure", "seen", "review"]
+    assert [entry[0] for entry in calls] == ["seen", "review"]
 
 
 def test_cancelled_retention_intro_is_not_acknowledged(monkeypatch):
@@ -108,8 +108,8 @@ def test_cancelled_retention_intro_is_not_acknowledged(monkeypatch):
 
     monkeypatch.setattr(
         retention_ui,
-        "ensure_retention_policy",
-        lambda database, now: calls.append(("ensure", database, now)),
+        "retention_policy_configured",
+        lambda database: True,
     )
     monkeypatch.setattr(
         retention_ui,
@@ -129,8 +129,25 @@ def test_cancelled_retention_intro_is_not_acknowledged(monkeypatch):
 
     RetentionMixin.show_retention_intro_if_needed(fake)
 
-    assert [entry[0] for entry in calls] == ["ensure"]
+    assert calls == []
 
+
+
+def test_unconfigured_policy_opens_review_instead_of_inventing_defaults(monkeypatch):
+    calls = []
+    fake = SimpleNamespace(
+        database=object(),
+        after_idle=lambda callback: calls.append(callback),
+    )
+    monkeypatch.setattr(
+        retention_ui,
+        "retention_policy_configured",
+        lambda database: False,
+    )
+
+    RetentionMixin.show_retention_intro_if_needed(fake)
+
+    assert len(calls) == 1
 
 
 def test_retention_review_hides_candidates_when_history_is_unverifiable(monkeypatch):
@@ -152,6 +169,11 @@ def test_retention_review_hides_candidates_when_history_is_unverifiable(monkeypa
         _candidates=None,
     )
 
+    monkeypatch.setattr(
+        retention_ui,
+        "retention_policy_configured",
+        lambda database: True,
+    )
     monkeypatch.setattr(
         retention_ui,
         "reviewable_retention_candidates",
