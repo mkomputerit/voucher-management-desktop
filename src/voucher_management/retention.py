@@ -1,9 +1,9 @@
 """Conservative, review-driven retention for Voucher Management 5.0.
 
-Retention never runs silently. Candidates must be absent from the controller,
-unused, never physically printed, old enough under the persisted policy and not
-already archived. Approved cleanup preserves the durable voucher row while
-removing reusable voucher credentials and operator-entered personal text.
+Retention and security revocation never run silently. Local minimization acts
+only on controller-absent vouchers after an explicit operator threshold.
+Security revocation separately identifies printed credentials that remain live
+on UniFi with observed zero use beyond a second explicit threshold.
 """
 
 from __future__ import annotations
@@ -15,15 +15,17 @@ from uuid import uuid4
 from .database import Database
 
 
-DEFAULT_UNUSED_UNPRINTED_DAYS = 180
+MAX_POLICY_DAYS = 3650
 RETENTION_INTRO_KEY = "retention_intro_seen"
 
 
 @dataclass(frozen=True)
 class RetentionPolicy:
-    """Persisted conservative cleanup boundary."""
+    """Two explicit operator-selected lifecycle boundaries."""
 
     unused_unprinted_days: int
+    printed_unused_revoke_days: int
+    configured: bool
     protect_used: bool
     protect_printed: bool
     updated_at: str
@@ -46,6 +48,23 @@ class RetentionCandidate:
 
 
 @dataclass(frozen=True)
+class SecurityRevocationCandidate:
+    """One printed, unused live voucher eligible for operator-reviewed revocation."""
+
+    voucher_id: int
+    controller_id: int
+    unifi_id: str
+    controller_name: str
+    controller_description: str
+    assigned_to: str
+    first_printed_at: str
+    last_printed_at: str
+    last_seen_at: str
+    print_jobs: int
+    physical_copies: int
+
+
+@dataclass(frozen=True)
 class RetentionResult:
     """Outcome of one reviewed retention action."""
 
@@ -63,38 +82,72 @@ def _normalize_now(now: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def retention_policy_configured(database: Database) -> bool:
+    """Return whether both lifecycle thresholds were explicitly confirmed."""
+
+    row = database.retention_policy()
+    if row is None:
+        return False
+    keys = set(row.keys())
+    return (
+        "configured" in keys
+        and bool(row["configured"])
+        and row["unused_unprinted_days"] is not None
+        and row["printed_unused_revoke_days"] is not None
+    )
+
+
+def load_retention_policy(database: Database) -> RetentionPolicy:
+    """Return the explicit policy or fail closed when configuration is missing."""
+
+    row = database.retention_policy()
+    if row is None or not retention_policy_configured(database):
+        raise RuntimeError(
+            "La policy di conservazione e revoca non è ancora configurata."
+        )
+    return RetentionPolicy(
+        unused_unprinted_days=int(row["unused_unprinted_days"]),
+        printed_unused_revoke_days=int(row["printed_unused_revoke_days"]),
+        configured=True,
+        protect_used=bool(row["protect_used"]),
+        protect_printed=bool(row["protect_printed"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def configure_retention_policy(
+    database: Database,
+    *,
+    unused_unprinted_days: int,
+    printed_unused_revoke_days: int,
+    now: str,
+) -> RetentionPolicy:
+    """Persist both operator-selected thresholds; neither has a software default."""
+
+    local_days = int(unused_unprinted_days)
+    revoke_days = int(printed_unused_revoke_days)
+    if not 1 <= local_days <= MAX_POLICY_DAYS:
+        raise ValueError("local retention days must be between 1 and 3650")
+    if not 1 <= revoke_days <= MAX_POLICY_DAYS:
+        raise ValueError("security revocation days must be between 1 and 3650")
+    stamp = _normalize_now(now).isoformat()
+    database.upsert_retention_policy(
+        unused_unprinted_days=local_days,
+        printed_unused_revoke_days=revoke_days,
+        observed_at=stamp,
+    )
+    return load_retention_policy(database)
+
+
 def ensure_retention_policy(
     database: Database,
     *,
     now: str,
 ) -> RetentionPolicy:
-    """Create the fixed-protection default policy once and return it."""
+    """Compatibility boundary: never invent a threshold on the operator's behalf."""
 
-    stamp = _normalize_now(now).isoformat()
-    with database.transaction() as db:
-        db.execute(
-            """INSERT OR IGNORE INTO retention_policy
-               (id, unused_unprinted_days, protect_used, protect_printed, updated_at)
-               VALUES (1, ?, 1, 1, ?)""",
-            (DEFAULT_UNUSED_UNPRINTED_DAYS, stamp),
-        )
+    _normalize_now(now)
     return load_retention_policy(database)
-
-
-def load_retention_policy(database: Database) -> RetentionPolicy:
-    """Return the persisted policy, failing closed if it was not initialized."""
-
-    row = database.connection.execute(
-        "SELECT * FROM retention_policy WHERE id=1"
-    ).fetchone()
-    if row is None:
-        raise RuntimeError("retention policy is not initialized")
-    return RetentionPolicy(
-        unused_unprinted_days=int(row["unused_unprinted_days"]),
-        protect_used=bool(row["protect_used"]),
-        protect_printed=bool(row["protect_printed"]),
-        updated_at=str(row["updated_at"]),
-    )
 
 
 def update_retention_days(
@@ -102,22 +155,21 @@ def update_retention_days(
     *,
     days: int,
     now: str,
+    printed_unused_revoke_days: int | None = None,
 ) -> RetentionPolicy:
-    """Update only the age threshold; used/printed protections are immutable."""
+    """Update policy without silently changing the second threshold."""
 
-    if type(days) is not int or not 1 <= days <= 3650:
-        raise ValueError("retention days must be between 1 and 3650")
-    stamp = _normalize_now(now).isoformat()
-    ensure_retention_policy(database, now=stamp)
-    with database.transaction() as db:
-        db.execute(
-            """UPDATE retention_policy
-               SET unused_unprinted_days=?, protect_used=1, protect_printed=1,
-                   updated_at=?
-               WHERE id=1""",
-            (days, stamp),
-        )
-    return load_retention_policy(database)
+    current = load_retention_policy(database)
+    return configure_retention_policy(
+        database,
+        unused_unprinted_days=int(days),
+        printed_unused_revoke_days=(
+            current.printed_unused_revoke_days
+            if printed_unused_revoke_days is None
+            else int(printed_unused_revoke_days)
+        ),
+        now=now,
+    )
 
 
 def retention_intro_seen(database: Database) -> bool:
@@ -168,9 +220,16 @@ def _candidate_rows(
                 v.created_at,
                 v.imported_at,
                 v.expires_at,
-                COALESCE(v.expires_at, v.created_at, v.imported_at) AS age_basis,
+                COALESCE(
+                    v.revoked_for_security_at,
+                    v.last_synced_at,
+                    v.last_seen_at,
+                    v.created_at,
+                    v.imported_at
+                ) AS age_basis,
                 v.last_synced_at,
-                v.last_seen_at
+                v.last_seen_at,
+                v.revoked_for_security_at
            FROM vouchers AS v
            JOIN controllers AS c ON c.id=v.controller_id
            WHERE v.archived_at IS NULL
@@ -178,13 +237,20 @@ def _candidate_rows(
              AND v.usage_observed=1
              AND v.ever_used=0
              AND v.authorized_guest_count=0
-             AND v.expired=1
-             AND v.expires_at IS NOT NULL
-             AND julianday(v.last_seen_at) >= julianday(v.expires_at)
-             AND NOT EXISTS (
-                 SELECT 1 FROM voucher_prints AS vp WHERE vp.voucher_id=v.id
+             AND (
+                 v.revoked_for_security_at IS NOT NULL
+                 OR NOT EXISTS (
+                     SELECT 1 FROM voucher_prints AS vp
+                     WHERE vp.voucher_id=v.id
+                 )
              )
-             AND COALESCE(v.expires_at, v.created_at, v.imported_at) <= ?
+             AND COALESCE(
+                    v.revoked_for_security_at,
+                    v.last_synced_at,
+                    v.last_seen_at,
+                    v.created_at,
+                    v.imported_at
+                 ) <= ?
              {controller_clause}
            ORDER BY age_basis ASC, v.id ASC""",
         tuple(params),
@@ -199,7 +265,7 @@ def retention_candidates(
 ) -> tuple[RetentionCandidate, ...]:
     """Return candidates without changing any voucher or audit record."""
 
-    ensure_retention_policy(database, now=now)
+    load_retention_policy(database)
     return tuple(
         RetentionCandidate(
             voucher_id=int(row["voucher_id"]),
@@ -218,6 +284,101 @@ def retention_candidates(
             now=now,
             controller_id=controller_id,
         )
+    )
+
+
+def security_revocation_candidates(
+    database: Database,
+    *,
+    now: str,
+    controller_id: int | None = None,
+) -> tuple[SecurityRevocationCandidate, ...]:
+    """Return printed unused live vouchers old enough for explicit revocation."""
+
+    policy = load_retention_policy(database)
+    moment = _normalize_now(now)
+    cutoff = (
+        moment - timedelta(days=policy.printed_unused_revoke_days)
+    ).isoformat()
+    params: list[object] = [moment.isoformat(), cutoff]
+    controller_clause = ""
+    if controller_id is not None:
+        controller_clause = "AND v.controller_id=?"
+        params.append(int(controller_id))
+
+    rows = database.connection.execute(
+        f"""SELECT
+                v.id AS voucher_id,
+                v.controller_id,
+                v.unifi_id,
+                c.name AS controller_name,
+                v.name,
+                v.assigned_to,
+                v.last_seen_at,
+                COUNT(vp.id) AS print_jobs,
+                COALESCE(SUM(vp.physical_copies), 0) AS physical_copies,
+                (
+                    SELECT first_vp.printed_at
+                    FROM voucher_prints AS first_vp
+                    WHERE first_vp.voucher_id=v.id
+                    ORDER BY
+                        (julianday(first_vp.printed_at) IS NULL),
+                        julianday(first_vp.printed_at) ASC,
+                        first_vp.id ASC
+                    LIMIT 1
+                ) AS first_printed_at,
+                (
+                    SELECT last_vp.printed_at
+                    FROM voucher_prints AS last_vp
+                    WHERE last_vp.voucher_id=v.id
+                    ORDER BY
+                        (julianday(last_vp.printed_at) IS NULL),
+                        julianday(last_vp.printed_at) DESC,
+                        last_vp.id DESC
+                    LIMIT 1
+                ) AS last_printed_at
+           FROM vouchers AS v
+           JOIN controllers AS c ON c.id=v.controller_id
+           JOIN voucher_prints AS vp ON vp.voucher_id=v.id
+           WHERE v.archived_at IS NULL
+             AND v.revoked_for_security_at IS NULL
+             AND v.present_on_controller=1
+             AND v.usage_observed=1
+             AND v.ever_used=0
+             AND v.authorized_guest_count=0
+             AND v.expired=0
+             AND (
+                 v.expires_at IS NULL
+                 OR julianday(v.expires_at) > julianday(?)
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM voucher_events AS review
+                 WHERE review.voucher_id=v.id
+                   AND review.event_type='LEGACY_IDENTITY_REVIEW_REQUIRED'
+             )
+             {controller_clause}
+           GROUP BY v.id
+           HAVING julianday(v.last_seen_at) >= julianday(last_printed_at)
+              AND julianday(last_printed_at) <= julianday(?)
+           ORDER BY julianday(last_printed_at) ASC, v.id ASC""",
+        tuple(params),
+    ).fetchall()
+
+    return tuple(
+        SecurityRevocationCandidate(
+            voucher_id=int(row["voucher_id"]),
+            controller_id=int(row["controller_id"]),
+            unifi_id=str(row["unifi_id"]),
+            controller_name=str(row["controller_name"] or "Controller"),
+            controller_description=str(row["name"] or ""),
+            assigned_to=str(row["assigned_to"] or ""),
+            first_printed_at=str(row["first_printed_at"] or ""),
+            last_printed_at=str(row["last_printed_at"] or ""),
+            last_seen_at=str(row["last_seen_at"] or ""),
+            print_jobs=int(row["print_jobs"] or 0),
+            physical_copies=int(row["physical_copies"] or 0),
+        )
+        for row in rows
     )
 
 
@@ -331,11 +492,23 @@ def reviewable_retention_candidates(
         now=now,
         controller_id=controller_id,
     )
+    revoked_ids = {
+        int(row["id"])
+        for row in database.connection.execute(
+            """SELECT id FROM vouchers
+               WHERE revoked_for_security_at IS NOT NULL"""
+        ).fetchall()
+    }
+    blocker_targets = [
+        candidate.voucher_id
+        for candidate in candidates
+        if candidate.voucher_id not in revoked_ids
+    ]
     blocked = generated_retention_blockers(
         database,
         history=history,
         settings=settings,
-        voucher_ids=[candidate.voucher_id for candidate in candidates],
+        voucher_ids=blocker_targets,
     )
     return tuple(
         candidate
@@ -370,7 +543,7 @@ def archive_retention_candidates(
         settings=settings,
         voucher_ids=requested,
     )
-    policy = ensure_retention_policy(database, now=stamp)
+    policy = load_retention_policy(database)
     cutoff = (
         _normalize_now(stamp) - timedelta(days=policy.unused_unprinted_days)
     ).isoformat()
@@ -379,7 +552,17 @@ def archive_retention_candidates(
 
     with database.transaction() as db:
         for voucher_id in requested:
-            if voucher_id in generated_blockers:
+            revoked = db.execute(
+                """SELECT revoked_for_security_at FROM vouchers WHERE id=?""",
+                (voucher_id,),
+            ).fetchone()
+            if (
+                voucher_id in generated_blockers
+                and (
+                    revoked is None
+                    or revoked["revoked_for_security_at"] is None
+                )
+            ):
                 skipped.append(voucher_id)
                 continue
             row = db.execute(
@@ -391,14 +574,20 @@ def archive_retention_candidates(
                      AND v.usage_observed=1
                      AND v.ever_used=0
                      AND v.authorized_guest_count=0
-                     AND v.expired=1
-                     AND v.expires_at IS NOT NULL
-                     AND julianday(v.last_seen_at) >= julianday(v.expires_at)
-                     AND NOT EXISTS (
-                         SELECT 1 FROM voucher_prints AS vp
-                         WHERE vp.voucher_id=v.id
+                     AND (
+                         v.revoked_for_security_at IS NOT NULL
+                         OR NOT EXISTS (
+                             SELECT 1 FROM voucher_prints AS vp
+                             WHERE vp.voucher_id=v.id
+                         )
                      )
-                     AND COALESCE(v.expires_at, v.created_at, v.imported_at) <= ?""",
+                     AND COALESCE(
+                            v.revoked_for_security_at,
+                            v.last_synced_at,
+                            v.last_seen_at,
+                            v.created_at,
+                            v.imported_at
+                         ) <= ?""",
                 (voucher_id, cutoff),
             ).fetchone()
             if row is None:
