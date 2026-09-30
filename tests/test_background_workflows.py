@@ -1501,3 +1501,60 @@ def test_pending_print_recovery_uses_durable_historical_candidates(monkeypatch):
 
     assert VoucherApp._record_pending_print_sqlite_and_finalize(fake) is False
     assert set(seen["codes"]) == {"11111-22222", "33333-44444"}
+
+
+def test_manual_refresh_keeps_guard_when_pending_reporting_marker_does_not_reconcile(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+
+    class Guard:
+        pending = True
+
+        def clear(self):
+            self.pending = False
+            return True
+
+    marker = tmp_path / "pending_create_reporting.json"
+    marker.write_text("{}", encoding="utf-8")
+    guard = Guard()
+    fake = SimpleNamespace(
+        client=object(),
+        active_controller_id=9,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_reporting=marker,
+        ),
+        create_guard=guard,
+        vouchers=[],
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        populate=lambda: None,
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app_module, "refresh_vouchers", lambda current: ["fresh"])
+    monkeypatch.setattr(
+        app_module,
+        "persist_refresh_snapshot_to_path",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "reconcile_pending_create_reporting_to_path",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: None,
+    )
+
+    VoucherApp.refresh(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert guard.pending is True
