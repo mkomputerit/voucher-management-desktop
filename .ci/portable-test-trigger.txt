@@ -1,0 +1,2 @@
+Portable test artifact trigger for source commit 8e2528ecdccc50223ad5b0513cbaa6db87748825.
+No application source changes.
