@@ -55,9 +55,10 @@ class RetentionIntroDialog(tk.Toplevel):
             frame,
             text=(
                 "Voucher Management conserva lo storico locale per audit e "
-                "report. I voucher utilizzati o stampati sono sempre protetti. "
-                "Solo voucher mai usati, mai stampati, non più presenti sul "
-                "controller, senza PDF generati e abbastanza vecchi possono "
+                "report. I voucher con uso o stampa registrati sono sempre "
+                "protetti. Solo voucher con utilizzo osservabile, nessun "
+                "utilizzo rilevato, senza stampe registrate, non più presenti "
+                "sul controller, senza PDF generati e abbastanza vecchi possono "
                 "essere proposti per la minimizzazione."
             ),
             wraplength=560,
