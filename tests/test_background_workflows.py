@@ -1287,3 +1287,167 @@ def test_backup_audit_writer_uses_basename_and_verified_metadata():
     assert calls[0]["status"] == "SUCCESS"
     assert calls[0]["sha256"] == "a" * 64
     assert calls[0]["error_summary"] is None
+
+
+def test_confirmed_create_with_no_sqlite_and_no_recovery_marker_stays_blocked(
+    monkeypatch,
+    tmp_path,
+):
+    from voucher_management.mutation_guard import CreateMutationGuard
+
+    tasks = []
+    warnings = []
+    guard = CreateMutationGuard(tmp_path / "pending_create_guard")
+    created = SimpleNamespace(id="created-catastrophic")
+    fake = SimpleNamespace(
+        client=object(),
+        create_guard=guard,
+        vouchers=[],
+        checked_ids=set(),
+        filter_var=SimpleNamespace(set=lambda value: None),
+        populate=lambda: None,
+        active_controller_id=7,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_reporting=tmp_path / "pending_create_reporting.json",
+        ),
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "CreateDialog",
+        lambda parent: SimpleNamespace(
+            result={
+                "recipient": "Pinco Pallino",
+                "quantity": 1,
+                "is_nominal": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "create_vouchers_and_refresh",
+        lambda *args, **kwargs: creation_ui.CreateOutcome(
+            created=(created,),
+            vouchers=(created,),
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "write_pending_create_reporting",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("marker unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "persist_create_result_to_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("sqlite unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+
+    VoucherApp.create(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert guard.pending is True
+    assert guard.requires_manual_recovery is True
+    assert guard.state == guard.MANUAL_RECOVERY_STATE
+    assert warnings
+    assert "Non ripetere la creazione" in warnings[-1][0][1]
+
+
+def test_manual_refresh_does_not_clear_confirmed_unreconciled_guard(
+    monkeypatch,
+    tmp_path,
+):
+    from voucher_management.mutation_guard import CreateMutationGuard
+
+    tasks = []
+    warnings = []
+    guard = CreateMutationGuard(tmp_path / "pending_create_guard")
+    guard.begin()
+    guard.mark_confirmed_unreconciled()
+
+    fake = SimpleNamespace(
+        client=object(),
+        create_guard=guard,
+        vouchers=[],
+        active_controller_id=None,
+        paths=SimpleNamespace(database=tmp_path / "db.sqlite"),
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        populate=lambda: None,
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app_module, "refresh_vouchers", lambda client: ["fresh"])
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+
+    VoucherApp.refresh(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert guard.pending is True
+    assert guard.requires_manual_recovery is True
+    assert warnings
+    assert "resta bloccata" in warnings[-1][0][1]
+
+
+def test_open_existing_pdf_uses_durable_history_for_absent_linked_vouchers(
+    monkeypatch,
+):
+    current = SimpleNamespace(code_formatted="11111-22222")
+    absent = SimpleNamespace(code_formatted="33333-44444")
+    captured = {}
+    fake = SimpleNamespace(
+        selected=lambda: [current],
+        vouchers=[current],
+        active_controller_id=7,
+        database=object(),
+        history=object(),
+        settings={},
+        paths=SimpleNamespace(prints=Path("Print")),
+        _preview=lambda *args: None,
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "load_local_vouchers",
+        lambda database, controller_id: [current, absent],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "resolve_existing_pdf",
+        lambda voucher, all_vouchers, **kwargs: (
+            captured.update(all_vouchers=list(all_vouchers))
+            or SimpleNamespace(
+                path=Path("Print") / "Voucher_Group.pdf",
+                linked_codes=("11111-22222", "33333-44444"),
+            )
+        ),
+    )
+
+    VoucherApp.open_existing_pdf(fake)
+
+    assert captured["all_vouchers"] == [current, absent]
