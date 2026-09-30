@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from voucher_management.database import Database
+from voucher_management.reporting import ReportKind, build_report_dataset
 from voucher_management.sync_store import (
     load_local_vouchers,
     persist_connection_snapshot_to_path,
@@ -476,3 +477,245 @@ def test_stale_successful_create_snapshot_upserts_positive_rows_without_absence(
         assert rows["created"]["is_nominal"] == 0
     finally:
         check.close()
+
+
+def _live_voucher(remote_id: str, code: str, *, used: int = 0) -> ApiVoucher:
+    return ApiVoucher(
+        id=remote_id,
+        code=code,
+        recipient="Descrizione live",
+        duration_minutes=0,
+        create_time=1_700_000_000,
+        quota=1,
+        used=used,
+        status="VALID_MULTI",
+        start_time=0,
+        end_time=0,
+    )
+
+
+def test_sync_consolidates_unique_legacy_placeholder_into_live_identity(tmp_path):
+    db = Database(tmp_path / "legacy-consolidation.sqlite")
+    db.initialize()
+    legacy_controller = db.create_controller(
+        name="Archivio backup precedente",
+        api_root="legacy-backup://fixture",
+        created_at="2026-09-25T10:00:00+00:00",
+    )
+    live_controller = db.create_controller(
+        name="Reception",
+        api_root="https://controller.example",
+        created_at="2026-09-29T08:00:00+00:00",
+    )
+    try:
+        legacy_id = db.upsert_voucher(
+            controller_id=legacy_controller,
+            unifi_id="legacy-placeholder",
+            code="12345-67890",
+            name="Mario Legacy",
+            imported_at="2026-09-28T08:00:00+00:00",
+            last_synced_at="2026-09-28T08:00:00+00:00",
+            expired=True,
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET usage_observed=0, present_on_controller=0 WHERE id=?",
+                (legacy_id,),
+            )
+        db.record_print_audit(
+            controller_id=legacy_controller,
+            audit_id="legacy-print-1",
+            codes=["12345-67890"],
+            output_file="legacy.pdf",
+            document_copies=1,
+            printed_at="2026-09-25T10:15:00+00:00",
+            windows_user="MIGRATION",
+        )
+
+        persist_successful_snapshot(
+            db,
+            controller_id=live_controller,
+            vouchers=[_live_voucher("live-voucher", "1234567890")],
+            observed_at="2026-09-29T09:00:00+00:00",
+            sync_uuid="sync-consolidate-legacy",
+        )
+
+        canonical_rows = db.connection.execute(
+            """SELECT id, controller_id, unifi_id, assigned_to, usage_observed
+               FROM vouchers
+               WHERE REPLACE(code, '-', '')='1234567890'"""
+        ).fetchall()
+        assert len(canonical_rows) == 1
+        live_row = canonical_rows[0]
+        assert int(live_row["controller_id"]) == live_controller
+        assert live_row["unifi_id"] == "live-voucher"
+        assert live_row["assigned_to"] == "Mario Legacy"
+        assert live_row["usage_observed"] == 1
+        assert db.print_summary(int(live_row["id"])).print_jobs == 1
+
+        event = db.connection.execute(
+            """SELECT event_type FROM voucher_events
+               WHERE voucher_id=? AND event_type='LEGACY_IDENTITY_CONSOLIDATED'""",
+            (int(live_row["id"]),),
+        ).fetchone()
+        assert event is not None
+
+        report = build_report_dataset(
+            db,
+            kind=ReportKind.PRINTED_UNUSED,
+            generated_at="2026-09-29T10:00:00+00:00",
+            controller_id=live_controller,
+        )
+        assert [row.voucher_id for row in report.rows] == [int(live_row["id"])]
+        assert report.rows[0].print_jobs == 1
+        assert report.rows[0].usage_observed is True
+        assert report.rows[0].ever_used is False
+    finally:
+        db.close()
+
+
+def test_sync_keeps_ambiguous_legacy_identity_unmerged_and_marks_review(tmp_path):
+    db = Database(tmp_path / "legacy-ambiguous.sqlite")
+    db.initialize()
+    first_legacy = db.create_controller(
+        name="Archivio 1",
+        api_root="legacy-backup://first",
+        created_at="2026-09-25T10:00:00+00:00",
+    )
+    second_legacy = db.create_controller(
+        name="Archivio 2",
+        api_root="legacy-backup://second",
+        created_at="2026-09-26T10:00:00+00:00",
+    )
+    live_controller = db.create_controller(
+        name="Reception",
+        api_root="https://controller.example",
+        created_at="2026-09-29T08:00:00+00:00",
+    )
+    try:
+        for controller, remote_id in (
+            (first_legacy, "legacy-a"),
+            (second_legacy, "legacy-b"),
+        ):
+            voucher_id = db.upsert_voucher(
+                controller_id=controller,
+                unifi_id=remote_id,
+                code="12345-67890",
+                imported_at="2026-09-28T08:00:00+00:00",
+                last_synced_at="2026-09-28T08:00:00+00:00",
+            )
+            with db.transaction() as tx:
+                tx.execute(
+                    "UPDATE vouchers SET usage_observed=0, present_on_controller=0 WHERE id=?",
+                    (voucher_id,),
+                )
+
+        persist_successful_snapshot(
+            db,
+            controller_id=live_controller,
+            vouchers=[_live_voucher("live-voucher", "1234567890")],
+            observed_at="2026-09-29T09:00:00+00:00",
+            sync_uuid="sync-ambiguous-legacy",
+        )
+
+        rows = db.connection.execute(
+            """SELECT id, controller_id FROM vouchers
+               WHERE REPLACE(code, '-', '')='1234567890'
+               ORDER BY id"""
+        ).fetchall()
+        assert len(rows) == 3
+        live_id = next(
+            int(row["id"])
+            for row in rows
+            if int(row["controller_id"]) == live_controller
+        )
+        review = db.connection.execute(
+            """SELECT details_json FROM voucher_events
+               WHERE voucher_id=?
+                 AND event_type='LEGACY_IDENTITY_REVIEW_REQUIRED'""",
+            (live_id,),
+        ).fetchone()
+        assert review is not None
+        assert '"candidate_count":2' in review["details_json"]
+    finally:
+        db.close()
+
+
+def test_legacy_and_live_prints_are_renumbered_chronologically_after_merge(tmp_path):
+    db = Database(tmp_path / "legacy-print-order.sqlite")
+    db.initialize()
+    legacy_controller = db.create_controller(
+        name="Archivio",
+        api_root="legacy-backup://order",
+        created_at="2026-09-20T08:00:00+00:00",
+    )
+    live_controller = db.create_controller(
+        name="Reception",
+        api_root="https://controller.example",
+        created_at="2026-09-20T08:00:00+00:00",
+    )
+    try:
+        legacy_id = db.upsert_voucher(
+            controller_id=legacy_controller,
+            unifi_id="legacy",
+            code="12345-67890",
+            imported_at="2026-09-20T08:00:00+00:00",
+            last_synced_at="2026-09-20T08:00:00+00:00",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET usage_observed=0, present_on_controller=0 WHERE id=?",
+                (legacy_id,),
+            )
+        db.record_print_audit(
+            controller_id=legacy_controller,
+            audit_id="legacy-earlier",
+            codes=["12345-67890"],
+            output_file="legacy.pdf",
+            document_copies=1,
+            printed_at="2026-09-21T10:30:00+02:00",
+            windows_user="MIGRATION",
+        )
+
+        live_id = db.upsert_voucher(
+            controller_id=live_controller,
+            unifi_id="live",
+            code="1234567890",
+            imported_at="2026-09-20T08:00:00+00:00",
+            last_synced_at="2026-09-20T08:00:00+00:00",
+        )
+        db.record_print_audit(
+            controller_id=live_controller,
+            audit_id="live-later",
+            codes=["12345-67890"],
+            output_file="live.pdf",
+            document_copies=1,
+            printed_at="2026-09-21T09:00:00+00:00",
+            windows_user="operator",
+        )
+
+        persist_successful_snapshot(
+            db,
+            controller_id=live_controller,
+            vouchers=[_live_voucher("live", "1234567890")],
+            observed_at="2026-09-29T09:00:00+00:00",
+            sync_uuid="sync-print-order",
+        )
+
+        prints = db.connection.execute(
+            """SELECT vp.print_sequence, vp.is_reprint, pj.print_job_uuid
+               FROM voucher_prints AS vp
+               JOIN print_jobs AS pj ON pj.id=vp.print_job_id
+               WHERE vp.voucher_id=?
+               ORDER BY vp.print_sequence""",
+            (live_id,),
+        ).fetchall()
+        assert [
+            (row["print_sequence"], row["is_reprint"], row["print_job_uuid"])
+            for row in prints
+        ] == [
+            (1, 0, "legacy-earlier"),
+            (2, 1, "live-later"),
+        ]
+    finally:
+        db.close()
