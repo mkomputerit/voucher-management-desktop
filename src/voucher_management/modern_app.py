@@ -1601,8 +1601,9 @@ class ModernVoucherApp(
         ttk.Label(
             table_card,
             text=(
-                "Clic o barra spaziatrice per selezionare. Blu = selezionato. Dopo una stampa "
-                "fisica confermata la selezione viene rimossa automaticamente."
+                "Clic o barra spaziatrice per selezionare. Blu = selezionato. "
+                "Dopo una stampa fisica confermata o il salvataggio dei Dati locali, "
+                "il voucher gestito viene deselezionato automaticamente."
             ),
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(8, 0))
