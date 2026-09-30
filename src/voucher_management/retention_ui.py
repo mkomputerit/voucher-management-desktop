@@ -169,7 +169,7 @@ class RetentionReviewDialog(tk.Toplevel):
             selectmode="extended",
         )
         self.tree.heading("controller", text="Controller")
-        self.tree.heading("recipient", text="Destinatario")
+        self.tree.heading("recipient", text="Descrizione UniFi")
         self.tree.heading("basis", text="Data di riferimento")
         self.tree.heading("lastsync", text="Ultima presenza osservata")
         self.tree.column("controller", width=190)
@@ -234,7 +234,7 @@ class RetentionReviewDialog(tk.Toplevel):
                 iid=str(candidate.voucher_id),
                 values=(
                     candidate.controller_name,
-                    candidate.recipient or "—",
+                    candidate.controller_description or "—",
                     _display_time(candidate.age_basis),
                     _display_time(candidate.last_seen_at),
                 ),
