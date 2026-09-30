@@ -112,7 +112,9 @@ def test_pending_print_recovery_commits_sqlite_before_marker_finalize():
 
     fake = SimpleNamespace(
         history=History(),
-        vouchers=[SimpleNamespace(code_formatted="12345-67890")],
+        vouchers=[
+            SimpleNamespace(id="voucher-1", code_formatted="12345-67890")
+        ],
         settings={"structure_name": "Test"},
         _record_sqlite_print_audit=lambda pending, codes, path: calls.append(
             ("sqlite", dict(pending), tuple(codes), path.name)
