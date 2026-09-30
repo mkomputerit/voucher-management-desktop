@@ -221,6 +221,33 @@ def retention_candidates(
     )
 
 
+def durable_legacy_generation_blockers(
+    database: Database,
+    *,
+    voucher_ids: list[int] | tuple[int, ...],
+) -> frozenset[int]:
+    """Return imported legacy generation/print evidence stored in SQLite."""
+
+    requested = tuple(dict.fromkeys(int(value) for value in voucher_ids))
+    if not requested:
+        return frozenset()
+    placeholders = ",".join("?" for _ in requested)
+    rows = database.connection.execute(
+        f"""SELECT DISTINCT voucher_id
+            FROM voucher_events
+            WHERE voucher_id IN ({placeholders})
+              AND event_type='LEGACY_PDF_GENERATED'
+            UNION
+            SELECT DISTINCT voucher_id
+            FROM legacy_audit_events
+            WHERE voucher_id IN ({placeholders})
+              AND resolution_status='RESOLVED'
+              AND event_type IN ('generate', 'print')""",
+        (*requested, *requested),
+    ).fetchall()
+    return frozenset(int(row["voucher_id"]) for row in rows)
+
+
 def generated_retention_blockers(
     database: Database,
     *,
@@ -269,24 +296,13 @@ def generated_retention_blockers(
     }
 
     # Imported legacy evidence is durable SQLite state and does not appear in
-    # the current installation's live HMAC history.jsonl.  It must therefore
-    # participate independently in retention protection.  The operational
-    # voucher_event covers completed materialization; legacy_audit_events also
-    # protects an EVIDENCE_READY run whose materialization has not yet finished.
-    sqlite_rows = database.connection.execute(
-        f"""SELECT DISTINCT voucher_id
-            FROM voucher_events
-            WHERE voucher_id IN ({placeholders})
-              AND event_type='LEGACY_PDF_GENERATED'
-            UNION
-            SELECT DISTINCT voucher_id
-            FROM legacy_audit_events
-            WHERE voucher_id IN ({placeholders})
-              AND resolution_status='RESOLVED'
-              AND event_type IN ('generate', 'print')""",
-        (*requested, *requested),
-    ).fetchall()
-    blocked.update(int(row["voucher_id"]) for row in sqlite_rows)
+    # the current installation's live HMAC history.jsonl.
+    blocked.update(
+        durable_legacy_generation_blockers(
+            database,
+            voucher_ids=requested,
+        )
+    )
     return frozenset(blocked)
 
 
