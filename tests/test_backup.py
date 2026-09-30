@@ -16,6 +16,7 @@ from voucher_management.backup import (
     BackupService,
 )
 from voucher_management.backup_crypto import PROTECTED_BACKUP_MAGIC
+from voucher_management.database import SCHEMA_VERSION
 from voucher_management.security.history_key import HistoryKeyStore
 from voucher_management.single_instance import SingleInstanceGuard
 
@@ -99,6 +100,7 @@ class BackupServiceTests(unittest.TestCase):
             "0123456789abcdef0123456789abcdef",
         )
         self.assertTrue(rollback.exists())
+        self.assertEqual(rollback.parent, self.paths.user_root / ".maintenance")
 
         with zipfile.ZipFile(backup, "r") as archive:
             manifest = json.loads(
@@ -1082,3 +1084,44 @@ class BackupServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    def test_restore_rejects_newer_sqlite_schema_before_live_data_changes(self):
+        database = self.paths.user_root / "data" / "voucher_management.db"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+            connection.commit()
+        finally:
+            connection.close()
+
+        backup = Path(self.temp.name) / "future-schema.zip"
+        self.service.create(backup)
+
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.commit()
+        finally:
+            connection.close()
+        sentinel = self.paths.user_root / "config" / "live-sentinel.txt"
+        sentinel.write_text("keep-live-state", encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "schema dati più recente",
+        ):
+            self.service.restore(backup)
+
+        self.assertEqual(
+            sentinel.read_text(encoding="utf-8"),
+            "keep-live-state",
+        )
+        connection = sqlite3.connect(database)
+        try:
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                SCHEMA_VERSION,
+            )
+        finally:
+            connection.close()
