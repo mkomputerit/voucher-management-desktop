@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 BACKUP_AUDIT_DESTINATIONS = frozenset(
     {
@@ -207,6 +207,21 @@ CREATE TABLE IF NOT EXISTS retention_policy (
     )
 );
 
+CREATE TABLE IF NOT EXISTS security_revocations (
+    id INTEGER PRIMARY KEY,
+    operation_uuid TEXT NOT NULL,
+    voucher_id INTEGER NOT NULL REFERENCES vouchers(id),
+    requested_at TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    resolved_at TEXT,
+    status TEXT NOT NULL
+        CHECK (status IN ('PREPARED', 'CONFIRMED', 'CANCELLED')),
+    UNIQUE(operation_uuid, voucher_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_revocations_pending
+ON security_revocations(status, voucher_id);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -370,6 +385,23 @@ ALTER TABLE retention_policy ADD COLUMN printed_unused_revoke_days INTEGER
     );
 ALTER TABLE retention_policy ADD COLUMN configured INTEGER NOT NULL DEFAULT 0
     CHECK (configured IN (0, 1));
+"""
+
+
+MIGRATION_5_TO_6_SQL = """
+CREATE TABLE IF NOT EXISTS security_revocations (
+    id INTEGER PRIMARY KEY,
+    operation_uuid TEXT NOT NULL,
+    voucher_id INTEGER NOT NULL REFERENCES vouchers(id),
+    requested_at TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    resolved_at TEXT,
+    status TEXT NOT NULL
+        CHECK (status IN ('PREPARED', 'CONFIRMED', 'CANCELLED')),
+    UNIQUE(operation_uuid, voucher_id)
+);
+CREATE INDEX IF NOT EXISTS idx_security_revocations_pending
+ON security_revocations(status, voucher_id);
 """
 
 @dataclass(frozen=True)
@@ -573,6 +605,23 @@ COMMIT;
 """
                 )
                 current = 5
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 5:
+            try:
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + MIGRATION_5_TO_6_SQL
+                    + """
+PRAGMA user_version = 6;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '6');
+COMMIT;
+"""
+                )
+                current = 6
             except Exception:
                 self.connection.rollback()
                 raise
@@ -782,6 +831,158 @@ COMMIT;
             return
         with self.transaction() as db:
             write(db)
+
+    def prepare_security_revocations(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+        operation_uuid: str,
+        requested_at: str,
+        requested_by: str,
+    ) -> tuple[int, ...]:
+        """Durably record operator revocation intent before the UniFi mutation."""
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        operation = str(operation_uuid or "").strip()
+        stamp = str(requested_at or "").strip()
+        operator = str(requested_by or "").strip()
+        if not ids or not operation or not stamp or not operator:
+            raise ValueError("security revocation preparation fields are required")
+
+        placeholders = ",".join("?" for _ in ids)
+        with self.transaction() as db:
+            rows = db.execute(
+                f"""SELECT id, unifi_id, present_on_controller, usage_observed,
+                           ever_used, archived_at, revoked_for_security_at
+                    FROM vouchers
+                    WHERE controller_id=?
+                      AND unifi_id IN ({placeholders})""",
+                (int(controller_id), *ids),
+            ).fetchall()
+            by_remote = {str(row["unifi_id"]): row for row in rows}
+            if set(by_remote) != set(ids):
+                raise RuntimeError(
+                    "Uno o più voucher da revocare non sono nello snapshot locale."
+                )
+
+            prepared: list[int] = []
+            for remote_id in ids:
+                row = by_remote[remote_id]
+                voucher_id = int(row["id"])
+                if (
+                    not bool(row["present_on_controller"])
+                    or not bool(row["usage_observed"])
+                    or bool(row["ever_used"])
+                    or row["archived_at"] is not None
+                    or row["revoked_for_security_at"] is not None
+                ):
+                    raise RuntimeError(
+                        "Un voucher non soddisfa più i requisiti per la revoca."
+                    )
+                printed = db.execute(
+                    "SELECT 1 FROM voucher_prints WHERE voucher_id=? LIMIT 1",
+                    (voucher_id,),
+                ).fetchone()
+                if printed is None:
+                    raise RuntimeError(
+                        "Un voucher da revocare non ha una stampa registrata."
+                    )
+                db.execute(
+                    """INSERT INTO security_revocations(
+                           operation_uuid, voucher_id, requested_at,
+                           requested_by, status
+                       ) VALUES (?, ?, ?, ?, 'PREPARED')""",
+                    (operation, voucher_id, stamp, operator),
+                )
+                prepared.append(voucher_id)
+        return tuple(prepared)
+
+    def reconcile_security_revocations(
+        self,
+        *,
+        controller_id: int,
+        observed_at: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        """Resolve prepared revocations from one complete controller snapshot."""
+
+        stamp = str(observed_at or "").strip()
+        if not stamp:
+            raise ValueError("observed_at is required")
+
+        def reconcile(db: sqlite3.Connection):
+            rows = db.execute(
+                """SELECT sr.id AS request_id, sr.operation_uuid,
+                          sr.voucher_id, sr.requested_by,
+                          v.present_on_controller
+                   FROM security_revocations AS sr
+                   JOIN vouchers AS v ON v.id=sr.voucher_id
+                   WHERE sr.status='PREPARED'
+                     AND v.controller_id=?
+                   ORDER BY sr.id""",
+                (int(controller_id),),
+            ).fetchall()
+            confirmed: list[int] = []
+            cancelled: list[int] = []
+            for row in rows:
+                request_id = int(row["request_id"])
+                voucher_id = int(row["voucher_id"])
+                if bool(row["present_on_controller"]):
+                    db.execute(
+                        """UPDATE security_revocations
+                           SET status='CANCELLED', resolved_at=?
+                           WHERE id=? AND status='PREPARED'""",
+                        (stamp, request_id),
+                    )
+                    cancelled.append(voucher_id)
+                    continue
+
+                db.execute(
+                    """UPDATE security_revocations
+                       SET status='CONFIRMED', resolved_at=?
+                       WHERE id=? AND status='PREPARED'""",
+                    (stamp, request_id),
+                )
+                db.execute(
+                    """UPDATE vouchers
+                       SET revoked_for_security_at=COALESCE(
+                           revoked_for_security_at, ?
+                       )
+                       WHERE id=?""",
+                    (stamp, voucher_id),
+                )
+                db.execute(
+                    """INSERT OR IGNORE INTO voucher_events(
+                           event_uuid, voucher_id, event_type, occurred_at,
+                           source, windows_user, details_json
+                       ) VALUES (?, ?, 'SECURITY_REVOKED', ?, 'SYSTEM', ?, ?)""",
+                    (
+                        f"security-revoked-{request_id}",
+                        voucher_id,
+                        stamp,
+                        str(row["requested_by"]),
+                        self.encode_event_details(
+                            {
+                                "operation_uuid": str(row["operation_uuid"]),
+                                "reason": "printed_unused",
+                            }
+                        ),
+                    ),
+                )
+                confirmed.append(voucher_id)
+            return tuple(confirmed), tuple(cancelled)
+
+        if connection is not None:
+            return reconcile(connection)
+        with self.transaction() as db:
+            return reconcile(db)
 
     def onboarding_has_operational_data(self) -> bool:
         """Return whether the database contains facts from an existing install."""
