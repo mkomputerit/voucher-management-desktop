@@ -1,3 +1,5 @@
+import pytest
+
 from voucher_management.history import HistoryError, HistoryService
 from voucher_management.models import VoucherBatch, VoucherRecord
 from voucher_management.security.history_key import HistoryKeyStore
