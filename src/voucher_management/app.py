@@ -337,12 +337,25 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 parent=self,
             )
         if self.create_guard.pending:
+            if self.create_guard.requires_manual_recovery:
+                detail = (
+                    "Una creazione precedente è stata confermata da UniFi, ma "
+                    "non è stato possibile conservarne in modo affidabile la "
+                    "classificazione locale. Nuove creazioni restano bloccate "
+                    "per evitare di rendere inattendibile la reportistica. "
+                    "Verificare/riparare l'archivio locale prima di sbloccare "
+                    "manualmente la creazione."
+                )
+            else:
+                detail = (
+                    "Una precedente creazione potrebbe essere stata inviata al "
+                    "controller senza ricevere una risposta definitiva. Nuove "
+                    "creazioni restano bloccate. Eseguire Aggiorna e verificare "
+                    "l'elenco prima di creare altri voucher."
+                )
             messagebox.showwarning(
                 "Creazione da verificare",
-                "Una precedente creazione potrebbe essere stata inviata al "
-                "controller senza ricevere una risposta definitiva. Nuove "
-                "creazioni restano bloccate. Eseguire Aggiorna e verificare "
-                "l'elenco prima di creare altri voucher.",
+                detail,
                 parent=self,
             )
 
@@ -739,20 +752,31 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     "incompleti finché un aggiornamento non riesce.",
                     parent=self,
                 )
-            try:
-                self.create_guard.clear()
-            except CreateMutationGuardError as exc:
-                self.logger.warning(
-                    "create_guard_clear_failed type=%s",
-                    type(exc).__name__,
-                )
+            if self.create_guard.requires_manual_recovery:
                 messagebox.showwarning(
                     "Creazione ancora sospesa",
-                    "L'elenco è stato aggiornato, ma non è stato possibile "
-                    "rimuovere il blocco anti-ripetizione. La creazione resta "
-                    "sospesa per sicurezza.",
+                    "L'elenco UniFi è stato aggiornato, ma una precedente "
+                    "creazione confermata ha perso la propria classificazione "
+                    "locale di recovery. Un semplice aggiornamento non può "
+                    "ricostruirla con certezza: la creazione resta bloccata "
+                    "finché l'archivio non viene verificato manualmente.",
                     parent=self,
                 )
+            else:
+                try:
+                    self.create_guard.clear()
+                except CreateMutationGuardError as exc:
+                    self.logger.warning(
+                        "create_guard_clear_failed type=%s",
+                        type(exc).__name__,
+                    )
+                    messagebox.showwarning(
+                        "Creazione ancora sospesa",
+                        "L'elenco è stato aggiornato, ma non è stato possibile "
+                        "rimuovere il blocco anti-ripetizione. La creazione resta "
+                        "sospesa per sicurezza.",
+                        parent=self,
+                    )
             self.populate()
 
         def failed(exc: Exception) -> None:
