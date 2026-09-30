@@ -719,20 +719,21 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     "incompleti finché un aggiornamento non riesce.",
                     parent=self,
                 )
-            try:
-                self.create_guard.clear()
-            except CreateMutationGuardError as exc:
-                self.logger.warning(
-                    "create_guard_clear_failed type=%s",
-                    type(exc).__name__,
-                )
-                messagebox.showwarning(
-                    "Creazione ancora sospesa",
-                    "L'elenco è stato aggiornato, ma non è stato possibile "
-                    "rimuovere il blocco anti-ripetizione. La creazione resta "
-                    "sospesa per sicurezza.",
-                    parent=self,
-                )
+            if archive_error is None:
+                try:
+                    self.create_guard.clear()
+                except CreateMutationGuardError as exc:
+                    self.logger.warning(
+                        "create_guard_clear_failed type=%s",
+                        type(exc).__name__,
+                    )
+                    messagebox.showwarning(
+                        "Creazione ancora sospesa",
+                        "L'elenco è stato aggiornato, ma non è stato possibile "
+                        "rimuovere il blocco anti-ripetizione. La creazione resta "
+                        "sospesa per sicurezza.",
+                        parent=self,
+                    )
             self.populate()
 
         def failed(exc: Exception) -> None:
