@@ -420,9 +420,9 @@ class HistoryService:
         """Return candidate voucher codes linked to one generated PDF.
 
         History stores only HMAC identifiers, so it cannot reverse a digest back
-        into a code. The application supplies the voucher codes currently known
-        from the controller; this method correlates their digests with every
-        generate row for the PDF. Multiplicity is preserved so an unlimited
+        into a code. The application supplies voucher codes from durable local
+        controller history; every generate row for the PDF must resolve or the
+        operation fails closed. Multiplicity is preserved so an unlimited
         voucher printed several times on one sheet records the correct number
         of physical labels when that archived PDF is reprinted.
         """
@@ -439,8 +439,13 @@ class HistoryService:
             if Path(str(item.get("output_file", "") or "")).name != output_name:
                 continue
             code = digest_to_code.get(str(item.get("voucher_id", "") or ""))
-            if code:
-                linked.append(code)
+            if code is None:
+                raise HistoryError(
+                    "Il PDF contiene almeno un voucher che non può essere "
+                    "associato con certezza all'archivio locale. La ristampa "
+                    "viene bloccata per evitare un audit parziale."
+                )
+            linked.append(code)
         return linked
 
     def record_batch(self, batch: VoucherBatch, output_path: Path, settings: dict, reprint: bool) -> None:
