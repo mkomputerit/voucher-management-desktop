@@ -33,3 +33,35 @@ def test_create_guard_refuses_second_begin_without_clearing(tmp_path: Path):
         guard.begin()
 
     assert guard.pending is True
+
+
+def test_create_guard_can_store_privacy_safe_confirmed_reporting_recovery(
+    tmp_path: Path,
+):
+    from voucher_management.create_reporting_recovery import (
+        load_pending_create_reporting,
+    )
+
+    path = tmp_path / "pending_create_guard"
+    guard = CreateMutationGuard(path)
+    guard.begin()
+
+    guard.store_reporting_recovery(
+        controller_id=7,
+        voucher_ids=["uuid-1", "uuid-2"],
+        is_nominal=True,
+        confirmed_at="2026-09-30T14:20:00+00:00",
+    )
+
+    assert guard.pending is True
+    assert guard.has_reporting_recovery is True
+    pending = load_pending_create_reporting(path)
+    assert pending is not None
+    assert pending.controller_id == 7
+    assert pending.voucher_ids == ("uuid-1", "uuid-2")
+    assert pending.is_nominal is True
+
+    serialized = path.read_text(encoding="utf-8").lower()
+    assert "recipient" not in serialized
+    assert "code" not in serialized
+    assert "api" not in serialized
