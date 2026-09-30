@@ -453,7 +453,11 @@ class BackupServiceTests(unittest.TestCase):
 
         self.assertEqual(settings_path.read_bytes(), before)
         self.assertEqual(
-            list(self.paths.user_root.parent.glob("VoucherManagement-rollback-*")),
+            list(
+                (self.paths.user_root / "Rollback").glob(
+                    "VoucherManagement-rollback-*"
+                )
+            ),
             [],
         )
 
