@@ -996,6 +996,35 @@ COMMIT;
         return frozenset(str(row["unifi_id"]) for row in rows)
 
 
+    def usage_unknown_remote_ids(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+    ) -> frozenset[str]:
+        """Return selected voucher ids whose retained usage provenance is unknown."""
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        if not ids:
+            return frozenset()
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.connection.execute(
+            f"""SELECT unifi_id
+                FROM vouchers
+                WHERE controller_id=?
+                  AND unifi_id IN ({placeholders})
+                  AND usage_observed=0""",
+            (int(controller_id), *ids),
+        ).fetchall()
+        return frozenset(str(row["unifi_id"]) for row in rows)
+
+
     def mark_application_created_vouchers(
         self,
         *,
