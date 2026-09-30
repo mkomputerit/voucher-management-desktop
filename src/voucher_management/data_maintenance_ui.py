@@ -20,7 +20,6 @@ from .backup_options_ui import ask_backup_options, default_backup_directory
 from .history import HistoryError
 from .history_exchange import HistoryExchangeError, HistoryExchangeService
 from .history_sqlite_reconciliation import (
-    HistorySqliteReconciliationError,
     clear_history_print_reconciliation_pending_to_path,
     mark_history_print_reconciliation_pending_to_path,
     reconcile_history_print_audits_to_path,
