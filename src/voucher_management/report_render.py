@@ -106,6 +106,8 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Copie fisiche dei voucher", str(totals.physical_copies)],
         ["Job con almeno una ristampa", str(totals.reprint_jobs)],
         ["Copie di voucher ristampate", str(totals.reprint_copies)],
+        ["Da revocare per sicurezza", str(totals.security_revocation_candidates)],
+        ["Revocati per sicurezza", str(totals.security_revoked_vouchers)],
     ]
 
 
@@ -130,6 +132,7 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
             "Copie voucher",
             "Job ristampa",
             "Operatore stampa",
+            "Revoca sicurezza",
             "Stato",
         ]
     )
@@ -154,7 +157,8 @@ _DETAIL_COLUMN_WEIGHTS = {
     "Copie voucher": 0.46,
     "Job ristampa": 0.46,
     "Operatore stampa": 0.72,
-    "Stato": 0.56,
+    "Revoca sicurezza": 0.68,
+    "Stato": 0.62,
 }
 
 
@@ -193,6 +197,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
             str(row.physical_copies),
             str(row.reprint_jobs),
             ", ".join(row.print_operators) or "—",
+            _display_time(row.revoked_for_security_at),
             row.status,
         ]
     )
