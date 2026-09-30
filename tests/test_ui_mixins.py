@@ -196,3 +196,75 @@ def test_sidebar_icons_refresh_only_when_tk_scaling_changes():
     fake._last_sidebar_icon_size = 30
     ModernVoucherApp._refresh_sidebar_icons_if_scale_changed(fake)
     assert calls == []
+
+
+def test_delete_preflight_blocks_without_local_controller_history(monkeypatch):
+    from voucher_management import voucher_deletion_ui as deletion_ui
+
+    shown = []
+    voucher = SimpleNamespace(id="v1", code_formatted="11111-22222")
+    fake = SimpleNamespace(
+        active_controller_id=None,
+        database=None,
+        _history_stats_for=lambda current: {voucher.code_formatted: object()},
+    )
+    monkeypatch.setattr(
+        deletion_ui.messagebox,
+        "showerror",
+        lambda *args, **kwargs: shown.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        deletion_ui.messagebox,
+        "askyesno",
+        lambda *args, **kwargs: pytest.fail(
+            "delete confirmation must not be reached"
+        ),
+    )
+
+    VoucherDeletionMixin._continue_delete_selected(
+        fake,
+        object(),
+        [voucher],
+    )
+
+    assert shown
+    assert "storico locale" in shown[0][0][1]
+
+
+def test_delete_preflight_blocks_when_local_lifecycle_query_fails(monkeypatch):
+    from voucher_management import voucher_deletion_ui as deletion_ui
+
+    shown = []
+    voucher = SimpleNamespace(id="v1", code_formatted="11111-22222")
+
+    class BrokenDatabase:
+        def historically_used_remote_ids(self, **kwargs):
+            raise OSError("database unavailable")
+
+    fake = SimpleNamespace(
+        active_controller_id=7,
+        database=BrokenDatabase(),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+        _history_stats_for=lambda current: {voucher.code_formatted: object()},
+    )
+    monkeypatch.setattr(
+        deletion_ui.messagebox,
+        "showerror",
+        lambda *args, **kwargs: shown.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        deletion_ui.messagebox,
+        "askyesno",
+        lambda *args, **kwargs: pytest.fail(
+            "delete confirmation must not be reached"
+        ),
+    )
+
+    VoucherDeletionMixin._continue_delete_selected(
+        fake,
+        object(),
+        [voucher],
+    )
+
+    assert shown
+    assert "Impossibile verificare" in shown[0][0][1]
