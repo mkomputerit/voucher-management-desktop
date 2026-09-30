@@ -60,12 +60,11 @@ class RetentionIntroDialog(tk.Toplevel):
         ttk.Label(
             frame,
             text=(
-                "Voucher Management conserva lo storico locale per audit e "
-                "report. I voucher con uso o stampa registrati sono sempre "
-                "protetti. Solo voucher con utilizzo osservabile, nessun "
-                "utilizzo rilevato, senza stampe registrate, non più presenti "
-                "sul controller, senza PDF generati e abbastanza vecchi possono "
-                "essere proposti per la minimizzazione."
+                "Voucher Management separa due azioni: minimizzazione locale "
+                "dello storico non più necessario e revoca di sicurezza dei "
+                "voucher stampati, ancora attivi su UniFi e mai utilizzati. "
+                "Entrambe richiedono una soglia scelta dall'operatore e una "
+                "conferma esplicita prima di agire."
             ),
             wraplength=560,
             justify="left",
@@ -73,9 +72,8 @@ class RetentionIntroDialog(tk.Toplevel):
         ttk.Label(
             frame,
             text=(
-                "La soglia consigliata è 180 giorni. Nessun voucher viene "
-                "archiviato automaticamente: la pulizia richiede sempre una "
-                "revisione e una conferma esplicita."
+                "Il software non imposta automaticamente alcun tempo. "
+                "Nessuna revoca o minimizzazione viene eseguita in automatico."
             ),
             wraplength=560,
             justify="left",
@@ -145,11 +143,11 @@ class RetentionReviewDialog(tk.Toplevel):
         ttk.Label(
             shell,
             text=(
-                "Le protezioni per voucher utilizzati e stampati sono "
-                "obbligatorie e non possono essere disattivate. L'elenco "
-                "sottostante contiene soltanto voucher non più presenti sul "
-                "controller, con utilizzo osservabile e nessun utilizzo rilevato, "
-                "senza stampe registrate e senza evidenze di PDF generati."
+                "Questa tabella riguarda soltanto la minimizzazione locale. "
+                "Mostra voucher non più presenti su UniFi, con utilizzo "
+                "osservabile e nessun utilizzo rilevato, abbastanza vecchi "
+                "secondo la retention locale. I voucher revocati per sicurezza "
+                "possono essere minimizzati in un momento successivo."
             ),
             wraplength=820,
             justify="left",
@@ -157,24 +155,32 @@ class RetentionReviewDialog(tk.Toplevel):
 
         policy_row = ttk.Frame(shell)
         policy_row.pack(fill="x", pady=(0, 12))
-        ttk.Label(policy_row, text="Età minima").pack(side="left")
+        ttk.Label(policy_row, text="Retention locale").pack(side="left")
         ttk.Spinbox(
             policy_row,
             from_=1,
             to=3650,
             textvariable=self.days,
-            width=8,
-        ).pack(side="left", padx=(8, 5))
-        ttk.Label(policy_row, text="giorni").pack(side="left")
-        ttk.Button(
-            policy_row,
-            text="Aggiorna criteri",
-            command=self._save_policy,
-        ).pack(side="left", padx=(14, 0))
+            width=7,
+        ).pack(side="left", padx=(6, 4))
+        ttk.Label(policy_row, text="gg").pack(side="left")
         ttk.Label(
             policy_row,
-            text="Usati: protetti  •  Stampati: protetti",
-        ).pack(side="right")
+            text="Revoca stampati inutilizzati",
+        ).pack(side="left", padx=(18, 0))
+        ttk.Spinbox(
+            policy_row,
+            from_=1,
+            to=3650,
+            textvariable=self.revoke_days,
+            width=7,
+        ).pack(side="left", padx=(6, 4))
+        ttk.Label(policy_row, text="gg").pack(side="left")
+        ttk.Button(
+            policy_row,
+            text="Salva policy",
+            command=self._save_policy,
+        ).pack(side="left", padx=(14, 0))
 
         columns = (
             "controller",
@@ -218,6 +224,11 @@ class RetentionReviewDialog(tk.Toplevel):
             text="Archivia selezionati…",
             command=self._archive_selected,
         ).pack(side="right", padx=(0, 8))
+        ttk.Button(
+            actions,
+            text="Revoca sicurezza…",
+            command=self._open_security_revocation,
+        ).pack(side="left")
 
         self._refresh()
 
