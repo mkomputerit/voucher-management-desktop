@@ -713,3 +713,15 @@ def test_delete_policy_fails_closed_when_usage_provenance_is_unknown():
 
     assert len(blocked) == 1
     assert blocked[0].policy.reason == "usage_unknown"
+
+
+def test_delete_policy_uses_sqlite_print_evidence_even_if_history_is_empty():
+    current = voucher("v-sqlite-print", "9191919191", used=0)
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        historically_printed_ids=frozenset({"v-sqlite-print"}),
+    )
+
+    assert len(blocked) == 1
+    assert blocked[0].policy.reason == "printed"
