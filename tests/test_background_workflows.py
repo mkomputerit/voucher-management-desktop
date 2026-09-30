@@ -507,6 +507,7 @@ def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
             (path, list(codes))
         ),
         logger=SimpleNamespace(error=lambda *args: None),
+        _historical_voucher_candidates=lambda: [current, other],
     )
 
     def resolve(voucher, all_vouchers, **kwargs):
@@ -545,6 +546,7 @@ def test_open_existing_pdf_maps_typed_linkage_failure_to_ui(monkeypatch):
         paths=SimpleNamespace(prints=Path("Print")),
         _preview=lambda *args: None,
         logger=SimpleNamespace(error=lambda *args: None),
+        _historical_voucher_candidates=lambda: [current],
     )
     monkeypatch.setattr(
         app_module,
@@ -1438,6 +1440,7 @@ def test_open_existing_pdf_includes_absent_durable_vouchers_in_linkage(
             error=lambda *args, **kwargs: None,
         ),
     )
+    fake._historical_voucher_candidates = lambda: VoucherApp._historical_voucher_candidates(fake)
     monkeypatch.setattr(
         app_module,
         "load_local_vouchers",
@@ -1470,3 +1473,31 @@ def test_open_existing_pdf_includes_absent_durable_vouchers_in_linkage(
     VoucherApp.open_existing_pdf(fake)
 
     assert captured["ids"] == {"live", "absent"}
+
+
+def test_pending_print_recovery_uses_durable_historical_candidates(monkeypatch):
+    live = SimpleNamespace(id="live", code_formatted="11111-22222")
+    absent = SimpleNamespace(id="absent", code_formatted="33333-44444")
+    seen = {}
+
+    class History:
+        def resolve_pending_print(self, candidate_codes, settings):
+            seen["codes"] = list(candidate_codes)
+            return None
+
+    fake = SimpleNamespace(
+        vouchers=[live],
+        active_controller_id=7,
+        database=object(),
+        history=History(),
+        settings={},
+    )
+    monkeypatch.setattr(
+        app_module,
+        "load_local_vouchers",
+        lambda database, controller_id: [live, absent],
+    )
+    fake._historical_voucher_candidates = lambda: VoucherApp._historical_voucher_candidates(fake)
+
+    assert VoucherApp._record_pending_print_sqlite_and_finalize(fake) is False
+    assert set(seen["codes"]) == {"11111-22222", "33333-44444"}
