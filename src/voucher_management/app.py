@@ -1110,7 +1110,8 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         voucher = selected[0]
         all_known_vouchers = self.vouchers
-        if self.active_controller_id is not None:
+        controller_id = getattr(self, "active_controller_id", None)
+        if controller_id is not None:
             try:
                 # Archived PDFs may contain vouchers that are no longer in the
                 # live UniFi snapshot. Resolve HMAC linkage against the durable
@@ -1118,7 +1119,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 # credential actually present in the document.
                 all_known_vouchers = load_local_vouchers(
                     self.database,
-                    controller_id=self.active_controller_id,
+                    controller_id=controller_id,
                 )
             except Exception as exc:
                 self.logger.warning(
