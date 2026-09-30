@@ -17,16 +17,44 @@ class CreateMutationGuardError(RuntimeError):
 
 
 class CreateMutationGuard:
-    """Atomic existence marker preventing accidental duplicate creates."""
+    """Atomic marker preventing unsafe follow-up creates."""
+
+    PENDING_STATE = "pending"
+    MANUAL_RECOVERY_STATE = "confirmed-unreconciled"
 
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._manual_recovery_in_memory = False
 
     @property
     def pending(self) -> bool:
         """Return whether a create attempt still requires reconciliation."""
 
         return self.path.is_file()
+
+    @property
+    def state(self) -> str:
+        """Return the durable guard state, failing closed on unreadable content."""
+
+        if not self.path.is_file():
+            return ""
+        try:
+            value = self.path.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            return "unknown"
+        return value if value in {
+            self.PENDING_STATE,
+            self.MANUAL_RECOVERY_STATE,
+        } else "unknown"
+
+    @property
+    def requires_manual_recovery(self) -> bool:
+        """Return whether automatic refresh is insufficient to unlock create."""
+
+        return self._manual_recovery_in_memory or self.state in {
+            self.MANUAL_RECOVERY_STATE,
+            "unknown",
+        }
 
     def begin(self) -> None:
         """Create the marker atomically before entering the network mutation."""
