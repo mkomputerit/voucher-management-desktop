@@ -445,8 +445,9 @@ def render_report_pdf(
             _paragraph(
                 "Nota: “Nessun utilizzo rilevato” significa soltanto che Voucher "
                 "Management non ha mai osservato un conteggio guest autorizzati positivo "
-                "fino all'ultima osservazione controller indicata. Se manca questa "
-                "evidenza, il report mostra “uso non determinabile”. Il conteggio guest "
+                "fino all'ultima presenza del voucher effettivamente osservata su UniFi. "
+                "Se manca questa evidenza, il report mostra “uso non determinabile”. "
+                "Il conteggio guest "
                 "autorizzati è l'ultimo valore conservato e non è un contatore cumulativo "
                 "di accessi né un timestamp d'uso.",
                 small,
