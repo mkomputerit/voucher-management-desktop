@@ -396,6 +396,267 @@ class RetentionReviewDialog(tk.Toplevel):
         )
 
 
+class SecurityRevocationDialog(tk.Toplevel):
+    """Operator-reviewed revocation of printed unused credentials from UniFi."""
+
+    def __init__(self, app, parent=None):
+        super().__init__(parent or app)
+        self.app = app
+        self.title("Revoca sicurezza voucher")
+        self.transient(parent or app)
+        self.grab_set()
+        self.geometry("930x540")
+        self.minsize(800, 460)
+        self.status = tk.StringVar()
+        self._candidates = {}
+
+        shell = ttk.Frame(self, padding=18)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(
+            shell,
+            text="Voucher da revocare per sicurezza",
+            font=("TkDefaultFont", 12, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            shell,
+            text=(
+                "Solo voucher stampati, ancora attivi su UniFi, mai utilizzati "
+                "secondo evidenza osservata, visti nuovamente dopo la stampa e "
+                "oltre la soglia configurata. La revoca elimina la credenziale "
+                "dalla controller ma conserva lo storico locale."
+            ),
+            wraplength=860,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 12))
+
+        columns = (
+            "description",
+            "recipient",
+            "last_print",
+            "last_seen",
+            "jobs",
+            "copies",
+        )
+        self.tree = ttk.Treeview(
+            shell,
+            columns=columns,
+            show="headings",
+            selectmode="extended",
+        )
+        for key, label in (
+            ("description", "Descrizione UniFi"),
+            ("recipient", "Destinatario locale"),
+            ("last_print", "Ultima stampa"),
+            ("last_seen", "Ultima presenza UniFi"),
+            ("jobs", "Job stampa"),
+            ("copies", "Copie"),
+        ):
+            self.tree.heading(key, text=label)
+        self.tree.column("description", width=230)
+        self.tree.column("recipient", width=210)
+        self.tree.column("last_print", width=150, anchor="center")
+        self.tree.column("last_seen", width=170, anchor="center")
+        self.tree.column("jobs", width=90, anchor="center")
+        self.tree.column("copies", width=80, anchor="center")
+        self.tree.pack(fill="both", expand=True)
+
+        ttk.Label(shell, textvariable=self.status).pack(
+            anchor="w", pady=(8, 0)
+        )
+        actions = ttk.Frame(shell)
+        actions.pack(fill="x", pady=(12, 0))
+        ttk.Button(
+            actions,
+            text="Chiudi",
+            command=self.destroy,
+        ).pack(side="right")
+        ttk.Button(
+            actions,
+            text="Revoca selezionati da UniFi…",
+            command=self._revoke_selected,
+            style="Danger.TButton",
+        ).pack(side="right", padx=(0, 8))
+        self._refresh()
+
+    def _now(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _refresh(self) -> None:
+        self.tree.delete(*self.tree.get_children())
+        controller_id = getattr(self.app, "active_controller_id", None)
+        if (
+            controller_id is None
+            or not getattr(self.app, "client", None)
+            or not bool(getattr(self.app, "controller_snapshot_live", False))
+        ):
+            self._candidates = {}
+            self.status.set(
+                "Connettersi e sincronizzare con UniFi per verificare i candidati."
+            )
+            return
+        try:
+            candidates = security_revocation_candidates(
+                self.app.database,
+                now=self._now(),
+                controller_id=int(controller_id),
+            )
+        except RuntimeError as exc:
+            self._candidates = {}
+            self.status.set(str(exc))
+            return
+        self._candidates = {
+            candidate.voucher_id: candidate for candidate in candidates
+        }
+        for candidate in candidates:
+            self.tree.insert(
+                "",
+                "end",
+                iid=str(candidate.voucher_id),
+                values=(
+                    candidate.controller_description or "—",
+                    candidate.assigned_to or "—",
+                    _display_time(candidate.last_printed_at),
+                    _display_time(candidate.last_seen_at),
+                    candidate.print_jobs,
+                    candidate.physical_copies,
+                ),
+            )
+        self.status.set(
+            f"{len(candidates)} candidati. Nessuna revoca è automatica."
+        )
+
+    def _revoke_selected(self) -> None:
+        selected = [
+            int(iid) for iid in self.tree.selection() if iid.isdigit()
+        ]
+        if not selected:
+            messagebox.showinfo(
+                "Revoca sicurezza",
+                "Selezionare almeno un voucher da revocare.",
+                parent=self,
+            )
+            return
+
+        controller_id = getattr(self.app, "active_controller_id", None)
+        client = getattr(self.app, "client", None)
+        if controller_id is None or client is None:
+            messagebox.showwarning(
+                "Revoca sicurezza",
+                "La controller non è connessa.",
+                parent=self,
+            )
+            return
+        if not messagebox.askyesno(
+            "Conferma revoca di sicurezza",
+            (
+                f"Revocare {len(selected)} voucher dalla controller UniFi?\n\n"
+                "Le credenziali non saranno più utilizzabili. Lo storico locale "
+                "e l'evidenza di stampa resteranno conservati per audit."
+            ),
+            parent=self,
+        ):
+            return
+
+        if any(voucher_id not in self._candidates for voucher_id in selected):
+            messagebox.showwarning(
+                "Revoca sicurezza",
+                "L'elenco è cambiato. Aggiornare i candidati e riprovare.",
+                parent=self,
+            )
+            self._refresh()
+            return
+
+        database_path = Path(self.app.paths.database)
+        operator = self.app._windows_operator_identity()
+        operation_uuid = str(uuid4())
+        requested_at = self._now()
+
+        def worker():
+            fresh = list(client.list_vouchers())
+            observed = datetime.now(timezone.utc).isoformat()
+            persist_refresh_snapshot_to_path(
+                database_path,
+                controller_id=int(controller_id),
+                vouchers=fresh,
+                observed_at=observed,
+            )
+
+            db = Database(database_path)
+            try:
+                db.initialize()
+                remote_ids = prepare_security_revocation_operation(
+                    db,
+                    controller_id=int(controller_id),
+                    voucher_ids=selected,
+                    operation_uuid=operation_uuid,
+                    requested_at=requested_at,
+                    windows_user=operator,
+                )
+            finally:
+                db.close()
+
+            by_id = {voucher.id: voucher for voucher in fresh}
+            try:
+                current = [by_id[remote_id] for remote_id in remote_ids]
+            except KeyError as exc:
+                raise RuntimeError(
+                    "Un voucher candidato non è più presente su UniFi."
+                ) from exc
+
+            outcome = delete_vouchers_and_refresh(
+                client,
+                fresh,
+                current,
+            )
+            if outcome.refresh_error is None:
+                persist_refresh_snapshot_to_path(
+                    database_path,
+                    controller_id=int(controller_id),
+                    vouchers=list(outcome.vouchers),
+                    observed_at=datetime.now(timezone.utc).isoformat(),
+                )
+            return outcome
+
+        def completed(outcome) -> None:
+            self.app.checked_ids.clear()
+            self.app.vouchers = list(outcome.vouchers)
+            self.app.controller_snapshot_live = outcome.refresh_error is None
+            self.app.populate()
+            self._refresh()
+            if outcome.refresh_error is not None:
+                messagebox.showwarning(
+                    "Revoca inviata · verifica richiesta",
+                    "La richiesta di revoca è stata inviata a UniFi, ma lo "
+                    "snapshot finale non è disponibile. Non ripetere la revoca: "
+                    "eseguire Sincronizza per riconciliare lo stato.",
+                    parent=self,
+                )
+                return
+            messagebox.showinfo(
+                "Revoca sicurezza",
+                f"Revocati e verificati: {len(selected)} voucher.",
+                parent=self,
+            )
+
+        def failed(_exc: Exception) -> None:
+            self.app.controller_snapshot_live = False
+            self.app.populate()
+            messagebox.showwarning(
+                "Revoca sicurezza da riconciliare",
+                "L'operazione non può essere considerata conclusa. "
+                "Sincronizzare con UniFi prima di riprovare: lo stato pendente "
+                "verrà riconciliato automaticamente.",
+                parent=self,
+            )
+
+        self.app._run_network_task(
+            "Revoca voucher per sicurezza…",
+            worker,
+            completed,
+            failed,
+        )
+
+
 class RetentionMixin:
     """Compose lifecycle-policy review into the Windows shell."""
 
