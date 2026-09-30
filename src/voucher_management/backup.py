@@ -985,6 +985,7 @@ class BackupService:
         mistaken for a usable rollback source.
         """
         self._restore_warnings.clear()
+        had_existing_root = self.paths.user_root.exists()
         workspace = self._restore_workspace_root()
         rollback = workspace / (
             f"{PRODUCT_DIR_NAME}-rollback-"
@@ -1003,7 +1004,6 @@ class BackupService:
             )
         )
         rollback_build = rollback_build_root / "snapshot"
-        had_existing_root = self.paths.user_root.exists()
         rollback_ready = False
 
         try:
