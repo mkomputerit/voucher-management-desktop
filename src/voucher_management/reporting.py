@@ -10,7 +10,7 @@ from typing import Iterable
 
 from .database import Database
 from .report_policy import ReportPurpose, report_code_value, voucher_code_policy
-from .retention import security_revocation_candidates
+from .retention import retention_policy_configured, security_revocation_candidates
 
 
 class ReportKind(str, Enum):
@@ -501,24 +501,30 @@ def _build_report_dataset_snapshot(
         include_voucher_code=code_policy.expose_code,
     )
     security_candidate_ids: set[int] = set()
-    if kind in {
-        ReportKind.SUMMARY,
-        ReportKind.SECURITY_REVOCATION_CANDIDATES,
-        ReportKind.FULL_HISTORY,
-    }:
-        try:
-            security_candidate_ids = {
-                item.voucher_id
-                for item in security_revocation_candidates(
-                    database,
-                    now=generated_at,
-                    controller_id=controller_id,
-                )
-            }
-        except RuntimeError:
-            # Existing upgraded installations remain fail-closed until the
-            # operator explicitly configures both lifecycle thresholds.
-            security_candidate_ids = set()
+    security_policy_ready = retention_policy_configured(database)
+    if (
+        kind is ReportKind.SECURITY_REVOCATION_CANDIDATES
+        and not security_policy_ready
+    ):
+        raise RuntimeError(
+            "La policy di revoca di sicurezza non è ancora configurata."
+        )
+    if (
+        security_policy_ready
+        and kind in {
+            ReportKind.SUMMARY,
+            ReportKind.SECURITY_REVOCATION_CANDIDATES,
+            ReportKind.FULL_HISTORY,
+        }
+    ):
+        security_candidate_ids = {
+            item.voucher_id
+            for item in security_revocation_candidates(
+                database,
+                now=generated_at,
+                controller_id=controller_id,
+            )
+        }
 
     all_rows: list[ReportRow] = []
     rows: list[ReportRow] = []
@@ -677,7 +683,13 @@ def _build_report_dataset_snapshot(
         f"origine creazione {unknown_origin}, utilizzo {unknown_usage}, "
         f"nominalità non classificata {unclassified}; nominalità rimossa per privacy {redacted}. "
         f"Registrazioni da backup precedente: {legacy_count}; identità da verificare "
-        f"{review_required}; revocati per sicurezza {revoked_count}. La loro importazione non prova "
+        f"{review_required}; revocati per sicurezza {revoked_count}. "
+        + (
+            "Policy revoca sicurezza configurata. "
+            if security_policy_ready
+            else "Policy revoca sicurezza non configurata: candidati non calcolati. "
+        )
+        + "La loro importazione non prova "
         "scadenza né utilizzo e non è una sincronizzazione controller. Per queste righe "
         "la data di creazione/evidenza può derivare dalla prima generazione verificata "
         "nel backup, non da una data di creazione letta da UniFi. "
