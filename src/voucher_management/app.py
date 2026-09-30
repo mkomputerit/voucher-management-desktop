@@ -1048,8 +1048,22 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         resolved only against voucher codes already present in SQLite.
         """
 
+        candidates = list(self.vouchers)
+        controller_id = getattr(self, "active_controller_id", None)
+        if controller_id is not None:
+            try:
+                candidates = load_local_vouchers(
+                    self.database,
+                    controller_id=controller_id,
+                )
+            except Exception as exc:
+                raise HistoryError(
+                    "Impossibile leggere lo storico locale necessario per "
+                    "completare la stampa pendente"
+                ) from exc
+
         details = self.history.resolve_pending_print(
-            [voucher.code_formatted for voucher in self.vouchers],
+            [voucher.code_formatted for voucher in candidates],
             self.settings,
         )
         if details is None:
