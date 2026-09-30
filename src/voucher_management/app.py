@@ -29,6 +29,11 @@ from .create_reporting_recovery import (
 from .database import Database
 from .dialogs import PrintCopiesDialog, ReprintConfirmDialog
 from .history import HistoryError, HistoryService
+from .history_sqlite_reconciliation import (
+    HistorySqliteReconciliationError,
+    reconcile_history_print_audits,
+    reconcile_history_print_audits_to_path,
+)
 from .identity import PRODUCT_NAME
 from .logging_utils import configure_logging
 from .mutation_guard import CreateMutationGuard, CreateMutationGuardError
@@ -209,6 +214,21 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         # HistoryService can initialize or repair the fingerprint on disk.
         # Keep the UI copy synchronized so later saves cannot erase it.
         self.settings = self.settings_store.load()
+
+        # Version 5.1 reports use SQLite print facts. Reconcile modern HMAC
+        # history once on upgrade and whenever an earlier exchange left the
+        # durable pending marker. Failure keeps reporting fail-closed but must
+        # not prevent the operator from starting the application.
+        try:
+            reconcile_history_print_audits(
+                self.database,
+                self.history,
+            )
+        except HistorySqliteReconciliationError as exc:
+            self.logger.warning(
+                "history_sqlite_reconciliation_pending type=%s",
+                type(exc).__name__,
+            )
 
         # Recovery is delayed until the SQLite controller snapshot is loaded.
         # A submitted print marker must not be cleared after repairing only the
