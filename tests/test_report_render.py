@@ -241,3 +241,9 @@ def test_authorized_empty_handoff_keeps_code_column_without_failing(tmp_path: Pa
     payload = output.read_text(encoding="utf-8-sig")
     assert output.exists()
     assert "Voucher" in payload
+
+
+def test_report_operator_column_is_explicitly_print_operator():
+    headers = _detail_headers(_dataset())
+    assert "Operatore stampa" in headers
+    assert "Operatori" not in headers
