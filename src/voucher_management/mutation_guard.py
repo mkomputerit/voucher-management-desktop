@@ -49,7 +49,7 @@ class CreateMutationGuard:
 
         try:
             with os.fdopen(fd, "w", encoding="ascii") as handle:
-                handle.write("pending\n")
+                handle.write(self.PENDING_STATE + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError as exc:
@@ -59,11 +59,39 @@ class CreateMutationGuard:
                 "Impossibile confermare il blocco anti-ripetizione"
             ) from exc
 
+    def mark_confirmed_unreconciled(self) -> None:
+        """Escalate a confirmed create to manual recovery without losing guard.
+
+        This state contains no voucher codes, recipient text, API credentials
+        or controller address. It records only that automatic attribution for a
+        controller-confirmed create is no longer recoverable and therefore a
+        later refresh must not silently unlock further creates.
+        """
+
+        self._manual_recovery_in_memory = True
+        if not self.path.is_file():
+            raise CreateMutationGuardError(
+                "Blocco creazione mancante durante la riconciliazione"
+            )
+        temp = self.path.with_suffix(self.path.suffix + ".tmp")
+        try:
+            with temp.open("w", encoding="ascii", newline="\n") as handle:
+                handle.write(self.MANUAL_RECOVERY_STATE + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, self.path)
+        except OSError as exc:
+            temp.unlink(missing_ok=True)
+            raise CreateMutationGuardError(
+                "Impossibile rendere permanente il blocco di riconciliazione"
+            ) from exc
+
     def clear(self) -> bool:
         """Clear the marker after a definitive result or successful refresh."""
 
         try:
             self.path.unlink()
+            self._manual_recovery_in_memory = False
             return True
         except FileNotFoundError:
             return False
