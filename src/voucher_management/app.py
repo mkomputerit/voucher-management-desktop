@@ -37,6 +37,7 @@ from .pdf_fonts import UnsupportedPdfTextError
 from .pdf_preview import PdfPreview
 from .pdf_render import render_batch_pdf
 from .reprint_policy import evaluate_reprint
+from .report_temp import cleanup_orphan_report_temps
 from .print_archive import (
     DEFAULT_PRINT_RETENTION_DAYS,
     cleanup_orphan_pdf_temps,
@@ -195,6 +196,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 type(exc).__name__,
             )
         self._cleanup_orphan_pdf_temps()
+        self._cleanup_orphan_report_temps()
         self.history = HistoryService(
             self.paths.history,
             self.paths.history_lock,
@@ -380,6 +382,24 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         if removed:
             self.logger.info(
                 "pdf_temp_cleanup removed=%d",
+                len(removed),
+            )
+
+    def _cleanup_orphan_report_temps(self) -> None:
+        """Remove marked administrative report previews left by hard crashes."""
+
+        try:
+            removed = cleanup_orphan_report_temps()
+        except Exception as exc:
+            self.logger.warning(
+                "report_temp_cleanup_skipped type=%s",
+                type(exc).__name__,
+            )
+            return
+
+        if removed:
+            self.logger.info(
+                "report_temp_cleanup removed=%d",
                 len(removed),
             )
 
