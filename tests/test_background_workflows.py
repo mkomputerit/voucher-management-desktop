@@ -890,6 +890,9 @@ def test_history_import_prepare_confirm_apply_are_split_across_workers(
         settings={},
         _history_error_shown=True,
         populate=lambda: calls.append(("populate", None)),
+        paths=SimpleNamespace(database=Path("C:/Temp/voucher_management.db")),
+        history=object(),
+        _refresh_report_summary=lambda: calls.append(("reports", None)),
     )
     monkeypatch.setattr(
         maintenance_ui.filedialog,
@@ -916,6 +919,24 @@ def test_history_import_prepare_confirm_apply_are_split_across_workers(
         "showerror",
         lambda *args, **kwargs: calls.append(("error", None)),
     )
+    monkeypatch.setattr(
+        maintenance_ui,
+        "mark_history_print_reconciliation_pending_to_path",
+        lambda path: calls.append(("mark", Path(path))),
+    )
+    monkeypatch.setattr(
+        maintenance_ui,
+        "clear_history_print_reconciliation_pending_to_path",
+        lambda path: calls.append(("clear", Path(path))),
+    )
+    monkeypatch.setattr(
+        maintenance_ui,
+        "reconcile_history_print_audits_to_path",
+        lambda path, history, force=False: (
+            calls.append(("reconcile", Path(path), force))
+            or SimpleNamespace(jobs_materialized=1)
+        ),
+    )
 
     modern_app.ModernVoucherApp.import_history_exchange(fake)
 
@@ -932,12 +953,15 @@ def test_history_import_prepare_confirm_apply_are_split_across_workers(
     assert tasks[1]["label"] == "Merge cronologia…"
     assert not any(entry[0] == "apply" for entry in calls)
 
-    added = tasks[1]["worker"]()
-    assert calls[-1][0] == "apply"
-    tasks[1]["success"](added)
+    result = tasks[1]["worker"]()
+    assert ("mark", Path("C:/Temp/voucher_management.db")) in calls
+    assert any(entry[0] == "apply" for entry in calls)
+    assert any(entry[0] == "reconcile" for entry in calls)
+    tasks[1]["success"](result)
     assert fake.settings == {"ok": True}
     assert fake._history_error_shown is False
-    assert calls[-2][0] == "populate"
+    assert any(entry[0] == "populate" for entry in calls)
+    assert any(entry[0] == "reports" for entry in calls)
     assert calls[-1][0] == "info"
 
 
