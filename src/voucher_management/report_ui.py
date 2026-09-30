@@ -5,11 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import tkinter as tk
-from tempfile import TemporaryDirectory
 from .report_guide import HISTORY_NOTICE, REPORT_GUIDE
 from tkinter import filedialog, messagebox, ttk
 
 from .report_render import render_report_csv, render_report_pdf
+from .report_temp import create_report_temporary_directory
 from .reporting import ReportKind, build_report_dataset_from_path
 
 
@@ -225,7 +225,7 @@ class ReportDialog(tk.Toplevel):
         safe_kind = kind.value.replace("_", "-")
         temporary = None
         if extension == ".pdf":
-            temporary = TemporaryDirectory(prefix="voucher-report-")
+            temporary = create_report_temporary_directory()
             output = Path(temporary.name) / f"Report-{safe_kind}-{timestamp}.pdf"
         else:
             target = filedialog.asksaveasfilename(parent=self, title="Salva CSV", defaultextension=".csv", initialfile=f"Report-{safe_kind}-{timestamp}.csv", filetypes=(("CSV", "*.csv"),))
