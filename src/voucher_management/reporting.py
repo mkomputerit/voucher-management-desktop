@@ -10,6 +10,7 @@ from typing import Iterable
 
 from .database import Database
 from .report_policy import ReportPurpose, report_code_value, voucher_code_policy
+from .retention import security_revocation_candidates
 
 
 class ReportKind(str, Enum):
@@ -29,6 +30,8 @@ class ReportKind(str, Enum):
     USAGE_UNKNOWN = "usage_unknown"
     ORIGIN_UNKNOWN = "origin_unknown"
     NOMINALITY_REDACTED = "nominality_redacted"
+    SECURITY_REVOCATION_CANDIDATES = "security_revocation_candidates"
+    SECURITY_REVOKED = "security_revoked"
     FULL_HISTORY = "full_history"
 
 
@@ -47,6 +50,8 @@ REPORT_TITLES = {
     ReportKind.USAGE_UNKNOWN: "Voucher con utilizzo non determinabile",
     ReportKind.ORIGIN_UNKNOWN: "Voucher con origine creazione non determinabile",
     ReportKind.NOMINALITY_REDACTED: "Nominalità rimossa per privacy",
+    ReportKind.SECURITY_REVOCATION_CANDIDATES: "Voucher da revocare per sicurezza",
+    ReportKind.SECURITY_REVOKED: "Voucher revocati per sicurezza",
     ReportKind.FULL_HISTORY: "Storico completo voucher",
 }
 
@@ -77,6 +82,8 @@ class ReportTotals:
     unclassified_vouchers: int
     unknown_origin_vouchers: int = 0
     redacted_nominality_vouchers: int = 0
+    security_revocation_candidates: int = 0
+    security_revoked_vouchers: int = 0
 
 
 @dataclass(frozen=True)
@@ -110,6 +117,9 @@ class ReportRow:
     last_seen_at: str = ""
     nominality_redacted: bool = False
     controller_description: str = ""
+    revoked_for_security_at: str = ""
+    identity_review_required: bool = False
+    security_revocation_candidate: bool = False
 
 
 @dataclass(frozen=True)
@@ -160,6 +170,8 @@ def validate_report_dataset_consistency(dataset: ReportDataset) -> None:
         totals.unclassified_vouchers,
         totals.unknown_origin_vouchers,
         totals.redacted_nominality_vouchers,
+        totals.security_revocation_candidates,
+        totals.security_revoked_vouchers,
     )
     if any(int(value) < 0 for value in numeric_values):
         raise RuntimeError("Report totals contain negative values")
@@ -299,9 +311,17 @@ def _status(
     ever_used: bool,
     usage_observed: bool,
     print_jobs: int,
+    revoked_for_security: bool = False,
+    identity_review_required: bool = False,
 ) -> str:
+    if identity_review_required:
+        return "Da verificare"
+    if archived and revoked_for_security:
+        return "Revocato per sicurezza · Archiviato"
     if archived:
         return "Archiviato"
+    if revoked_for_security:
+        return "Revocato per sicurezza"
     if expired:
         return "Scaduto"
     if usage_observed and ever_used:
@@ -376,6 +396,10 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
         return row.origin != "APPLICATION"
     if kind is ReportKind.NOMINALITY_REDACTED:
         return row.nominality_redacted
+    if kind is ReportKind.SECURITY_REVOCATION_CANDIDATES:
+        return row.security_revocation_candidate
+    if kind is ReportKind.SECURITY_REVOKED:
+        return bool(row.revoked_for_security_at)
     raise ValueError(f"Unsupported report kind: {kind}")
 
 
@@ -439,6 +463,12 @@ def _totals(
         redacted_nominality_vouchers=sum(
             row.nominality_redacted for row in materialized
         ),
+        security_revocation_candidates=sum(
+            row.security_revocation_candidate for row in materialized
+        ),
+        security_revoked_vouchers=sum(
+            bool(row.revoked_for_security_at) for row in materialized
+        ),
     )
 
 
@@ -470,6 +500,25 @@ def _build_report_dataset_snapshot(
         controller_id=controller_id,
         include_voucher_code=code_policy.expose_code,
     )
+    security_candidate_ids: set[int] = set()
+    if kind in {
+        ReportKind.SUMMARY,
+        ReportKind.SECURITY_REVOCATION_CANDIDATES,
+        ReportKind.FULL_HISTORY,
+    }:
+        try:
+            security_candidate_ids = {
+                item.voucher_id
+                for item in security_revocation_candidates(
+                    database,
+                    now=generated_at,
+                    controller_id=controller_id,
+                )
+            }
+        except RuntimeError:
+            # Existing upgraded installations remain fail-closed until the
+            # operator explicitly configures both lifecycle thresholds.
+            security_candidate_ids = set()
 
     all_rows: list[ReportRow] = []
     rows: list[ReportRow] = []
@@ -527,6 +576,8 @@ def _build_report_dataset_snapshot(
                 ever_used=ever_used,
                 usage_observed=usage_observed,
                 print_jobs=print_jobs,
+                revoked_for_security=bool(raw["revoked_for_security_at"]),
+                identity_review_required=bool(raw["identity_review_required"]),
             ),
             origin=str(raw["origin"] or "UNKNOWN"),
             is_nominal=is_nominal,
@@ -534,6 +585,11 @@ def _build_report_dataset_snapshot(
             last_seen_at="" if legacy else str(raw["last_seen_at"] or ""),
             nominality_redacted=bool(raw["nominality_redacted"]),
             controller_description=controller_description,
+            revoked_for_security_at=str(raw["revoked_for_security_at"] or ""),
+            identity_review_required=bool(raw["identity_review_required"]),
+            security_revocation_candidate=(
+                int(raw["voucher_id"]) in security_candidate_ids
+            ),
         )
         if legacy:
             row = replace(
@@ -612,13 +668,16 @@ def _build_report_dataset_snapshot(
     )
     redacted = sum(row.nominality_redacted for row in all_rows)
     legacy_count = sum(bool(raw["legacy_source"]) for raw in raw_rows)
+    review_required = sum(bool(raw["identity_review_required"]) for raw in raw_rows)
+    revoked_count = sum(bool(raw["revoked_for_security_at"]) for raw in raw_rows)
     coverage_note = (
         f"Ambito: {len(all_rows)} registrazioni locali. La freschezza riportata usa "
         "l'ultima presenza effettivamente osservata del voucher, non una successiva "
         "sincronizzazione che ne abbia rilevato soltanto l'assenza. Informazioni non determinabili: "
         f"origine creazione {unknown_origin}, utilizzo {unknown_usage}, "
         f"nominalità non classificata {unclassified}; nominalità rimossa per privacy {redacted}. "
-        f"Registrazioni da backup precedente: {legacy_count}; la loro importazione non prova "
+        f"Registrazioni da backup precedente: {legacy_count}; identità da verificare "
+        f"{review_required}; revocati per sicurezza {revoked_count}. La loro importazione non prova "
         "scadenza né utilizzo e non è una sincronizzazione controller. Per queste righe "
         "la data di creazione/evidenza può derivare dalla prima generazione verificata "
         "nel backup, non da una data di creazione letta da UniFi. "
