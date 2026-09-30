@@ -627,3 +627,22 @@ def test_retention_candidate_exposes_last_actual_presence_not_absence_sync(tmp_p
         assert candidate.last_synced_at == NOW
     finally:
         database.close()
+
+
+def test_retention_candidate_names_controller_text_without_recipient_inference(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="semantic-description",
+            code="8585858585",
+        )
+        candidates = retention_candidates(database, now=NOW)
+        candidate = next(
+            item for item in candidates if item.voucher_id == voucher_id
+        )
+        assert candidate.controller_description == "Guest semantic-description"
+        assert not hasattr(candidate, "recipient")
+    finally:
+        database.close()
