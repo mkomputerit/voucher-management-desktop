@@ -658,3 +658,49 @@ def test_retention_candidate_keeps_unifi_description_and_local_recipient_separat
         assert candidate.assigned_to == "Mario Rossi"
     finally:
         database.close()
+
+
+def test_generated_pdf_hmac_lookup_uses_printed_code_format(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="hmac-format",
+            code="1234567890",
+        )
+        seen = {}
+
+        def stats_for_codes(codes, settings):
+            seen["codes"] = list(codes)
+            return {
+                code: SimpleNamespace(
+                    generated_documents=int(code == "12345-67890"),
+                    generated_copies=int(code == "12345-67890"),
+                    print_jobs=0,
+                    printed_copies=0,
+                )
+                for code in codes
+            }
+
+        history = SimpleNamespace(stats_for_codes=stats_for_codes)
+        assert reviewable_retention_candidates(
+            database,
+            history=history,
+            settings={},
+            now=NOW,
+        ) == ()
+        assert seen["codes"] == ["12345-67890"]
+
+        result = archive_retention_candidates(
+            database,
+            voucher_ids=[voucher_id],
+            archived_at=NOW,
+            windows_user="operator",
+            history=history,
+            settings={},
+        )
+        assert result.archived_ids == ()
+        assert result.skipped_ids == (voucher_id,)
+    finally:
+        database.close()
