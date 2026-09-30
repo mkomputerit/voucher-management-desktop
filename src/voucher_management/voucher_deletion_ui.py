@@ -88,10 +88,19 @@ class VoucherDeletionMixin:
             if controller_id is not None and getattr(self, "database", None) is not None
             else frozenset()
         )
+        usage_unknown = (
+            self.database.usage_unknown_remote_ids(
+                controller_id=controller_id,
+                unifi_ids=[voucher.id for voucher in current],
+            )
+            if controller_id is not None and getattr(self, "database", None) is not None
+            else frozenset()
+        )
         blocked = evaluate_delete_candidates(
             current,
             stats,
             historically_used_ids=historically_used,
+            usage_unknown_ids=usage_unknown,
         )
         if blocked:
             reasons = {item.policy.reason for item in blocked}
@@ -100,9 +109,19 @@ class VoucherDeletionMixin:
                     "Almeno un voucher selezionato risulta già utilizzato o "
                     "in uso sul controller."
                 )
+            elif "usage_unknown" in reasons:
+                detail = (
+                    "Per almeno un voucher selezionato lo storico locale non "
+                    "dispone di evidenza sufficiente per escludere un utilizzo."
+                )
             elif "printed" in reasons:
                 detail = (
                     "Almeno un voucher selezionato risulta già stampato."
+                )
+            elif "generated" in reasons:
+                detail = (
+                    "Per almeno un voucher selezionato esiste già un PDF "
+                    "generato contenente la credenziale."
                 )
             else:
                 detail = (
