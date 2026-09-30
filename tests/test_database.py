@@ -976,3 +976,39 @@ def test_backup_history_rejects_full_path_as_destination(tmp_path):
             )
     finally:
         db.close()
+
+
+def test_usage_unknown_remote_ids_are_exposed_for_delete_policy(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="Sala",
+            api_root="https://controller.example",
+            created_at="2026-09-30T08:00:00+00:00",
+        )
+        unknown = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="unknown-usage",
+            code="1111122222",
+            imported_at="2026-09-30T08:00:00+00:00",
+            last_synced_at="2026-09-30T08:00:00+00:00",
+        )
+        db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="known-usage",
+            code="3333344444",
+            imported_at="2026-09-30T08:00:00+00:00",
+            last_synced_at="2026-09-30T08:00:00+00:00",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET usage_observed=0 WHERE id=?",
+                (unknown,),
+            )
+
+        assert db.usage_unknown_remote_ids(
+            controller_id=controller,
+            unifi_ids=["unknown-usage", "known-usage"],
+        ) == frozenset({"unknown-usage"})
+    finally:
+        db.close()
