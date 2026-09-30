@@ -8,7 +8,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from .create_reporting_recovery import reconcile_pending_create_reporting_to_path
-from .retention import generated_retention_blockers
+from .retention import durable_legacy_generation_blockers
 from .sync_store import persist_refresh_snapshot_to_path
 from .unifi_api import UniFiClient
 from .workflows import (
@@ -107,10 +107,8 @@ class VoucherDeletionMixin:
             for remote_id, fact in safety.items()
             if fact.ever_used
         }
-        durable_generated_local_ids = generated_retention_blockers(
+        durable_generated_local_ids = durable_legacy_generation_blockers(
             database,
-            history=self.history,
-            settings=self.settings,
             voucher_ids=[fact.voucher_id for fact in safety.values()],
         )
         durable_generated = {
