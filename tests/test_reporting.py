@@ -8,6 +8,7 @@ import pytest
 
 from voucher_management.database import Database
 from voucher_management.report_policy import ReportPurpose
+from voucher_management.retention import configure_retention_policy
 from voucher_management.reporting import (
     ReportKind,
     build_report_dataset,
@@ -71,6 +72,148 @@ def _remote(remote_id: str, *, used: int = 0) -> ApiVoucher:
         used=used,
         status="VALID_MULTI",
     )
+
+
+def test_security_candidate_report_fails_closed_without_configured_policy(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        with pytest.raises(RuntimeError, match="non è ancora configurata"):
+            build_report_dataset(
+                db,
+                kind=ReportKind.SECURITY_REVOCATION_CANDIDATES,
+                generated_at=NOW,
+                controller_id=controller,
+            )
+    finally:
+        db.close()
+
+
+def test_security_candidate_report_uses_same_policy_as_revocation(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        configure_retention_policy(
+            db,
+            unused_unprinted_days=180,
+            printed_unused_revoke_days=60,
+            now=NOW,
+        )
+        voucher_id = _voucher(
+            db,
+            controller,
+            "security-candidate",
+            "1234567890",
+            name="Guest sicurezza",
+            expires_at=None,
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="security-report-print",
+            codes=["12345-67890"],
+            output_file="security.pdf",
+            document_copies=1,
+            printed_at="2026-06-01T08:00:00+00:00",
+            windows_user=r"PC\operator",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET last_seen_at=? WHERE id=?",
+                (NOW, voucher_id),
+            )
+
+        report = build_report_dataset(
+            db,
+            kind=ReportKind.SECURITY_REVOCATION_CANDIDATES,
+            generated_at=NOW,
+            controller_id=controller,
+        )
+        assert [row.voucher_id for row in report.rows] == [voucher_id]
+        assert report.rows[0].security_revocation_candidate is True
+        assert report.totals.security_revocation_candidates == 1
+
+        summary = build_report_dataset(
+            db,
+            kind=ReportKind.SUMMARY,
+            generated_at=NOW,
+            controller_id=controller,
+        )
+        assert summary.totals.security_revocation_candidates == 1
+    finally:
+        db.close()
+
+
+def test_security_revoked_voucher_remains_in_reports_with_audit_status(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "security-revoked",
+            "5555566666",
+            name="Guest revocato",
+            expires_at=None,
+        )
+        revoked_at = "2026-09-20T08:00:00+00:00"
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET present_on_controller=0, revoked_for_security_at=?,
+                       last_synced_at=?
+                   WHERE id=?""",
+                (revoked_at, revoked_at, voucher_id),
+            )
+            tx.execute(
+                """INSERT INTO voucher_events(
+                       event_uuid, voucher_id, event_type, occurred_at,
+                       source, windows_user, details_json
+                   ) VALUES ('security-revoked-report', ?, 'SECURITY_REVOKED',
+                       ?, 'SYSTEM', 'operator', '{}')""",
+                (voucher_id, revoked_at),
+            )
+
+        report = build_report_dataset(
+            db,
+            kind=ReportKind.SECURITY_REVOKED,
+            generated_at=NOW,
+            controller_id=controller,
+        )
+        assert [row.voucher_id for row in report.rows] == [voucher_id]
+        assert report.rows[0].revoked_for_security_at == revoked_at
+        assert "Revocato per sicurezza" in report.rows[0].status
+        assert report.totals.security_revoked_vouchers == 1
+    finally:
+        db.close()
+
+
+def test_identity_review_required_is_explicit_in_report_status(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "identity-review",
+            "7777788888",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """INSERT INTO voucher_events(
+                       event_uuid, voucher_id, event_type, occurred_at,
+                       source, details_json
+                   ) VALUES ('identity-review-report', ?,
+                       'LEGACY_IDENTITY_REVIEW_REQUIRED', ?, 'SYSTEM', '{}')""",
+                (voucher_id, NOW),
+            )
+        report = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+            controller_id=controller,
+        )
+        row = next(item for item in report.rows if item.voucher_id == voucher_id)
+        assert row.identity_review_required is True
+        assert row.status == "Da verificare"
+        assert "identità da verificare 1" in report.coverage_note
+    finally:
+        db.close()
 
 
 def test_summary_report_never_exposes_codes_even_when_requested(tmp_path):
