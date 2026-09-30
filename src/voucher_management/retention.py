@@ -382,6 +382,47 @@ def security_revocation_candidates(
     )
 
 
+def prepare_security_revocation_operation(
+    database: Database,
+    *,
+    controller_id: int,
+    voucher_ids: list[int] | tuple[int, ...],
+    operation_uuid: str,
+    requested_at: str,
+    windows_user: str,
+) -> tuple[str, ...]:
+    """Revalidate policy eligibility before persisting revocation intent."""
+
+    requested = tuple(dict.fromkeys(int(value) for value in voucher_ids))
+    if not requested:
+        return ()
+
+    eligible = {
+        candidate.voucher_id: candidate
+        for candidate in security_revocation_candidates(
+            database,
+            now=requested_at,
+            controller_id=int(controller_id),
+        )
+    }
+    missing = [voucher_id for voucher_id in requested if voucher_id not in eligible]
+    if missing:
+        raise RuntimeError(
+            "Uno o più voucher non soddisfano più i criteri di revoca. "
+            "Aggiornare l'elenco e riprovare."
+        )
+
+    remote_ids = tuple(eligible[voucher_id].unifi_id for voucher_id in requested)
+    database.prepare_security_revocations(
+        controller_id=int(controller_id),
+        unifi_ids=list(remote_ids),
+        operation_uuid=str(operation_uuid),
+        requested_at=requested_at,
+        requested_by=windows_user,
+    )
+    return remote_ids
+
+
 def durable_legacy_generation_blockers(
     database: Database,
     *,
