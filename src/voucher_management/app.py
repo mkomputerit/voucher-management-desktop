@@ -337,7 +337,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 parent=self,
             )
         if self.create_guard.pending:
-            if self.create_guard.requires_manual_recovery:
+            if bool(getattr(self.create_guard, "requires_manual_recovery", False)):
                 detail = (
                     "Una creazione precedente è stata confermata da UniFi, ma "
                     "non è stato possibile conservarne in modo affidabile la "
@@ -752,7 +752,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     "incompleti finché un aggiornamento non riesce.",
                     parent=self,
                 )
-            if self.create_guard.requires_manual_recovery:
+            if bool(getattr(self.create_guard, "requires_manual_recovery", False)):
                 messagebox.showwarning(
                     "Creazione ancora sospesa",
                     "L'elenco UniFi è stato aggiornato, ma una precedente "
