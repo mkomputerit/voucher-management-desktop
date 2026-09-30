@@ -1529,3 +1529,43 @@ def test_marker_failure_does_not_leave_manual_block_when_sqlite_persists(
 
     tasks[0]["success"](result)
     assert guard.pending is False
+
+
+def test_pending_print_sqlite_recovery_uses_durable_voucher_history(monkeypatch):
+    live = SimpleNamespace(code_formatted="11111-22222")
+    absent = SimpleNamespace(code_formatted="33333-44444")
+    resolved = SimpleNamespace(
+        state="submitted",
+        audit_id="audit-1",
+        document_copies=1,
+        submitted_at="2026-09-30T08:00:00+00:00",
+        codes=("11111-22222", "33333-44444"),
+        output_file="Voucher_Group.pdf",
+    )
+    seen = {}
+    finalized = []
+    fake = SimpleNamespace(
+        vouchers=[live],
+        active_controller_id=7,
+        database=object(),
+        settings={},
+        history=SimpleNamespace(
+            resolve_pending_print=lambda codes, settings: (
+                seen.update(codes=list(codes)) or resolved
+            ),
+            finalize_pending_print_audit=lambda audit_id: finalized.append(audit_id),
+        ),
+        _record_sqlite_print_audit=lambda pending, codes, path: seen.update(
+            audit=(pending, list(codes), Path(path))
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "load_local_vouchers",
+        lambda database, controller_id: [live, absent],
+    )
+
+    assert VoucherApp._record_pending_print_sqlite_and_finalize(fake) is True
+    assert seen["codes"] == ["11111-22222", "33333-44444"]
+    assert seen["audit"][1] == ["11111-22222", "33333-44444"]
+    assert finalized == ["audit-1"]
