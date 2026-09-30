@@ -595,7 +595,9 @@ def _build_report_dataset_snapshot(
     materialized = () if kind is ReportKind.SUMMARY else tuple(rows)
     totals_source = all_rows if kind is ReportKind.SUMMARY else rows
     data_from, data_as_of = _time_bounds(
-        row.last_seen_at for row in all_rows if row.last_seen_at
+        row.last_seen_at
+        for row in totals_source
+        if row.last_seen_at
     )
     unknown_origin = sum(row.origin != "APPLICATION" for row in all_rows)
     unknown_usage = sum(not row.usage_observed for row in all_rows)
