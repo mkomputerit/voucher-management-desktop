@@ -27,6 +27,7 @@ from .backup_crypto import (
     is_protected_backup,
     validate_backup_password,
 )
+from .database import SCHEMA_VERSION
 from .identity import PRODUCT_DIR_NAME, PRODUCT_NAME
 from .logo_validation import (
     LogoLimitError,
@@ -188,8 +189,15 @@ class BackupService:
         def ignore(path, names):
             current = Path(path).resolve()
             ignored: list[str] = []
-            if current == source_root and "application.instance.lock" in names:
-                ignored.append("application.instance.lock")
+            if current == source_root:
+                if "application.instance.lock" in names:
+                    ignored.append("application.instance.lock")
+                # Restore work and retained rollback snapshots live inside the
+                # ACL-protected application root. They are operational
+                # artifacts, never part of the application-data snapshot.
+                for operational in (".restore-work", "Rollback"):
+                    if operational in names:
+                        ignored.append(operational)
             if current.name == "data":
                 ignored.extend(
                     name for name in names if name in database_names
@@ -782,6 +790,13 @@ class BackupService:
                         raise BackupError(
                             "Versione schema SQLite del backup non coerente"
                         )
+                    if user_version > SCHEMA_VERSION:
+                        raise BackupError(
+                            "Il backup usa uno schema SQLite più recente di "
+                            "quello supportato da questa versione di Voucher "
+                            "Management. Aggiornare l'applicazione prima del "
+                            "ripristino."
+                        )
                 elif has_sqlite:
                     # Early 5.0 beta archives copied the live .db directly.
                     # They cannot prove that committed WAL pages were captured,
@@ -950,18 +965,30 @@ class BackupService:
         mistaken for a usable rollback source.
         """
         self._restore_warnings.clear()
-        parent = self.paths.user_root.parent
-        rollback = parent / (
+
+        # Installed shared mode grants operators Modify only inside the
+        # application ProgramData root, not on C:\\ProgramData itself.
+        # Keep every restore work item below that protected root so restore
+        # never requires administrator rights merely to create staging files.
+        work_root = self.paths.user_root / ".restore-work"
+        rollback_root = self.paths.user_root / "Rollback"
+        work_root.mkdir(parents=True, exist_ok=True)
+        rollback_root.mkdir(parents=True, exist_ok=True)
+
+        rollback = rollback_root / (
             f"{PRODUCT_DIR_NAME}-rollback-"
             f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
         )
         staging = Path(
-            tempfile.mkdtemp(prefix="voucher-management-restore-", dir=parent)
+            tempfile.mkdtemp(
+                prefix="voucher-management-restore-",
+                dir=work_root,
+            )
         )
         rollback_build_root = Path(
             tempfile.mkdtemp(
                 prefix="voucher-management-rollback-build-",
-                dir=parent,
+                dir=work_root,
             )
         )
         rollback_build = rollback_build_root / "snapshot"
@@ -1041,3 +1068,9 @@ class BackupService:
         finally:
             shutil.rmtree(staging, ignore_errors=True)
             shutil.rmtree(rollback_build_root, ignore_errors=True)
+            try:
+                work_root.rmdir()
+            except OSError:
+                # Another interrupted restore artifact may still be present.
+                # Never broaden cleanup beyond our dedicated work directory.
+                pass
