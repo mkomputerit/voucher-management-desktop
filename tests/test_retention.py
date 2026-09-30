@@ -26,13 +26,20 @@ RECENT = "2026-09-20T08:00:00+00:00"
 
 
 def _history(*, generated_codes=()):
-    blocked = set(generated_codes)
+    blocked = {
+        str(code).strip().replace("-", "")
+        for code in generated_codes
+    }
 
     def stats_for_codes(codes, settings):
         return {
             code: SimpleNamespace(
-                generated_documents=int(code in blocked),
-                generated_copies=int(code in blocked),
+                generated_documents=int(
+                    str(code).strip().replace("-", "") in blocked
+                ),
+                generated_copies=int(
+                    str(code).strip().replace("-", "") in blocked
+                ),
                 print_jobs=0,
                 printed_copies=0,
             )
