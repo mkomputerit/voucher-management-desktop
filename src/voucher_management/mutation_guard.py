@@ -124,12 +124,18 @@ class CreateMutationGuard:
         if not self.path.is_file():
             return False
         try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return False
+            raw = self.path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             raise CreateMutationGuardError(
                 "Impossibile leggere il blocco anti-ripetizione"
+            ) from exc
+        if raw.strip() == "pending":
+            return False
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise CreateMutationGuardError(
+                "Recovery della creazione confermata danneggiato"
             ) from exc
         return (
             isinstance(payload, dict)
