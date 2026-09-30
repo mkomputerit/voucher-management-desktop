@@ -35,7 +35,7 @@ class RetentionCandidate:
 
     voucher_id: int
     controller_name: str
-    recipient: str
+    controller_description: str
     created_at: str
     imported_at: str
     expires_at: str
@@ -202,7 +202,7 @@ def retention_candidates(
         RetentionCandidate(
             voucher_id=int(row["voucher_id"]),
             controller_name=str(row["controller_name"] or "Controller"),
-            recipient=str(row["name"] or ""),
+            controller_description=str(row["name"] or ""),
             created_at=str(row["created_at"] or ""),
             imported_at=str(row["imported_at"] or ""),
             expires_at=str(row["expires_at"] or ""),
