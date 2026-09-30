@@ -336,6 +336,7 @@ def test_successful_local_metadata_update_deselects_only_handled_voucher(
             database=database,
             wait_window=lambda dialog: None,
             _windows_operator_identity=lambda: "TEST\\operator",
+            _selected_vouchers_for_local_metadata=lambda: [voucher],
             _voucher_for_local_metadata=lambda: voucher,
             populate=lambda: populated.append(True),
             _refresh_report_summary=lambda: refreshed.append(True),
