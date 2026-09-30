@@ -31,11 +31,29 @@ class VoucherCreationMixin:
             )
             return
         if self.create_guard.pending:
+            if bool(
+                getattr(
+                    self.create_guard,
+                    "requires_manual_recovery",
+                    False,
+                )
+            ):
+                detail = (
+                    "Una precedente creazione è stata confermata da UniFi, "
+                    "ma la classificazione locale non è stata conservata in "
+                    "modo recuperabile. Per proteggere la reportistica, nuove "
+                    "creazioni restano bloccate finché l'archivio locale non "
+                    "viene verificato/riparato manualmente."
+                )
+            else:
+                detail = (
+                    "Una precedente creazione ha un esito da verificare. "
+                    "Per evitare voucher duplicati, eseguire prima Aggiorna e "
+                    "controllare l'elenco restituito dal controller."
+                )
             messagebox.showwarning(
                 "Creazione sospesa",
-                "Una precedente creazione ha un esito da verificare. "
-                "Per evitare voucher duplicati, eseguire prima Aggiorna e "
-                "controllare l'elenco restituito dal controller.",
+                detail,
                 parent=self,
             )
             return
