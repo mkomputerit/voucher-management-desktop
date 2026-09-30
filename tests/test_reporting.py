@@ -1317,3 +1317,43 @@ def test_filtered_report_freshness_uses_only_exported_rows_when_nonempty(tmp_pat
         assert report.data_as_of == "2026-09-29T09:30:00+00:00"
     finally:
         db.close()
+
+
+def test_print_timestamp_bounds_are_chronological_across_timezone_offsets(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "print-time-offsets",
+            "9191919191",
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="print-later-utc",
+            codes=["91919-19191"],
+            output_file="later.pdf",
+            document_copies=1,
+            printed_at="2026-09-29T09:00:00+00:00",
+            windows_user="PC\\alice",
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="print-earlier-offset",
+            codes=["91919-19191"],
+            output_file="earlier.pdf",
+            document_copies=1,
+            printed_at="2026-09-29T10:30:00+02:00",
+            windows_user="PC\\alice",
+        )
+
+        history = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+        row = next(row for row in history.rows if row.voucher_id == voucher_id)
+        assert row.first_printed_at == "2026-09-29T10:30:00+02:00"
+        assert row.last_printed_at == "2026-09-29T09:00:00+00:00"
+    finally:
+        db.close()
