@@ -594,9 +594,14 @@ def _build_report_dataset_snapshot(
     # personal/operator detail in the renderer input when it cannot be shown.
     materialized = () if kind is ReportKind.SUMMARY else tuple(rows)
     totals_source = all_rows if kind is ReportKind.SUMMARY else rows
+    freshness_source = (
+        all_rows
+        if kind is ReportKind.SUMMARY or not rows
+        else rows
+    )
     data_from, data_as_of = _time_bounds(
         row.last_seen_at
-        for row in totals_source
+        for row in freshness_source
         if row.last_seen_at
     )
     unknown_origin = sum(row.origin != "APPLICATION" for row in all_rows)
