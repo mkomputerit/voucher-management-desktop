@@ -332,7 +332,7 @@ def test_successful_local_metadata_update_deselects_only_handled_voucher(
             tree=SimpleNamespace(focus=lambda: "row-1"),
             by_iid={"row-1": voucher},
             vouchers=[voucher, other],
-            checked_ids={"voucher-1", "voucher-2"},
+            checked_ids={"voucher-1"},
             database=database,
             wait_window=lambda dialog: None,
             _windows_operator_identity=lambda: "TEST\\operator",
@@ -364,7 +364,7 @@ def test_successful_local_metadata_update_deselects_only_handled_voucher(
 
         metadata_ui.VoucherLocalMetadataMixin.edit_local_voucher_metadata(fake)
 
-        assert fake.checked_ids == {"voucher-2"}
+        assert fake.checked_ids == set()
         assert populated == [True]
         assert refreshed == [True]
         saved = database.voucher_local_metadata(
@@ -374,5 +374,216 @@ def test_successful_local_metadata_update_deselects_only_handled_voucher(
         assert saved is not None
         assert saved.is_nominal is True
         assert saved.assigned_to == "Mario Rossi"
+    finally:
+        database.close()
+
+
+def test_batch_classification_preserves_recipient_and_notes_atomically(tmp_path):
+    database, controller_id = _database(tmp_path)
+    try:
+        database.upsert_voucher(
+            controller_id=controller_id,
+            unifi_id="voucher-2",
+            code="2222233333",
+            name="OTHER",
+            imported_at=NOW,
+            last_synced_at=NOW,
+        )
+        database.update_voucher_local_metadata(
+            controller_id=controller_id,
+            unifi_id="voucher-1",
+            assigned_to="Mario Rossi",
+            notes="Nota uno",
+            is_nominal=False,
+            updated_at=NOW,
+            windows_user="operator",
+        )
+        database.update_voucher_local_metadata(
+            controller_id=controller_id,
+            unifi_id="voucher-2",
+            assigned_to="Luigi Bianchi",
+            notes="Nota due",
+            is_nominal=False,
+            updated_at=NOW,
+            windows_user="operator",
+        )
+
+        updated = database.update_voucher_local_classification_batch(
+            controller_id=controller_id,
+            unifi_ids=["voucher-1", "voucher-2"],
+            is_nominal=True,
+            updated_at="2026-09-29T16:00:00+00:00",
+            windows_user=r"PC\operator",
+        )
+
+        assert [item.unifi_id for item in updated] == ["voucher-1", "voucher-2"]
+        metadata = {
+            remote_id: database.voucher_local_metadata(
+                controller_id=controller_id,
+                unifi_id=remote_id,
+            )
+            for remote_id in ("voucher-1", "voucher-2")
+        }
+        assert metadata["voucher-1"].assigned_to == "Mario Rossi"
+        assert metadata["voucher-1"].notes == "Nota uno"
+        assert metadata["voucher-1"].is_nominal is True
+        assert metadata["voucher-2"].assigned_to == "Luigi Bianchi"
+        assert metadata["voucher-2"].notes == "Nota due"
+        assert metadata["voucher-2"].is_nominal is True
+
+        events = database.connection.execute(
+            """SELECT voucher_id, details_json
+               FROM voucher_events
+               WHERE event_type='LOCAL_METADATA_UPDATED'
+               ORDER BY id DESC LIMIT 2"""
+        ).fetchall()
+        assert len(events) == 2
+        assert all('"is_nominal"' in row["details_json"] for row in events)
+        assert all("Mario Rossi" not in row["details_json"] for row in events)
+        assert all("Luigi Bianchi" not in row["details_json"] for row in events)
+    finally:
+        database.close()
+
+
+def test_batch_nominal_classification_fails_without_partial_updates(tmp_path):
+    database, controller_id = _database(tmp_path)
+    try:
+        database.upsert_voucher(
+            controller_id=controller_id,
+            unifi_id="voucher-2",
+            code="2222233333",
+            name="OTHER",
+            imported_at=NOW,
+            last_synced_at=NOW,
+        )
+        database.update_voucher_local_metadata(
+            controller_id=controller_id,
+            unifi_id="voucher-1",
+            assigned_to="Mario Rossi",
+            notes="",
+            is_nominal=False,
+            updated_at=NOW,
+            windows_user="operator",
+        )
+        database.update_voucher_local_metadata(
+            controller_id=controller_id,
+            unifi_id="voucher-2",
+            assigned_to="",
+            notes="",
+            is_nominal=False,
+            updated_at=NOW,
+            windows_user="operator",
+        )
+
+        with pytest.raises(ValueError, match="destinatario locale"):
+            database.update_voucher_local_classification_batch(
+                controller_id=controller_id,
+                unifi_ids=["voucher-1", "voucher-2"],
+                is_nominal=True,
+                updated_at="2026-09-29T16:00:00+00:00",
+                windows_user="operator",
+            )
+
+        assert database.voucher_local_metadata(
+            controller_id=controller_id,
+            unifi_id="voucher-1",
+        ).is_nominal is False
+        assert database.voucher_local_metadata(
+            controller_id=controller_id,
+            unifi_id="voucher-2",
+        ).is_nominal is False
+    finally:
+        database.close()
+
+
+def test_multi_selection_uses_batch_classification_and_deselects_all(
+    monkeypatch,
+    tmp_path,
+):
+    database, controller_id = _database(tmp_path)
+    try:
+        database.upsert_voucher(
+            controller_id=controller_id,
+            unifi_id="voucher-2",
+            code="2222233333",
+            name="OTHER",
+            imported_at=NOW,
+            last_synced_at=NOW,
+        )
+        for remote_id, recipient in (
+            ("voucher-1", "Mario Rossi"),
+            ("voucher-2", "Luigi Bianchi"),
+        ):
+            database.update_voucher_local_metadata(
+                controller_id=controller_id,
+                unifi_id=remote_id,
+                assigned_to=recipient,
+                notes=f"Nota {remote_id}",
+                is_nominal=False,
+                updated_at=NOW,
+                windows_user="operator",
+            )
+
+        voucher_1 = SimpleNamespace(id="voucher-1")
+        voucher_2 = SimpleNamespace(id="voucher-2")
+        populated = []
+        refreshed = []
+        fake = SimpleNamespace(
+            _background_results=None,
+            active_controller_id=controller_id,
+            controller_snapshot_live=True,
+            vouchers=[voucher_1, voucher_2],
+            checked_ids={"voucher-1", "voucher-2"},
+            database=database,
+            wait_window=lambda dialog: None,
+            _windows_operator_identity=lambda: r"PC\operator",
+            _selected_vouchers_for_local_metadata=lambda: [voucher_1, voucher_2],
+            _edit_local_voucher_classification_batch=lambda **kwargs:
+                metadata_ui.VoucherLocalMetadataMixin._edit_local_voucher_classification_batch(
+                    fake, **kwargs
+                ),
+            populate=lambda: populated.append(True),
+            _refresh_report_summary=lambda: refreshed.append(True),
+        )
+
+        class BatchDialog:
+            def __init__(self, *args, **kwargs):
+                assert kwargs["count"] == 2
+                self.result = True
+
+        monkeypatch.setattr(
+            metadata_ui,
+            "VoucherBatchClassificationDialog",
+            BatchDialog,
+        )
+        monkeypatch.setattr(
+            metadata_ui.messagebox,
+            "showinfo",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            metadata_ui.messagebox,
+            "showerror",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            metadata_ui.messagebox,
+            "showwarning",
+            lambda *args, **kwargs: None,
+        )
+
+        metadata_ui.VoucherLocalMetadataMixin.edit_local_voucher_metadata(fake)
+
+        assert fake.checked_ids == set()
+        assert populated == [True]
+        assert refreshed == [True]
+        assert database.voucher_local_metadata(
+            controller_id=controller_id,
+            unifi_id="voucher-1",
+        ).is_nominal is True
+        assert database.voucher_local_metadata(
+            controller_id=controller_id,
+            unifi_id="voucher-2",
+        ).is_nominal is True
     finally:
         database.close()
