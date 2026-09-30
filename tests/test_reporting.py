@@ -1278,3 +1278,22 @@ def test_archived_report_defensively_hides_stale_personal_text(tmp_path):
         assert row.controller_description == ""
     finally:
         db.close()
+
+
+def test_report_fails_closed_while_imported_print_history_is_unreconciled(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        _voucher(db, controller, "pending-history", "9292929292")
+        db.set_metadata_value(
+            "history_print_reconciliation_pending",
+            "1",
+        )
+
+        with pytest.raises(RuntimeError, match="non è ancora riconciliata"):
+            build_report_dataset(
+                db,
+                kind=ReportKind.SUMMARY,
+                generated_at=NOW,
+            )
+    finally:
+        db.close()
