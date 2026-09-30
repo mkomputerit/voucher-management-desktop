@@ -17,7 +17,6 @@ from .identity import (
 from .logo_validation import LogoValidationError, validate_logo_image
 from .shared_data_migration import source_has_migratable_data
 from .onboarding import (
-    DEFAULT_VOUCHER_RETENTION_DAYS,
     ONBOARDING_IN_PROGRESS_KEY,
     OnboardingDraft,
     OnboardingState,
@@ -176,9 +175,8 @@ class FirstRunWizard(tk.Toplevel):
             value="Connessione non ancora verificata"
         )
 
-        self.retention_days_var = tk.StringVar(
-            value=str(DEFAULT_VOUCHER_RETENTION_DAYS)
-        )
+        self.retention_days_var = tk.StringVar(value="")
+        self.security_revoke_days_var = tk.StringVar(value="")
 
         self.backup_directory_var = tk.StringVar(value=default_backup_directory(app))
         self.backup_on_close_var = tk.BooleanVar(value=bool(settings.get("backup_on_close", True)))
@@ -415,39 +413,58 @@ class FirstRunWizard(tk.Toplevel):
         grid.columnconfigure(1, weight=1)
 
     def _render_retention(self) -> None:
-        self.header_var.set("Conservazione dello storico")
+        self.header_var.set("Retention e sicurezza voucher")
         self.subtitle_var.set(
-            "I valori raccomandati sono già adatti alla maggior parte delle "
-            "installazioni. La pulizia resta sempre sottoposta a revisione."
+            "Imposta entrambe le soglie. Voucher Management non sceglie "
+            "automaticamente tempi di conservazione o revoca."
         )
         ttk.Label(
             self.body,
             text=(
-                "Voucher utilizzati: sempre protetti\n"
-                "Voucher fisicamente stampati: sempre protetti\n"
-                "Mai usati e mai stampati: candidati solo dopo il periodo indicato"
+                "Retention locale: dopo quanti giorni dalla conferma di assenza "
+                "da UniFi un voucher inutilizzato può essere proposto per la "
+                "minimizzazione dei dati locali.\n\n"
+                "Revoca di sicurezza: dopo quanti giorni dall'ultima stampa un "
+                "voucher ancora attivo su UniFi e mai utilizzato deve essere "
+                "proposto per la revoca."
             ),
             wraplength=650,
-        ).pack(anchor="w", pady=(18, 16))
+            justify="left",
+        ).pack(anchor="w", pady=(14, 16))
 
-        row = ttk.Frame(self.body)
-        row.pack(anchor="w")
-        ttk.Label(row, text="Età minima candidati").pack(side="left")
+        local_row = ttk.Frame(self.body)
+        local_row.pack(anchor="w", pady=4)
+        ttk.Label(local_row, text="Retention locale").pack(side="left")
         ttk.Spinbox(
-            row,
+            local_row,
             from_=1,
             to=3650,
             increment=30,
             textvariable=self.retention_days_var,
             width=8,
         ).pack(side="left", padx=(12, 6))
-        ttk.Label(row, text="giorni").pack(side="left")
+        ttk.Label(local_row, text="giorni").pack(side="left")
+
+        revoke_row = ttk.Frame(self.body)
+        revoke_row.pack(anchor="w", pady=4)
+        ttk.Label(revoke_row, text="Revoca voucher stampati e inutilizzati").pack(
+            side="left"
+        )
+        ttk.Spinbox(
+            revoke_row,
+            from_=1,
+            to=3650,
+            increment=30,
+            textvariable=self.security_revoke_days_var,
+            width=8,
+        ).pack(side="left", padx=(12, 6))
+        ttk.Label(revoke_row, text="giorni").pack(side="left")
 
         ttk.Label(
             self.body,
             text=(
-                "Nessun voucher viene eliminato automaticamente dal wizard. "
-                "La futura pulizia mostrerà sempre i candidati prima di agire."
+                "Entrambe le azioni richiedono sempre revisione e conferma "
+                "dell'operatore. Nessuna cancellazione viene eseguita dal wizard."
             ),
             style="Muted.TLabel",
             wraplength=650,
@@ -502,8 +519,12 @@ class FirstRunWizard(tk.Toplevel):
                 str(info.get("applicationVersion") or "—"),
             ),
             (
-                "Retention",
+                "Retention locale",
                 f"{self.retention_days_var.get().strip()} giorni",
+            ),
+            (
+                "Revoca sicurezza",
+                f"{self.security_revoke_days_var.get().strip()} giorni",
             ),
             (
                 "Logo",
@@ -578,16 +599,21 @@ class FirstRunWizard(tk.Toplevel):
             return False
         return True
 
-    def _validated_retention(self) -> int | None:
+    def _validated_retention(self) -> tuple[int, int] | None:
         try:
-            value = int(self.retention_days_var.get())
-            if not 1 <= value <= 3650:
+            local_text = self.retention_days_var.get().strip()
+            revoke_text = self.security_revoke_days_var.get().strip()
+            if not local_text or not revoke_text:
                 raise ValueError
-            return value
+            local_days = int(local_text)
+            revoke_days = int(revoke_text)
+            if not 1 <= local_days <= 3650 or not 1 <= revoke_days <= 3650:
+                raise ValueError
+            return local_days, revoke_days
         except (TypeError, ValueError, tk.TclError):
             messagebox.showerror(
                 "Prima configurazione",
-                "La retention deve essere compresa tra 1 e 3650 giorni.",
+                "Impostare entrambe le soglie con un valore tra 1 e 3650 giorni.",
                 parent=self,
             )
             return None
@@ -799,6 +825,7 @@ class FirstRunWizard(tk.Toplevel):
             self.page = self.PAGE_RETENTION
             self._render_page()
             return
+        local_retention_days, security_revoke_days = retention
         if not self._controller_is_current() or self._controller_result is None:
             self.page = self.PAGE_CONTROLLER
             self._render_page()
@@ -846,7 +873,8 @@ class FirstRunWizard(tk.Toplevel):
                 pdf_subtitle=self.structure_name_var.get(),
                 pdf_contact="",
                 pdf_notes="",
-                unused_unprinted_days=retention,
+                unused_unprinted_days=local_retention_days,
+                printed_unused_revoke_days=security_revoke_days,
                 backup_directory=backup_directory,
                 backup_on_close=bool(self.backup_on_close_var.get()),
             )
