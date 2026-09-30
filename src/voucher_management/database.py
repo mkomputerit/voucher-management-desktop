@@ -1927,9 +1927,15 @@ COMMIT;
                     v.expires_at,
                     v.expired,
                     v.present_on_controller,
+                    v.revoked_for_security_at,
                     v.archived_at,
                     v.last_seen_at,
                     v.last_synced_at,
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM voucher_events AS review
+                        WHERE review.voucher_id=v.id
+                          AND review.event_type='LEGACY_IDENTITY_REVIEW_REQUIRED'
+                    ) THEN 1 ELSE 0 END AS identity_review_required,
                     COUNT(vp.id) AS print_jobs,
                     COALESCE(SUM(vp.physical_copies), 0) AS physical_copies,
                     COALESCE(SUM(CASE WHEN vp.is_reprint=1 THEN 1 ELSE 0 END), 0)
