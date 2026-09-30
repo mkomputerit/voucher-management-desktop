@@ -27,6 +27,7 @@ from .backup_crypto import (
     is_protected_backup,
     validate_backup_password,
 )
+from .database import SCHEMA_VERSION
 from .identity import PRODUCT_DIR_NAME, PRODUCT_NAME
 from .logo_validation import (
     LogoLimitError,
@@ -188,8 +189,11 @@ class BackupService:
         def ignore(path, names):
             current = Path(path).resolve()
             ignored: list[str] = []
-            if current == source_root and "application.instance.lock" in names:
-                ignored.append("application.instance.lock")
+            if current == source_root:
+                if "application.instance.lock" in names:
+                    ignored.append("application.instance.lock")
+                if ".maintenance" in names:
+                    ignored.append(".maintenance")
             if current.name == "data":
                 ignored.extend(
                     name for name in names if name in database_names
@@ -799,6 +803,37 @@ class BackupService:
                 "Backup danneggiato o non riconosciuto"
             ) from exc
 
+    def _restore_workspace_root(self) -> Path:
+        """Return a restore workspace writable by an installed operator.
+
+        Shared installs grant Modify on the application data root, not on its
+        ProgramData parent. Keeping staging/rollback under a dedicated
+        application-owned directory therefore works for non-admin operators and
+        remains outside the managed data directories that are replaced.
+        """
+
+        root = Path(self.paths.user_root) / ".maintenance"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    @staticmethod
+    def _assert_restore_schema_supported(manifest: dict) -> None:
+        """Reject snapshots from a newer application before live data changes."""
+
+        sqlite_meta = manifest.get("sqlite_snapshot")
+        if sqlite_meta is None:
+            return
+        if not isinstance(sqlite_meta, dict):
+            raise BackupError("Metadati snapshot SQLite incoerenti")
+        version = sqlite_meta.get("user_version")
+        if type(version) is not int or version < 0:
+            raise BackupError("Versione schema SQLite del backup non valida")
+        if version > SCHEMA_VERSION:
+            raise BackupError(
+                "Il backup usa uno schema dati più recente di quello supportato "
+                "da questa versione di Voucher Management"
+            )
+
     def _extract_validated(self, source, staging: Path) -> dict:
         manifest = self.validate(source)
         source = self._zip_source(source)
@@ -950,18 +985,21 @@ class BackupService:
         mistaken for a usable rollback source.
         """
         self._restore_warnings.clear()
-        parent = self.paths.user_root.parent
-        rollback = parent / (
+        workspace = self._restore_workspace_root()
+        rollback = workspace / (
             f"{PRODUCT_DIR_NAME}-rollback-"
             f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
         )
         staging = Path(
-            tempfile.mkdtemp(prefix="voucher-management-restore-", dir=parent)
+            tempfile.mkdtemp(
+                prefix="voucher-management-restore-",
+                dir=workspace,
+            )
         )
         rollback_build_root = Path(
             tempfile.mkdtemp(
                 prefix="voucher-management-rollback-build-",
-                dir=parent,
+                dir=workspace,
             )
         )
         rollback_build = rollback_build_root / "snapshot"
@@ -970,6 +1008,7 @@ class BackupService:
 
         try:
             manifest = self._extract_validated(source, staging)
+            self._assert_restore_schema_supported(manifest)
             if not (staging / "config" / "settings.json").is_file():
                 raise BackupError(
                     "Il backup non contiene la configurazione"
