@@ -36,4 +36,10 @@ def evaluate_delete_policy(
     if stats and stats.print_jobs > 0:
         return DeletePolicyResult(False, "printed")
 
+    if stats and (
+        stats.generated_documents > 0
+        or stats.generated_copies > 0
+    ):
+        return DeletePolicyResult(False, "generated")
+
     return DeletePolicyResult(True)
