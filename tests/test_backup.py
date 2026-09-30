@@ -16,6 +16,7 @@ from voucher_management.backup import (
     BackupService,
 )
 from voucher_management.backup_crypto import PROTECTED_BACKUP_MAGIC
+from voucher_management.database import SCHEMA_VERSION
 from voucher_management.security.history_key import HistoryKeyStore
 from voucher_management.single_instance import SingleInstanceGuard
 
@@ -706,7 +707,9 @@ class BackupServiceTests(unittest.TestCase):
 
         self.assertEqual(settings_path.read_bytes(), before)
         rollbacks = list(
-            self.paths.user_root.parent.glob("VoucherManagement-rollback-*")
+            (self.paths.user_root / "Rollback").glob(
+                "VoucherManagement-rollback-*"
+            )
         )
         self.assertEqual(rollbacks, [])
 
@@ -1082,3 +1085,87 @@ class BackupServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    def test_restore_workspaces_stay_inside_operator_writable_data_root(self):
+        backup = Path(self.temp.name) / "operator-restore.zip"
+        self.service.create(backup)
+        real_mkdtemp = tempfile.mkdtemp
+        observed_dirs = []
+
+        def tracked_mkdtemp(*args, **kwargs):
+            directory = kwargs.get("dir")
+            if directory is not None:
+                observed_dirs.append(Path(directory))
+            return real_mkdtemp(*args, **kwargs)
+
+        with patch(
+            "voucher_management.backup.tempfile.mkdtemp",
+            side_effect=tracked_mkdtemp,
+        ):
+            rollback = self.service.restore(backup)
+
+        expected_work = self.paths.user_root / ".restore-work"
+        assert observed_dirs == [expected_work, expected_work]
+        assert rollback.is_relative_to(self.paths.user_root / "Rollback")
+        assert not any(
+            path == self.paths.user_root.parent for path in observed_dirs
+        )
+
+
+    def test_restore_rejects_future_sqlite_schema_before_live_change(self):
+        database = self.paths.user_root / "data" / "voucher_management.db"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.commit()
+        finally:
+            connection.close()
+
+        source = Path(self.temp.name) / "current-schema.zip"
+        self.service.create(source)
+        future = Path(self.temp.name) / "future-schema.zip"
+
+        with zipfile.ZipFile(source, "r") as archive:
+            payloads = {
+                info.filename: archive.read(info.filename)
+                for info in archive.infolist()
+            }
+
+        future_db = Path(self.temp.name) / "future.db"
+        future_db.write_bytes(payloads["data/voucher_management.db"])
+        connection = sqlite3.connect(future_db)
+        try:
+            connection.execute(
+                f"PRAGMA user_version = {SCHEMA_VERSION + 1}"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        payloads["data/voucher_management.db"] = future_db.read_bytes()
+        manifest = json.loads(
+            payloads["backup_manifest.json"].decode("utf-8")
+        )
+        manifest["sqlite_snapshot"]["user_version"] = SCHEMA_VERSION + 1
+        manifest["sqlite_snapshot"]["sha256"] = hashlib.sha256(
+            payloads["data/voucher_management.db"]
+        ).hexdigest()
+        payloads["backup_manifest.json"] = json.dumps(
+            manifest
+        ).encode("utf-8")
+
+        with zipfile.ZipFile(
+            future,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as archive:
+            for name, payload in payloads.items():
+                archive.writestr(name, payload)
+
+        settings_path = self.paths.user_root / "config" / "settings.json"
+        before = settings_path.read_bytes()
+        with self.assertRaisesRegex(BackupError, "più recente"):
+            self.service.restore(future)
+
+        self.assertEqual(settings_path.read_bytes(), before)
