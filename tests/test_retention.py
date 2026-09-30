@@ -628,6 +628,67 @@ def test_prepare_security_revocation_operation_revalidates_and_persists_intent(t
         database.close()
 
 
+def test_security_revoked_printed_voucher_can_later_be_minimized_locally(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="revoked-then-retained",
+            code="2121212121",
+            created_at=OLD,
+            imported_at=OLD,
+            expires_at=None,
+            expired=False,
+            present=False,
+        )
+        database.record_print_audit(
+            controller_id=controller,
+            audit_id="revoked-retention-print",
+            codes=["21212-12121"],
+            output_file="revoked.pdf",
+            document_copies=1,
+            printed_at="2026-01-02T08:00:00+00:00",
+            windows_user="operator",
+        )
+        revoked_at = "2026-02-01T08:00:00+00:00"
+        with database.transaction() as db:
+            db.execute(
+                """UPDATE vouchers
+                   SET revoked_for_security_at=?, last_synced_at=?,
+                       present_on_controller=0
+                   WHERE id=?""",
+                (revoked_at, revoked_at, voucher_id),
+            )
+
+        candidates = reviewable_retention_candidates(
+            database,
+            history=_history(generated_codes={"2121212121"}),
+            settings={},
+            now=NOW,
+        )
+        assert [item.voucher_id for item in candidates] == [voucher_id]
+
+        result = archive_retention_candidates(
+            database,
+            voucher_ids=[voucher_id],
+            archived_at=NOW,
+            windows_user="operator",
+            history=_history(generated_codes={"2121212121"}),
+            settings={},
+        )
+        assert result.archived_ids == (voucher_id,)
+        row = database.connection.execute(
+            "SELECT code, revoked_for_security_at, archived_at FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["code"] == f"ARCHIVED-{voucher_id}"
+        assert row["revoked_for_security_at"] == revoked_at
+        assert row["archived_at"] == NOW
+    finally:
+        database.close()
+
+
 def test_retention_intro_marker_is_installation_scoped(tmp_path):
     database, _controller = _database(tmp_path)
     try:
