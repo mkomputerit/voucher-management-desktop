@@ -269,6 +269,34 @@ def test_codes_for_output_marks_every_linked_voucher_and_keeps_multiplicity(tmp_
     assert linked == [code_a, code_b, code_b]
 
 
+def test_codes_for_output_rejects_partial_hmac_resolution(tmp_path):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    output = tmp_path / "Print" / "Voucher_Group.pdf"
+    code_a = "11111-22222"
+    code_b = "33333-44444"
+    history.record_batch(
+        VoucherBatch(
+            tmp_path / "source.pdf",
+            [
+                VoucherRecord(code_a, recipient="A"),
+                VoucherRecord(code_b, recipient="B"),
+            ],
+            recipient="Group",
+        ),
+        output,
+        settings,
+        reprint=False,
+    )
+
+    with pytest.raises(HistoryError, match="audit parziale"):
+        history.codes_for_output(
+            [code_a],
+            output,
+            settings,
+        )
+
+
 def test_generated_output_names_are_audited_and_portable(tmp_path):
     settings_store, history = make_history(tmp_path)
     settings = settings_store.load()
