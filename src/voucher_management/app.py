@@ -678,11 +678,16 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                             "pending_create_reporting.json"
                         ),
                     )
-                    reconcile_pending_create_reporting_to_path(
+                    marker_was_pending = Path(marker_path).exists()
+                    reconciled = reconcile_pending_create_reporting_to_path(
                         database_path,
                         marker_path,
                         controller_id=resolved_controller_id,
                     )
+                    if marker_was_pending and not reconciled:
+                        raise RuntimeError(
+                            "Pending create reporting marker is not reconciled"
+                        )
             except Exception as exc:
                 archive_error = exc
             return snapshot, archive_error, resolved_controller_id
