@@ -926,11 +926,6 @@ def test_history_import_prepare_confirm_apply_are_split_across_workers(
     )
     monkeypatch.setattr(
         maintenance_ui,
-        "clear_history_print_reconciliation_pending_to_path",
-        lambda path: calls.append(("clear", Path(path))),
-    )
-    monkeypatch.setattr(
-        maintenance_ui,
         "reconcile_history_print_audits_to_path",
         lambda path, history, force=False: (
             calls.append(("reconcile", Path(path), force))
