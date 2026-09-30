@@ -1247,6 +1247,113 @@ COMMIT;
             raise RuntimeError("Voucher locale non disponibile dopo l'aggiornamento.")
         return updated
 
+    def update_voucher_local_classification_batch(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+        is_nominal: bool | None,
+        updated_at: str,
+        windows_user: str,
+    ) -> tuple[VoucherLocalMetadata, ...]:
+        """Atomically classify multiple vouchers without changing recipient/notes."""
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        if not ids:
+            return ()
+        if type(is_nominal) is not bool and is_nominal is not None:
+            raise ValueError("is_nominal must be true, false or null")
+        stamp = str(updated_at or "").strip()
+        operator = str(windows_user or "").strip()
+        if not stamp or not operator:
+            raise ValueError("updated_at and windows_user are required")
+
+        placeholders = ",".join("?" for _ in ids)
+        nominal_value = None if is_nominal is None else int(is_nominal)
+        with self.transaction() as db:
+            rows = db.execute(
+                f"""SELECT id, unifi_id, assigned_to, is_nominal,
+                           nominality_redacted, present_on_controller, archived_at
+                    FROM vouchers
+                    WHERE controller_id=? AND unifi_id IN ({placeholders})""",
+                (int(controller_id), *ids),
+            ).fetchall()
+            by_remote = {str(row["unifi_id"]): row for row in rows}
+            missing = [remote_id for remote_id in ids if remote_id not in by_remote]
+            if missing:
+                raise RuntimeError(
+                    "Alcuni voucher locali non sono disponibili. Sincronizzare con UniFi."
+                )
+            inactive = [
+                remote_id
+                for remote_id in ids
+                if (
+                    not bool(by_remote[remote_id]["present_on_controller"])
+                    or by_remote[remote_id]["archived_at"] is not None
+                )
+            ]
+            if inactive:
+                raise RuntimeError(
+                    "Alcuni voucher non sono più attivi nello snapshot UniFi locale. "
+                    "Sincronizzare prima di modificare i dati locali."
+                )
+            if is_nominal is True:
+                without_recipient = [
+                    remote_id
+                    for remote_id in ids
+                    if not str(by_remote[remote_id]["assigned_to"] or "").strip()
+                ]
+                if without_recipient:
+                    raise ValueError(
+                        "Per classificare più voucher come nominali, ciascuno deve "
+                        "avere già un destinatario locale."
+                    )
+
+            for remote_id in ids:
+                row = by_remote[remote_id]
+                changed = (
+                    row["is_nominal"] != nominal_value
+                    or bool(row["nominality_redacted"])
+                )
+                if not changed:
+                    continue
+                db.execute(
+                    """UPDATE vouchers
+                       SET is_nominal=?, nominality_redacted=0
+                       WHERE id=?""",
+                    (nominal_value, int(row["id"])),
+                )
+                db.execute(
+                    """INSERT INTO voucher_events
+                       (event_uuid, voucher_id, event_type, occurred_at,
+                        source, windows_user, details_json)
+                       VALUES (?, ?, 'LOCAL_METADATA_UPDATED', ?, 'OPERATOR', ?, ?)""",
+                    (
+                        str(uuid4()),
+                        int(row["id"]),
+                        stamp,
+                        operator,
+                        self.encode_event_details({"fields": ["is_nominal"]}),
+                    ),
+                )
+
+        return tuple(
+            metadata
+            for remote_id in ids
+            if (
+                metadata := self.voucher_local_metadata(
+                    controller_id=int(controller_id),
+                    unifi_id=remote_id,
+                )
+            ) is not None
+        )
+
     def print_summary(self, voucher_id: int) -> PrintAuditSummary:
         """Return immutable print totals used before allowing a duplicate."""
 
