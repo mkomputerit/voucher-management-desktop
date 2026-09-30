@@ -161,7 +161,13 @@ class RetentionReviewDialog(tk.Toplevel):
             text="Usati: protetti  •  Stampati: protetti",
         ).pack(side="right")
 
-        columns = ("controller", "recipient", "basis", "lastsync")
+        columns = (
+            "controller",
+            "unifi_description",
+            "local_recipient",
+            "basis",
+            "lastsync",
+        )
         self.tree = ttk.Treeview(
             shell,
             columns=columns,
@@ -169,11 +175,13 @@ class RetentionReviewDialog(tk.Toplevel):
             selectmode="extended",
         )
         self.tree.heading("controller", text="Controller")
-        self.tree.heading("recipient", text="Destinatario")
+        self.tree.heading("unifi_description", text="Descrizione UniFi")
+        self.tree.heading("local_recipient", text="Destinatario locale")
         self.tree.heading("basis", text="Data di riferimento")
         self.tree.heading("lastsync", text="Ultima presenza osservata")
         self.tree.column("controller", width=190)
-        self.tree.column("recipient", width=260)
+        self.tree.column("unifi_description", width=240)
+        self.tree.column("local_recipient", width=220)
         self.tree.column("basis", width=150, anchor="center")
         self.tree.column("lastsync", width=170, anchor="center")
         self.tree.pack(fill="both", expand=True)
@@ -234,7 +242,8 @@ class RetentionReviewDialog(tk.Toplevel):
                 iid=str(candidate.voucher_id),
                 values=(
                     candidate.controller_name,
-                    candidate.recipient or "—",
+                    candidate.controller_description or "—",
+                    candidate.assigned_to or "—",
                     _display_time(candidate.age_basis),
                     _display_time(candidate.last_seen_at),
                 ),
