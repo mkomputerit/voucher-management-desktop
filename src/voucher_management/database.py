@@ -364,6 +364,16 @@ class ReportPrintJobTotals:
 
 
 @dataclass(frozen=True)
+class VoucherDeletionSafety:
+    """Durable lifecycle facts required before controller-side deletion."""
+
+    voucher_id: int
+    unifi_id: str
+    usage_observed: bool
+    ever_used: bool
+
+
+@dataclass(frozen=True)
 class VoucherLocalMetadata:
     """Operator-owned voucher facts that must never be written back to UniFi."""
 
@@ -966,6 +976,41 @@ COMMIT;
             return write(connection)
         with self.transaction() as db:
             return write(db)
+
+    def deletion_safety_facts(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+    ) -> dict[str, VoucherDeletionSafety]:
+        """Return durable facts that make destructive cleanup fail closed."""
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.connection.execute(
+            f"""SELECT id, unifi_id, usage_observed, ever_used
+                FROM vouchers
+                WHERE controller_id=?
+                  AND unifi_id IN ({placeholders})""",
+            (int(controller_id), *ids),
+        ).fetchall()
+        return {
+            str(row["unifi_id"]): VoucherDeletionSafety(
+                voucher_id=int(row["id"]),
+                unifi_id=str(row["unifi_id"]),
+                usage_observed=bool(row["usage_observed"]),
+                ever_used=bool(row["ever_used"]),
+            )
+            for row in rows
+        }
 
     def historically_used_remote_ids(
         self,
