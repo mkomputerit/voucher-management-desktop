@@ -300,11 +300,12 @@ def security_revocation_candidates(
     cutoff = (
         moment - timedelta(days=policy.printed_unused_revoke_days)
     ).isoformat()
-    params: list[object] = [moment.isoformat(), cutoff]
+    params: list[object] = [moment.isoformat()]
     controller_clause = ""
     if controller_id is not None:
         controller_clause = "AND v.controller_id=?"
         params.append(int(controller_id))
+    params.append(cutoff)
 
     rows = database.connection.execute(
         f"""SELECT
