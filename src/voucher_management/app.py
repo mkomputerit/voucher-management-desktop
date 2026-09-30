@@ -716,10 +716,12 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                         marker_path,
                         controller_id=resolved_controller_id,
                     )
-                    reconcile_history_print_audits_to_path(
-                        database_path,
-                        self.history,
-                    )
+                    history = getattr(self, "history", None)
+                    if history is not None:
+                        reconcile_history_print_audits_to_path(
+                            database_path,
+                            history,
+                        )
             except Exception as exc:
                 archive_error = exc
             return snapshot, archive_error, resolved_controller_id
