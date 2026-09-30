@@ -1012,3 +1012,48 @@ def test_usage_unknown_remote_ids_are_exposed_for_delete_policy(tmp_path):
         ) == frozenset({"unknown-usage"})
     finally:
         db.close()
+
+
+def test_historically_printed_remote_ids_uses_sqlite_print_audit(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="Sala",
+            api_root="https://controller.example",
+            created_at="2026-09-30T08:00:00+00:00",
+        )
+        printed = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="printed-id",
+            code="1212121212",
+            imported_at="2026-09-30T08:00:00+00:00",
+            last_synced_at="2026-09-30T08:00:00+00:00",
+        )
+        db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="clean-id",
+            code="3434343434",
+            imported_at="2026-09-30T08:00:00+00:00",
+            last_synced_at="2026-09-30T08:00:00+00:00",
+        )
+        job = db.connection.execute(
+            """INSERT INTO print_jobs
+               (print_job_uuid, created_at, submitted_at, windows_user,
+                document_copies, status)
+               VALUES ('delete-safety-print', 't', 't', 'operator', 1, 'AUDITED')"""
+        )
+        db.connection.execute(
+            """INSERT INTO voucher_prints
+               (print_job_id, voucher_id, printed_at, windows_user,
+                physical_copies, print_sequence, is_reprint)
+               VALUES (?, ?, 't', 'operator', 1, 1, 0)""",
+            (job.lastrowid, printed),
+        )
+        db.connection.commit()
+
+        assert db.historically_printed_remote_ids(
+            controller_id=controller,
+            unifi_ids=["printed-id", "clean-id"],
+        ) == frozenset({"printed-id"})
+    finally:
+        db.close()
