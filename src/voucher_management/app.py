@@ -23,6 +23,7 @@ from tkinter import messagebox
 from . import __version__
 from .background_tasks import BackgroundResult, start_background_task
 from .create_reporting_recovery import (
+    clear_pending_create_reporting,
     reconcile_pending_create_reporting,
     reconcile_pending_create_reporting_to_path,
 )
@@ -185,26 +186,45 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             int(self.settings.get("log_retention_days", 30)),
         )
         try:
-            if reconcile_pending_create_reporting(
-                self.database,
-                self.paths.pending_create_reporting,
-            ):
-                self.logger.info("create_reporting_reconciled_on_startup")
-            if (
-                self.create_guard.has_reporting_recovery
-                and reconcile_pending_create_reporting(
-                    self.database,
-                    self.create_guard.path,
-                )
-            ):
-                self.logger.info(
-                    "create_reporting_guard_reconciled_on_startup"
-                )
+            guard_recovery = self.create_guard.has_reporting_recovery
         except Exception as exc:
+            guard_recovery = False
             self.logger.error(
-                "create_reporting_startup_reconcile_failed type=%s",
+                "create_guard_recovery_probe_failed type=%s",
                 type(exc).__name__,
             )
+
+        if guard_recovery:
+            try:
+                if reconcile_pending_create_reporting(
+                    self.database,
+                    self.create_guard.path,
+                ):
+                    clear_pending_create_reporting(
+                        self.paths.pending_create_reporting
+                    )
+                    self.logger.info(
+                        "create_reporting_guard_reconciled_on_startup"
+                    )
+            except Exception as exc:
+                self.logger.error(
+                    "create_reporting_guard_reconcile_failed type=%s",
+                    type(exc).__name__,
+                )
+        else:
+            try:
+                if reconcile_pending_create_reporting(
+                    self.database,
+                    self.paths.pending_create_reporting,
+                ):
+                    self.logger.info(
+                        "create_reporting_reconciled_on_startup"
+                    )
+            except Exception as exc:
+                self.logger.error(
+                    "create_reporting_startup_reconcile_failed type=%s",
+                    type(exc).__name__,
+                )
         self._cleanup_orphan_pdf_temps()
         self._cleanup_orphan_report_temps()
         self.history = HistoryService(
@@ -693,16 +713,18 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                         self.create_guard.has_reporting_recovery
                     )
                     reconciled = False
-                    if marker_was_pending:
-                        reconciled = reconcile_pending_create_reporting_to_path(
-                            database_path,
-                            marker_path,
-                            controller_id=resolved_controller_id,
-                        )
-                    elif guard_recovery_pending:
+                    if guard_recovery_pending:
                         reconciled = reconcile_pending_create_reporting_to_path(
                             database_path,
                             self.create_guard.path,
+                            controller_id=resolved_controller_id,
+                        )
+                        if reconciled and marker_was_pending:
+                            clear_pending_create_reporting(marker_path)
+                    elif marker_was_pending:
+                        reconciled = reconcile_pending_create_reporting_to_path(
+                            database_path,
+                            marker_path,
                             controller_id=resolved_controller_id,
                         )
                     if (
