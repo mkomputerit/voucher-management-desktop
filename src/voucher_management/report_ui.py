@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 from .report_render import render_report_csv, render_report_pdf
 from .report_temp import create_report_temporary_directory
 from .reporting import ReportKind, build_report_dataset_from_path
+from .history_sqlite_reconciliation import HistorySqliteReconciliationError
 
 
 REPORT_CHOICES = (
@@ -297,9 +298,14 @@ class ReportDialog(tk.Toplevel):
                 "report_generation_failed type=%s",
                 type(exc).__name__,
             )
+            detail = (
+                str(exc)
+                if isinstance(exc, HistorySqliteReconciliationError)
+                else "Creazione del report non riuscita."
+            )
             messagebox.showerror(
                 "Report",
-                "Creazione del report non riuscita.",
+                detail,
                 parent=self,
             )
 
