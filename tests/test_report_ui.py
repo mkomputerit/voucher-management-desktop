@@ -170,3 +170,37 @@ def test_guide_covers_every_report_kind():
     from voucher_management.report_guide import REPORT_GUIDE
     assert set(REPORT_GUIDE) == set(ReportKind)
     assert all(question and description for question, description in REPORT_GUIDE.values())
+
+
+def test_pdf_report_generation_uses_marked_temp_helper(monkeypatch, tmp_path):
+    calls = []
+    temp_root = tmp_path / "marked-report-temp"
+    temp_root.mkdir()
+    temporary = SimpleNamespace(
+        name=str(temp_root),
+        cleanup=lambda: calls.append("cleanup"),
+    )
+    monkeypatch.setattr(
+        report_ui,
+        "create_report_temporary_directory",
+        lambda: calls.append("create") or temporary,
+    )
+
+    app = SimpleNamespace(
+        active_controller_id=None,
+        paths=SimpleNamespace(database=tmp_path / "voucher_management.db"),
+        settings={},
+        logger=SimpleNamespace(error=lambda *args, **kwargs: None),
+        _run_background_task=lambda *args, **kwargs: False,
+    )
+    dialog = SimpleNamespace(
+        app=app,
+        kind_var=_variable("Riepilogo storico"),
+        scope_var=_variable("Tutto lo storico locale"),
+        format_var=_variable("PDF"),
+        _set_busy=lambda busy: None,
+    )
+
+    ReportDialog._generate(dialog)
+
+    assert calls == ["create", "cleanup"]
