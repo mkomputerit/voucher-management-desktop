@@ -203,20 +203,25 @@ class VoucherCreationMixin:
                 )
                 return
 
-            try:
-                self.create_guard.clear()
-            except CreateMutationGuardError as exc:
-                self.logger.warning(
-                    "create_guard_clear_failed type=%s",
-                    type(exc).__name__,
-                )
-                messagebox.showwarning(
-                    "Voucher creati",
-                    "La creazione è stata completata, ma il blocco "
-                    "anti-ripetizione non può essere rimosso automaticamente. "
-                    "Eseguire Aggiorna prima di una nuova creazione.",
-                    parent=self,
-                )
+            keep_create_guard = bool(
+                getattr(outcome, "local_persistence_error", None) is not None
+                and getattr(outcome, "recovery_marker_error", None) is not None
+            )
+            if not keep_create_guard:
+                try:
+                    self.create_guard.clear()
+                except CreateMutationGuardError as exc:
+                    self.logger.warning(
+                        "create_guard_clear_failed type=%s",
+                        type(exc).__name__,
+                    )
+                    messagebox.showwarning(
+                        "Voucher creati",
+                        "La creazione è stata completata, ma il blocco "
+                        "anti-ripetizione non può essere rimosso automaticamente. "
+                        "Eseguire Aggiorna prima di una nuova creazione.",
+                        parent=self,
+                    )
 
             self.checked_ids = {
                 voucher.id
