@@ -701,3 +701,15 @@ def test_resolve_existing_pdf_reports_no_recorded_document(tmp_path):
         )
 
     assert captured.value.reason == "not_recorded"
+
+
+def test_delete_policy_fails_closed_when_usage_provenance_is_unknown():
+    current = voucher("v-unknown", "9898989898", used=0, status="VALID_MULTI")
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        usage_unknown_ids=frozenset({"v-unknown"}),
+    )
+
+    assert len(blocked) == 1
+    assert blocked[0].policy.reason == "usage_unknown"
