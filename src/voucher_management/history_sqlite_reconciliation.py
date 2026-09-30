@@ -146,6 +146,17 @@ def _build_plans(
 
     plans: list[_JobPlan] = []
     for audit_id, job_rows in grouped.items():
+        # A SQLite print job is transactionally complete: print_jobs and all
+        # voucher_prints rows commit together. Existing stable audit IDs need
+        # no HMAC remapping and must not become ambiguous merely because a
+        # different controller later happens to reuse the same voucher code.
+        existing_job = database.connection.execute(
+            "SELECT 1 FROM print_jobs WHERE print_job_uuid=?",
+            (audit_id,),
+        ).fetchone()
+        if existing_job is not None:
+            continue
+
         first = job_rows[0]
         printed_at = str(first.get("timestamp", "") or "").strip()
         output_file = str(first.get("output_file", "") or "").strip()
@@ -238,15 +249,6 @@ def reconcile_history_print_audits(
 
     materialized = 0
     for plan in plans:
-        existing = database.connection.execute(
-            "SELECT windows_user FROM print_jobs WHERE print_job_uuid=?",
-            (plan.audit_id,),
-        ).fetchone()
-        operator = (
-            str(existing["windows_user"])
-            if existing is not None
-            else IMPORTED_OPERATOR
-        )
         database.record_print_audit(
             controller_id=plan.controller_id,
             audit_id=plan.audit_id,
@@ -254,10 +256,9 @@ def reconcile_history_print_audits(
             output_file=plan.output_file,
             document_copies=plan.document_copies,
             printed_at=plan.printed_at,
-            windows_user=operator,
+            windows_user=IMPORTED_OPERATOR,
         )
-        if existing is None:
-            materialized += 1
+        materialized += 1
 
     database.set_metadata_value(
         VERSION_KEY,
