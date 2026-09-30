@@ -1109,10 +1109,34 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             return
 
         voucher = selected[0]
+        all_known_vouchers = self.vouchers
+        if self.active_controller_id is not None:
+            try:
+                # Archived PDFs may contain vouchers that are no longer in the
+                # live UniFi snapshot. Resolve HMAC linkage against the durable
+                # local controller history so a physical reprint audits every
+                # credential actually present in the document.
+                all_known_vouchers = load_local_vouchers(
+                    self.database,
+                    controller_id=self.active_controller_id,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "pdf_history_candidate_load_failed type=%s",
+                    type(exc).__name__,
+                )
+                messagebox.showerror(
+                    "Apri PDF",
+                    "Impossibile verificare tutti i voucher storicamente "
+                    "collegati al PDF. L'apertura viene sospesa per evitare "
+                    "un audit di ristampa incompleto.",
+                    parent=self,
+                )
+                return
         try:
             resolved = resolve_existing_pdf(
                 voucher,
-                self.vouchers,
+                all_known_vouchers,
                 history=self.history,
                 settings=self.settings,
                 prints_root=self.paths.prints,
