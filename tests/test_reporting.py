@@ -1278,3 +1278,42 @@ def test_archived_report_defensively_hides_stale_personal_text(tmp_path):
         assert row.controller_description == ""
     finally:
         db.close()
+
+
+def test_filtered_report_freshness_uses_only_exported_rows_when_nonempty(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        old_unclassified = _voucher(
+            db,
+            controller,
+            "old-unclassified",
+            "1212121212",
+            synced_at="2026-09-10T08:00:00+00:00",
+        )
+        recent_nominal = _voucher(
+            db,
+            controller,
+            "recent-nominal",
+            "3434343434",
+            synced_at="2026-09-29T09:30:00+00:00",
+        )
+        db.mark_application_created_vouchers(
+            controller_id=controller,
+            unifi_ids=["recent-nominal"],
+            is_nominal=True,
+        )
+
+        report = build_report_dataset(
+            db,
+            kind=ReportKind.NOMINAL,
+            generated_at=NOW,
+        )
+
+        assert [row.voucher_id for row in report.rows] == [recent_nominal]
+        assert old_unclassified not in {
+            row.voucher_id for row in report.rows
+        }
+        assert report.data_from == "2026-09-29T09:30:00+00:00"
+        assert report.data_as_of == "2026-09-29T09:30:00+00:00"
+    finally:
+        db.close()
