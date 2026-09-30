@@ -1287,3 +1287,132 @@ def test_backup_audit_writer_uses_basename_and_verified_metadata():
     assert calls[0]["status"] == "SUCCESS"
     assert calls[0]["sha256"] == "a" * 64
     assert calls[0]["error_summary"] is None
+
+
+def test_confirmed_create_keeps_guard_when_sqlite_and_recovery_marker_both_fail(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+
+    class Guard:
+        def __init__(self):
+            self.pending = False
+
+        def begin(self):
+            self.pending = True
+
+        def clear(self):
+            self.pending = False
+            return True
+
+    guard = Guard()
+    created = SimpleNamespace(id="created-hard-failure")
+    fake = SimpleNamespace(
+        client=object(),
+        create_guard=guard,
+        vouchers=[],
+        checked_ids=set(),
+        filter_var=SimpleNamespace(set=lambda value: None),
+        populate=lambda: None,
+        active_controller_id=7,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_reporting=tmp_path / "pending-create-reporting.json",
+        ),
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "CreateDialog",
+        lambda parent: SimpleNamespace(
+            result={"recipient": "Guest", "quantity": 1, "is_nominal": False}
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "create_vouchers_and_refresh",
+        lambda *args, **kwargs: creation_ui.CreateOutcome(
+            created=(created,),
+            vouchers=(created,),
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "write_pending_create_reporting",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("marker unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "persist_create_result_to_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("sqlite unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: None,
+    )
+
+    VoucherApp.create(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert guard.pending is True
+
+
+def test_manual_refresh_keeps_create_guard_when_local_snapshot_persistence_fails(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+
+    class Guard:
+        pending = True
+
+        def clear(self):
+            self.pending = False
+            return True
+
+    guard = Guard()
+    fake = SimpleNamespace(
+        client=object(),
+        active_controller_id=9,
+        paths=SimpleNamespace(database=tmp_path / "db.sqlite"),
+        create_guard=guard,
+        vouchers=[],
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        populate=lambda: None,
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app_module, "refresh_vouchers", lambda current: ["fresh"])
+    monkeypatch.setattr(
+        app_module,
+        "persist_refresh_snapshot_to_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("sqlite unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: None,
+    )
+
+    VoucherApp.refresh(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert guard.pending is True
