@@ -340,7 +340,7 @@ class BackupServiceTests(unittest.TestCase):
         connection = sqlite3.connect(database)
         try:
             connection.execute("CREATE TABLE audit_probe(value TEXT)")
-            connection.execute("PRAGMA user_version = 7")
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             connection.commit()
         finally:
             connection.close()
@@ -356,7 +356,7 @@ class BackupServiceTests(unittest.TestCase):
         self.assertEqual(artifact.path, backup)
         self.assertTrue(artifact.encrypted)
         self.assertEqual(artifact.backup_format, BACKUP_FORMAT)
-        self.assertEqual(artifact.schema_version, 7)
+        self.assertEqual(artifact.schema_version, SCHEMA_VERSION)
         self.assertEqual(
             artifact.sha256,
             hashlib.sha256(backup.read_bytes()).hexdigest(),
