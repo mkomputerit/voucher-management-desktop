@@ -1549,8 +1549,32 @@ COMMIT;
                         ),
                         0
                     ) AS reprint_copies,
-                    COALESCE(MIN(vp.printed_at), '') AS first_printed_at,
-                    COALESCE(MAX(vp.printed_at), '') AS last_printed_at,
+                    COALESCE(
+                        (
+                            SELECT first_vp.printed_at
+                            FROM voucher_prints AS first_vp
+                            WHERE first_vp.voucher_id=v.id
+                            ORDER BY
+                                (julianday(first_vp.printed_at) IS NULL),
+                                julianday(first_vp.printed_at) ASC,
+                                first_vp.id ASC
+                            LIMIT 1
+                        ),
+                        ''
+                    ) AS first_printed_at,
+                    COALESCE(
+                        (
+                            SELECT last_vp.printed_at
+                            FROM voucher_prints AS last_vp
+                            WHERE last_vp.voucher_id=v.id
+                            ORDER BY
+                                (julianday(last_vp.printed_at) IS NULL),
+                                julianday(last_vp.printed_at) DESC,
+                                last_vp.id DESC
+                            LIMIT 1
+                        ),
+                        ''
+                    ) AS last_printed_at,
                     '' AS print_operators
                FROM vouchers AS v
                -- INNER JOIN is intentional. vouchers.controller_id is a
