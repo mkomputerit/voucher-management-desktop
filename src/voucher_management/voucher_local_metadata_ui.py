@@ -342,6 +342,9 @@ class VoucherLocalMetadataMixin:
             )
             return
 
+        # A successfully handled voucher leaves the operational selection.
+        # Other selected vouchers stay selected so batch work is not disrupted.
+        self.checked_ids.discard(voucher.id)
         self.populate()
         refresh_reports = getattr(self, "_refresh_report_summary", None)
         if refresh_reports is not None:
