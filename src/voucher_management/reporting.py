@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Iterable
 
 from .database import Database
-from .history_sqlite_reconciliation import PENDING_KEY
+from .history_sqlite_reconciliation import (
+    PENDING_KEY,
+    HistorySqliteReconciliationError,
+)
 from .report_policy import ReportPurpose, report_code_value, voucher_code_policy
 
 
@@ -463,7 +466,7 @@ def _build_report_dataset_snapshot(
     """
 
     if database.metadata_value(PENDING_KEY) == "1":
-        raise RuntimeError(
+        raise HistorySqliteReconciliationError(
             "La cronologia stampa importata non è ancora riconciliata con "
             "l'archivio report SQLite. Sincronizzare i controller necessari "
             "e riprovare prima di generare report."
