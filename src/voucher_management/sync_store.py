@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 from uuid import uuid4
 
 from .database import Database
+from .identity import LEGACY_BACKUP_API_ROOT_PREFIX
 from .unifi_api import ApiVoucher
 
 
@@ -41,6 +43,273 @@ def _iso_from_epoch(value: int) -> str | None:
     if not value:
         return None
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+
+def _canonical_code(value: object) -> str:
+    return str(value or "").strip().replace("-", "")
+
+
+def _identity_event_uuid(kind: str, target_id: int, source_ids: list[int]) -> str:
+    payload = ",".join(str(value) for value in sorted(source_ids))
+    digest = hashlib.sha256(payload.encode("ascii")).hexdigest()[:20]
+    return f"legacy-identity-{kind}-{int(target_id)}-{digest}"
+
+
+def _record_identity_review_required(
+    database: Database,
+    tx,
+    *,
+    target_id: int,
+    source_ids: list[int],
+    observed_at: str,
+    reason: str,
+) -> None:
+    """Persist a non-PII marker when legacy/live identity cannot be proven."""
+
+    tx.execute(
+        """INSERT OR IGNORE INTO voucher_events
+           (event_uuid, voucher_id, event_type, occurred_at, source,
+            windows_user, details_json)
+           VALUES (?, ?, 'LEGACY_IDENTITY_REVIEW_REQUIRED', ?, 'SYSTEM',
+                   NULL, ?)""",
+        (
+            _identity_event_uuid("review", target_id, source_ids),
+            int(target_id),
+            str(observed_at),
+            database.encode_event_details(
+                {
+                    "reason": str(reason),
+                    "candidate_count": len(source_ids),
+                }
+            ),
+        ),
+    )
+
+
+def _renumber_prints_chronologically(tx, voucher_id: int) -> None:
+    rows = tx.execute(
+        """SELECT vp.id, vp.print_sequence, vp.printed_at, pj.print_job_uuid
+           FROM voucher_prints AS vp
+           JOIN print_jobs AS pj ON pj.id=vp.print_job_id
+           WHERE vp.voucher_id=?
+           ORDER BY
+               (julianday(vp.printed_at) IS NULL),
+               julianday(vp.printed_at) ASC,
+               pj.print_job_uuid,
+               vp.id""",
+        (int(voucher_id),),
+    ).fetchall()
+    if not rows:
+        return
+    maximum = max(int(row["print_sequence"]) for row in rows)
+    offset = maximum + len(rows) + 1
+    tx.execute(
+        """UPDATE voucher_prints
+           SET print_sequence=print_sequence+?
+           WHERE voucher_id=?""",
+        (offset, int(voucher_id)),
+    )
+    for sequence, row in enumerate(rows, start=1):
+        tx.execute(
+            """UPDATE voucher_prints
+               SET print_sequence=?, is_reprint=?
+               WHERE id=?""",
+            (sequence, int(sequence > 1), int(row["id"])),
+        )
+
+
+def _merge_legacy_archive_voucher(
+    database: Database,
+    tx,
+    *,
+    target_id: int,
+    source_id: int,
+    observed_at: str,
+) -> None:
+    """Move one verified synthetic legacy identity onto its live voucher."""
+
+    source = tx.execute(
+        """SELECT id, name, assigned_to
+           FROM vouchers WHERE id=?""",
+        (int(source_id),),
+    ).fetchone()
+    if source is None:
+        return
+
+    source_prints = tx.execute(
+        """SELECT id, print_job_id, printed_at, physical_copies
+           FROM voucher_prints
+           WHERE voucher_id=?
+           ORDER BY id""",
+        (int(source_id),),
+    ).fetchall()
+    for row in source_prints:
+        duplicate = tx.execute(
+            """SELECT id, printed_at, physical_copies
+               FROM voucher_prints
+               WHERE voucher_id=? AND print_job_id=?""",
+            (int(target_id), int(row["print_job_id"])),
+        ).fetchone()
+        if duplicate is None:
+            continue
+        if (
+            str(duplicate["printed_at"]) != str(row["printed_at"])
+            or int(duplicate["physical_copies"]) != int(row["physical_copies"])
+        ):
+            raise RuntimeError(
+                "Conflicting legacy/live print evidence for the same print job"
+            )
+        tx.execute(
+            "DELETE FROM voucher_prints WHERE id=?",
+            (int(row["id"]),),
+        )
+
+    remaining = tx.execute(
+        """SELECT COALESCE(MAX(print_sequence), 0)
+           FROM voucher_prints WHERE voucher_id=?""",
+        (int(target_id),),
+    ).fetchone()[0]
+    if int(remaining) < 0:
+        raise RuntimeError("Invalid target print sequence")
+    tx.execute(
+        """UPDATE voucher_prints
+           SET print_sequence=print_sequence+?
+           WHERE voucher_id=?""",
+        (int(remaining), int(source_id)),
+    )
+    tx.execute(
+        "UPDATE voucher_prints SET voucher_id=? WHERE voucher_id=?",
+        (int(target_id), int(source_id)),
+    )
+    _renumber_prints_chronologically(tx, int(target_id))
+
+    tx.execute(
+        "UPDATE voucher_events SET voucher_id=? WHERE voucher_id=?",
+        (int(target_id), int(source_id)),
+    )
+    tx.execute(
+        "UPDATE legacy_audit_events SET voucher_id=? WHERE voucher_id=?",
+        (int(target_id), int(source_id)),
+    )
+    tx.execute(
+        "UPDATE voucher_sync_observations SET voucher_id=? WHERE voucher_id=?",
+        (int(target_id), int(source_id)),
+    )
+
+    legacy_recipient = (
+        str(source["assigned_to"] or "").strip()
+        or str(source["name"] or "").strip()
+    )
+    if legacy_recipient:
+        tx.execute(
+            """UPDATE vouchers
+               SET assigned_to=CASE
+                   WHEN TRIM(assigned_to)='' THEN ?
+                   ELSE assigned_to
+               END
+               WHERE id=?""",
+            (legacy_recipient, int(target_id)),
+        )
+
+    tx.execute(
+        """INSERT OR IGNORE INTO voucher_events
+           (event_uuid, voucher_id, event_type, occurred_at, source,
+            windows_user, details_json)
+           VALUES (?, ?, 'LEGACY_IDENTITY_CONSOLIDATED', ?, 'MIGRATION',
+                   NULL, ?)""",
+        (
+            _identity_event_uuid("merge", target_id, [source_id]),
+            int(target_id),
+            str(observed_at),
+            database.encode_event_details(
+                {
+                    "source_voucher_id": int(source_id),
+                    "method": "unique_code_same_installation",
+                }
+            ),
+        ),
+    )
+    tx.execute("DELETE FROM vouchers WHERE id=?", (int(source_id),))
+
+
+def _consolidate_legacy_identity_for_live_voucher(
+    database: Database,
+    tx,
+    *,
+    controller_id: int,
+    target_id: int,
+    code: str,
+    observed_at: str,
+) -> None:
+    """Consolidate one uniquely matched pre-SQLite placeholder into live state."""
+
+    canonical = _canonical_code(code)
+    if not canonical:
+        return
+
+    live_matches = tx.execute(
+        f"""SELECT v.id
+            FROM vouchers AS v
+            JOIN controllers AS c ON c.id=v.controller_id
+            WHERE REPLACE(v.code, '-', '')=?
+              AND c.api_root NOT LIKE ?
+            ORDER BY v.id""",
+        (canonical, f"{LEGACY_BACKUP_API_ROOT_PREFIX}%"),
+    ).fetchall()
+    live_ids = [int(row["id"]) for row in live_matches]
+    if live_ids != [int(target_id)]:
+        sources = tx.execute(
+            f"""SELECT v.id
+                FROM vouchers AS v
+                JOIN controllers AS c ON c.id=v.controller_id
+                WHERE REPLACE(v.code, '-', '')=?
+                  AND c.api_root LIKE ?
+                  AND v.archived_at IS NULL
+                ORDER BY v.id""",
+            (canonical, f"{LEGACY_BACKUP_API_ROOT_PREFIX}%"),
+        ).fetchall()
+        if sources:
+            _record_identity_review_required(
+                database,
+                tx,
+                target_id=int(target_id),
+                source_ids=[int(row["id"]) for row in sources],
+                observed_at=observed_at,
+                reason="multiple_live_identities",
+            )
+        return
+
+    sources = tx.execute(
+        f"""SELECT v.id
+            FROM vouchers AS v
+            JOIN controllers AS c ON c.id=v.controller_id
+            WHERE REPLACE(v.code, '-', '')=?
+              AND c.api_root LIKE ?
+              AND v.archived_at IS NULL
+            ORDER BY v.id""",
+        (canonical, f"{LEGACY_BACKUP_API_ROOT_PREFIX}%"),
+    ).fetchall()
+    source_ids = [int(row["id"]) for row in sources]
+    if not source_ids:
+        return
+    if len(source_ids) != 1:
+        _record_identity_review_required(
+            database,
+            tx,
+            target_id=int(target_id),
+            source_ids=source_ids,
+            observed_at=observed_at,
+            reason="multiple_legacy_identities",
+        )
+        return
+
+    _merge_legacy_archive_voucher(
+        database,
+        tx,
+        target_id=int(target_id),
+        source_id=source_ids[0],
+        observed_at=observed_at,
+    )
 
 
 def persist_successful_snapshot(
@@ -75,6 +344,7 @@ def persist_successful_snapshot(
 
     changes: list[tuple[int, str, object, object]] = []
     seen_remote_ids: set[str] = set()
+    live_voucher_ids: dict[str, int] = {}
 
     with database.transaction() as tx:
         tx.execute(
@@ -107,6 +377,7 @@ def persist_successful_snapshot(
                 last_synced_at=observed_at,
                 connection=tx,
             )
+            live_voucher_ids[str(voucher.id)] = int(voucher_id)
             if old is None:
                 continue
 
@@ -122,6 +393,19 @@ def persist_successful_snapshot(
                 new_value = current[field]
                 if old_value != new_value:
                     changes.append((voucher_id, field, old_value, new_value))
+
+        for voucher in vouchers:
+            target_id = live_voucher_ids.get(str(voucher.id))
+            if target_id is None:
+                raise RuntimeError("Live voucher identity missing after upsert")
+            _consolidate_legacy_identity_for_live_voucher(
+                database,
+                tx,
+                controller_id=int(controller_id),
+                target_id=target_id,
+                code=voucher.code,
+                observed_at=observed_at,
+            )
 
         if application_created_ids:
             if application_created_is_nominal is None:
