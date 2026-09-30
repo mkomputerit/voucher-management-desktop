@@ -115,7 +115,7 @@ def test_ambiguous_hmac_mapping_keeps_reports_fail_closed(tmp_path):
             Path("Voucher_Ambiguous.pdf"),
             1,
             settings_store.load(),
-            audit_id="ambiguous1234",
+            audit_id="aabbccdd1234",
             submitted_at=NOW,
         )
 
@@ -155,12 +155,12 @@ def test_existing_sqlite_job_does_not_become_ambiguous_after_code_reuse(tmp_path
             Path("Voucher_Existing.pdf"),
             1,
             settings_store.load(),
-            audit_id="existing1234",
+            audit_id="eeff00111234",
             submitted_at=NOW,
         )
         database.record_print_audit(
             controller_id=first,
-            audit_id="existing1234",
+            audit_id="eeff00111234",
             codes=["12345-67890"],
             output_file="Voucher_Existing.pdf",
             document_copies=1,
