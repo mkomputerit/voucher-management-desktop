@@ -1086,10 +1086,36 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             return
 
         voucher = selected[0]
+        candidates_by_id = {
+            str(item.id): item for item in self.vouchers
+        }
+        controller_id = getattr(self, "active_controller_id", None)
+        if controller_id is not None:
+            try:
+                durable_candidates = load_local_vouchers(
+                    self.database,
+                    controller_id=int(controller_id),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "historical_pdf_candidates_failed type=%s",
+                    type(exc).__name__,
+                )
+                messagebox.showerror(
+                    "Apri PDF",
+                    "Impossibile verificare tutti i voucher storicamente "
+                    "collegabili al PDF. L'anteprima viene sospesa per evitare "
+                    "una ristampa con audit incompleto.",
+                    parent=self,
+                )
+                return
+            for item in durable_candidates:
+                candidates_by_id.setdefault(str(item.id), item)
+
         try:
             resolved = resolve_existing_pdf(
                 voucher,
-                self.vouchers,
+                list(candidates_by_id.values()),
                 history=self.history,
                 settings=self.settings,
                 prints_root=self.paths.prints,
