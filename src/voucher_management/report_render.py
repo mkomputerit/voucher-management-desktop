@@ -129,7 +129,7 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
             "Job stampa",
             "Copie voucher",
             "Job ristampa",
-            "Operatori",
+            "Operatore stampa",
             "Stato",
         ]
     )
@@ -153,7 +153,7 @@ _DETAIL_COLUMN_WEIGHTS = {
     "Job stampa": 0.44,
     "Copie voucher": 0.46,
     "Job ristampa": 0.46,
-    "Operatori": 0.72,
+    "Operatore stampa": 0.72,
     "Stato": 0.56,
 }
 
