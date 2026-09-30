@@ -36,4 +36,10 @@ def evaluate_delete_policy(
     if stats and stats.print_jobs > 0:
         return DeletePolicyResult(False, "printed")
 
+    # PDF generation already emits the reusable clear credential. Even before
+    # a physical print is audited, deleting that voucher from UniFi would leave
+    # an issued document carrying a credential that this tool just revoked.
+    if stats and stats.generated_documents > 0:
+        return DeletePolicyResult(False, "generated")
+
     return DeletePolicyResult(True)
