@@ -4,19 +4,25 @@ from __future__ import annotations
 
 import tkinter as tk
 from datetime import datetime, timezone
+from pathlib import Path
 from tkinter import messagebox, ttk
+from uuid import uuid4
 
+from .database import Database
 from .history import HistoryError
 from .retention import (
-    ensure_retention_policy,
+    configure_retention_policy,
     load_retention_policy,
     mark_retention_intro_seen,
     retention_intro_seen,
+    retention_policy_configured,
     reviewable_retention_candidates,
-    update_retention_days,
+    security_revocation_candidates,
+    prepare_security_revocation_operation,
     archive_retention_candidates,
 )
-from .sync_store import load_local_vouchers
+from .sync_store import load_local_vouchers, persist_refresh_snapshot_to_path
+from .workflows import delete_vouchers_and_refresh
 
 
 def _display_time(value: str) -> str:
@@ -116,8 +122,16 @@ class RetentionReviewDialog(tk.Toplevel):
         self.geometry("900x560")
         self.minsize(760, 480)
 
-        policy = load_retention_policy(app.database)
-        self.days = tk.StringVar(value=str(policy.unused_unprinted_days))
+        try:
+            policy = load_retention_policy(app.database)
+        except RuntimeError:
+            policy = None
+        self.days = tk.StringVar(
+            value="" if policy is None else str(policy.unused_unprinted_days)
+        )
+        self.revoke_days = tk.StringVar(
+            value="" if policy is None else str(policy.printed_unused_revoke_days)
+        )
         self.status = tk.StringVar()
 
         shell = ttk.Frame(self, padding=18)
