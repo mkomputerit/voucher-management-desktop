@@ -93,7 +93,7 @@ class CreateDialog(tk.Toplevel):
         ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
         ttk.Label(frame, text="Utilizzo").grid(
-            row=6,
+            row=5,
             column=0,
             sticky="w",
             pady=4,
@@ -104,19 +104,19 @@ class CreateDialog(tk.Toplevel):
             state="readonly",
             values=("Monouso", "Multiuso", "Multiuso illimitato"),
             width=22,
-        ).grid(row=6, column=1, sticky="w")
+        ).grid(row=5, column=1, sticky="w")
 
         ttk.Label(
             frame,
             text="Numero utilizzi (Multiuso)",
-        ).grid(row=5, column=0, sticky="w", pady=4)
+        ).grid(row=6, column=0, sticky="w", pady=4)
         ttk.Spinbox(
             frame,
             from_=2,
             to=999,
             textvariable=self.quota,
             width=8,
-        ).grid(row=5, column=1, sticky="w")
+        ).grid(row=6, column=1, sticky="w")
 
         ttk.Label(frame, text="Scadenza").grid(
             row=7,
