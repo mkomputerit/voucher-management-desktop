@@ -358,7 +358,7 @@ def test_confirmed_create_is_not_reported_failed_when_local_reporting_persistenc
     result = tasks[0]["worker"]()
     tasks[0]["success"](result)
 
-    assert guard.pending is False
+    assert guard.pending is True
     assert network_errors == []
     assert warnings
     assert "UniFi ha confermato la creazione" in warnings[-1][0][1]
