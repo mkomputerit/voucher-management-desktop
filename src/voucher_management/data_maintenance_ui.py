@@ -19,6 +19,12 @@ from .dialogs import ask_password
 from .backup_options_ui import ask_backup_options, default_backup_directory
 from .history import HistoryError
 from .history_exchange import HistoryExchangeError, HistoryExchangeService
+from .history_sqlite_reconciliation import (
+    HistorySqliteReconciliationError,
+    clear_history_print_reconciliation_pending_to_path,
+    mark_history_print_reconciliation_pending_to_path,
+    reconcile_history_print_audits_to_path,
+)
 from .legacy_backup_import import (
     execute_legacy_backup_import,
     inspect_legacy_backup,
@@ -600,15 +606,37 @@ class DataMaintenanceMixin:
             ):
                 return
 
-            def applied(added) -> None:
+            def applied(result) -> None:
+                added, reconciliation, reconciliation_error = result
                 self.settings = self.settings_store.load()
                 self._history_error_shown = False
                 self.populate()
+                refresh_report = getattr(self, "_refresh_report_summary", None)
+                if refresh_report is not None:
+                    refresh_report()
+
+                if reconciliation_error is not None:
+                    messagebox.showwarning(
+                        "Importa cronologia • report da riconciliare",
+                        "Il merge della cronologia è stato completato, ma le "
+                        "nuove evidenze di stampa non possono ancora essere "
+                        "associate con certezza all'archivio SQLite dei report.\n\n"
+                        "I report restano sospesi per evitare risultati "
+                        "incompleti. Sincronizzare i controller interessati e "
+                        "riprovare; la riconciliazione verrà ritentata "
+                        "automaticamente.\n\n"
+                        f"Dettaglio tecnico: {type(reconciliation_error).__name__}",
+                        parent=parent,
+                    )
+                    return
+
                 messagebox.showinfo(
                     "Importa cronologia",
                     "Merge completato.\n\n"
                     f"Eventi aggiunti: {added}\n"
-                    f"Eventi già presenti: {plan.duplicate_events}",
+                    f"Eventi già presenti: {plan.duplicate_events}\n"
+                    "Job stampa materializzati nei report: "
+                    f"{reconciliation.jobs_materialized}",
                     parent=parent,
                 )
 
@@ -624,12 +652,47 @@ class DataMaintenanceMixin:
                     parent=parent,
                 )
 
+            database_path = Path(self.paths.database)
+
+            def apply_worker():
+                # Mark report data incomplete *before* the file merge. If the
+                # process stops at any later point, report generation fails
+                # closed until startup/sync completes reconciliation.
+                mark_history_print_reconciliation_pending_to_path(
+                    database_path,
+                )
+                try:
+                    added = service.apply_import(
+                        plan,
+                        adopt_identity=plan.can_adopt_identity,
+                    )
+                except Exception:
+                    try:
+                        clear_history_print_reconciliation_pending_to_path(
+                            database_path,
+                        )
+                    except Exception:
+                        # A stale pending marker only blocks reports; that is
+                        # safer than clearing a marker whose state is uncertain.
+                        pass
+                    raise
+
+                try:
+                    reconciliation = reconcile_history_print_audits_to_path(
+                        database_path,
+                        self.history,
+                        force=True,
+                    )
+                    return added, reconciliation, None
+                except Exception as exc:
+                    # The history merge is already durable. Keep the marker so
+                    # reports cannot claim completeness until a later
+                    # startup/sync retries this exact idempotent reconciliation.
+                    return added, None, exc
+
             self._run_background_task(
                 "Merge cronologia…",
-                lambda: service.apply_import(
-                    plan,
-                    adopt_identity=plan.can_adopt_identity,
-                ),
+                apply_worker,
                 applied,
                 apply_failed,
                 busy_scope=self._dialog_busy_scope(parent),
