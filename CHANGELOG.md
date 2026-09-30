@@ -2,6 +2,22 @@
 
 ## 5.1.0 - Unreleased
 
+- Close external-review release blockers: restore work/rollback files now stay
+  inside the operator-writable application data root, and restore rejects SQLite
+  schemas newer than the running application before replacing live data.
+- Keep controller-confirmed creates hard-blocked when both SQLite persistence and
+  the durable reporting-recovery marker fail; an ordinary refresh can no longer
+  silently clear that manual-recovery state.
+- Align destructive voucher cleanup with conservative lifecycle evidence:
+  unknown usage provenance and already-generated voucher PDFs now block deletion
+  from UniFi just like historical use and physical print evidence.
+- Resolve archived PDF reprints against durable local controller history so
+  vouchers no longer present in the live UniFi snapshot are still included in
+  physical-print/reprint audit.
+- Wire marked administrative report temp directories into the real report UI and
+  startup orphan cleanup, and keep UniFi descriptions explicitly distinct from
+  local recipients in retention review.
+
 - Build each report from one stable SQLite read snapshot so filtering, totals,
   personal-detail enrichment and freshness metadata cannot observe different
   database instants.
