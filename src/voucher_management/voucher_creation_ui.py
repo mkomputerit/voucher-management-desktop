@@ -203,9 +203,13 @@ class VoucherCreationMixin:
                 )
                 return
 
-            keep_create_guard = bool(
+            # A reporting marker represents exactly one pending create.
+            # Any SQLite persistence failure must therefore keep the mutation
+            # guard active until a successful refresh reconciles that marker.
+            # Allowing another create here could collide with/erase the single
+            # pending reconciliation record.
+            keep_create_guard = (
                 getattr(outcome, "local_persistence_error", None) is not None
-                and getattr(outcome, "recovery_marker_error", None) is not None
             )
             if not keep_create_guard:
                 try:
