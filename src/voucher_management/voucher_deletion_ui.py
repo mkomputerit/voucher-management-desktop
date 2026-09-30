@@ -92,13 +92,18 @@ class VoucherDeletionMixin:
             return
 
         try:
+            remote_ids = [voucher.id for voucher in current]
             historically_used = database.historically_used_remote_ids(
                 controller_id=controller_id,
-                unifi_ids=[voucher.id for voucher in current],
+                unifi_ids=remote_ids,
+            )
+            historically_printed = database.historically_printed_remote_ids(
+                controller_id=controller_id,
+                unifi_ids=remote_ids,
             )
             usage_unknown = database.usage_unknown_remote_ids(
                 controller_id=controller_id,
-                unifi_ids=[voucher.id for voucher in current],
+                unifi_ids=remote_ids,
             )
         except Exception as exc:
             self.logger.warning(
@@ -116,6 +121,7 @@ class VoucherDeletionMixin:
             current,
             stats,
             historically_used_ids=historically_used,
+            historically_printed_ids=historically_printed,
             usage_unknown_ids=usage_unknown,
         )
         if blocked:
