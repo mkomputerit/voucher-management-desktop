@@ -249,26 +249,172 @@ class VoucherLocalMetadataDialog(tk.Toplevel):
         self.destroy()
 
 
+class VoucherBatchClassificationDialog(tk.Toplevel):
+    """Apply only local nominality to multiple selected vouchers."""
+
+    PLACEHOLDER = "Seleziona classificazione…"
+
+    def __init__(self, parent, *, count: int):
+        super().__init__(parent)
+        self.title("Classifica voucher selezionati")
+        self.transient(parent)
+        self.grab_set()
+        self.resizable(False, False)
+        self.result: bool | None | object = _NO_BATCH_RESULT
+        self.classification_var = tk.StringVar(value=self.PLACEHOLDER)
+
+        shell = ttk.Frame(self, padding=20)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(
+            shell,
+            text=f"Classifica {int(count)} voucher",
+            style="PageTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            shell,
+            text=(
+                "Questa operazione modifica esclusivamente la classificazione "
+                "locale dei voucher selezionati. Destinatari, note e dati UniFi "
+                "restano invariati."
+            ),
+            style="Muted.TLabel",
+            wraplength=520,
+        ).pack(anchor="w", pady=(4, 14))
+
+        row = ttk.Frame(shell)
+        row.pack(fill="x")
+        ttk.Label(row, text="Classificazione").pack(side="left", padx=(0, 12))
+        ttk.Combobox(
+            row,
+            textvariable=self.classification_var,
+            state="readonly",
+            values=CLASSIFICATION_LABELS,
+            width=24,
+        ).pack(side="left")
+
+        ttk.Label(
+            shell,
+            text=(
+                "Per impostare “Nominale”, ogni voucher deve avere già un "
+                "destinatario locale. In caso contrario l'intero batch viene "
+                "rifiutato senza modifiche parziali."
+            ),
+            style="Muted.TLabel",
+            wraplength=520,
+        ).pack(anchor="w", pady=(12, 0))
+
+        footer = ttk.Frame(shell)
+        footer.pack(fill="x", pady=(18, 0))
+        ttk.Button(
+            footer,
+            text="Annulla",
+            command=self.destroy,
+            width=12,
+        ).pack(side="right")
+        ttk.Button(
+            footer,
+            text="Applica",
+            command=self._save,
+            style="Accent.TButton",
+            width=14,
+        ).pack(side="right", padx=(0, 8))
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.update_idletasks()
+        self.geometry(
+            f"{max(560, self.winfo_reqwidth() + 30)}x"
+            f"{max(250, self.winfo_reqheight() + 30)}"
+        )
+
+    def _save(self) -> None:
+        try:
+            self.result = classification_value(self.classification_var.get())
+        except ValueError:
+            messagebox.showerror(
+                "Dati locali",
+                "Selezionare la classificazione da applicare ai voucher.",
+                parent=self,
+            )
+            self.result = _NO_BATCH_RESULT
+            return
+        self.destroy()
+
+
+_NO_BATCH_RESULT = object()
+
+
 class VoucherLocalMetadataMixin:
     """Expose local administrative enrichment without mutating UniFi."""
 
-    def _voucher_for_local_metadata(self):
-        iid = self.tree.focus() if hasattr(self, "tree") else ""
-        voucher = self.by_iid.get(iid) if iid else None
-        if voucher is not None:
-            return voucher
+    def _selected_vouchers_for_local_metadata(self):
         selected_ids = {
             str(value)
             for value in getattr(self, "checked_ids", set())
         }
-        matches = [
-            item for item in getattr(self, "vouchers", [])
+        return [
+            item
+            for item in getattr(self, "vouchers", [])
             if str(item.id) in selected_ids
         ]
-        return matches[0] if len(matches) == 1 else None
+
+    def _voucher_for_local_metadata(self):
+        selected = self._selected_vouchers_for_local_metadata()
+        if len(selected) == 1:
+            return selected[0]
+        if selected:
+            return None
+        iid = self.tree.focus() if hasattr(self, "tree") else ""
+        return self.by_iid.get(iid) if iid else None
+
+    def _edit_local_voucher_classification_batch(
+        self,
+        *,
+        controller_id: int,
+        vouchers,
+    ) -> None:
+        """Classify selected vouchers atomically without touching other local data."""
+
+        dialog = VoucherBatchClassificationDialog(
+            self,
+            count=len(vouchers),
+        )
+        self.wait_window(dialog)
+        if dialog.result is _NO_BATCH_RESULT:
+            return
+
+        remote_ids = [str(voucher.id) for voucher in vouchers]
+        try:
+            self.database.update_voucher_local_classification_batch(
+                controller_id=int(controller_id),
+                unifi_ids=remote_ids,
+                is_nominal=dialog.result,
+                updated_at=datetime.now(timezone.utc).isoformat(),
+                windows_user=self._windows_operator_identity(),
+            )
+        except (RuntimeError, ValueError) as exc:
+            messagebox.showerror(
+                "Dati locali",
+                str(exc),
+                parent=self,
+            )
+            return
+
+        self.checked_ids.difference_update(voucher.id for voucher in vouchers)
+        self.populate()
+        refresh_reports = getattr(self, "_refresh_report_summary", None)
+        if refresh_reports is not None:
+            refresh_reports()
+        messagebox.showinfo(
+            "Dati locali",
+            (
+                f"Classificazione aggiornata per {len(vouchers)} voucher. "
+                "Destinatari, note e dati UniFi sono rimasti invariati."
+            ),
+            parent=self,
+        )
 
     def edit_local_voucher_metadata(self) -> None:
-        """Edit one voucher's local classification/notes using stable UniFi id."""
+        """Edit one voucher fully, or classify a selected voucher batch atomically."""
 
         if getattr(self, "_background_results", None) is not None:
             self.bell()
@@ -289,6 +435,14 @@ class VoucherLocalMetadataMixin:
                 "L'elenco UniFi non è aggiornato. Eseguire Sincronizza con successo "
                 "prima di modificare i dati locali.",
                 parent=self,
+            )
+            return
+
+        selected = self._selected_vouchers_for_local_metadata()
+        if len(selected) > 1:
+            self._edit_local_voucher_classification_batch(
+                controller_id=int(controller_id),
+                vouchers=selected,
             )
             return
 
