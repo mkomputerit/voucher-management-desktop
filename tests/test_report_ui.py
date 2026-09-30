@@ -9,6 +9,7 @@ from voucher_management import report_ui
 from voucher_management.report_policy import ReportPurpose
 from voucher_management.report_ui import ReportDialog
 from voucher_management.reporting import ReportDataset, ReportKind, ReportTotals
+from voucher_management.report_temp import REPORT_TEMP_MARKER, REPORT_TEMP_PREFIX
 
 
 def _empty_dataset() -> ReportDataset:
@@ -112,6 +113,8 @@ def test_report_query_and_renderer_both_run_inside_background_worker(
 
     assert result_path.suffix == ".pdf"
     assert result_path != output  # PDF preview does not prompt for a save location.
+    assert result_path.parent.name.startswith(REPORT_TEMP_PREFIX)
+    assert (result_path.parent / REPORT_TEMP_MARKER).is_file()
     assert result_dataset is dataset
     assert events[0][0] == "build"
     assert events[0][1] == database_path
