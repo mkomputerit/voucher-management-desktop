@@ -217,6 +217,8 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     self.database,
                     self.paths.pending_create_reporting,
                 ):
+                    if self.create_guard.pending:
+                        self.create_guard.clear()
                     self.logger.info(
                         "create_reporting_reconciled_on_startup"
                     )
@@ -709,9 +711,15 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                         ),
                     )
                     marker_was_pending = Path(marker_path).exists()
-                    guard_recovery_pending = (
-                        self.create_guard.has_reporting_recovery
-                    )
+                    guard_probe_error = None
+                    try:
+                        guard_recovery_pending = (
+                            self.create_guard.has_reporting_recovery
+                        )
+                    except CreateMutationGuardError as exc:
+                        guard_recovery_pending = False
+                        guard_probe_error = exc
+
                     reconciled = False
                     if guard_recovery_pending:
                         reconciled = reconcile_pending_create_reporting_to_path(
@@ -727,6 +735,9 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                             marker_path,
                             controller_id=resolved_controller_id,
                         )
+                    elif guard_probe_error is not None:
+                        raise guard_probe_error
+
                     if (
                         marker_was_pending or guard_recovery_pending
                     ) and not reconciled:
