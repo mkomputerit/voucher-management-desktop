@@ -1699,3 +1699,69 @@ def test_refresh_reconciles_confirmed_create_recovery_from_guard(
 
     assert calls == [(guard.path, 9)]
     assert guard.pending is False
+
+
+def test_refresh_prefers_valid_guard_recovery_over_redundant_primary_marker(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+    guard = CreateMutationGuard(tmp_path / "pending_create_guard")
+    guard.begin()
+    guard.store_reporting_recovery(
+        controller_id=9,
+        voucher_ids=["created-fallback"],
+        is_nominal=True,
+        confirmed_at="2026-09-30T14:30:00+00:00",
+    )
+    marker = tmp_path / "pending_create_reporting.json"
+    marker.write_text("{broken", encoding="utf-8")
+    calls = []
+    fake = SimpleNamespace(
+        client=object(),
+        active_controller_id=9,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_reporting=marker,
+        ),
+        create_guard=guard,
+        vouchers=[],
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        populate=lambda: None,
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app_module, "refresh_vouchers", lambda current: ["fresh"])
+    monkeypatch.setattr(
+        app_module,
+        "persist_refresh_snapshot_to_path",
+        lambda *args, **kwargs: None,
+    )
+
+    def reconcile(database_path, marker_path, *, controller_id=None):
+        calls.append(Path(marker_path))
+        assert Path(marker_path) == guard.path
+        guard.clear()
+        return True
+
+    monkeypatch.setattr(
+        app_module,
+        "reconcile_pending_create_reporting_to_path",
+        reconcile,
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: None,
+    )
+
+    VoucherApp.refresh(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert calls == [guard.path]
+    assert guard.pending is False
+    assert marker.exists() is False
