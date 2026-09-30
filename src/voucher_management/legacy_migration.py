@@ -822,7 +822,11 @@ def materialize_resolved_legacy_events(
                    FROM voucher_prints AS vp
                    JOIN print_jobs AS pj ON pj.id=vp.print_job_id
                    WHERE vp.voucher_id=?
-                   ORDER BY vp.printed_at, pj.print_job_uuid, vp.id""",
+                   ORDER BY
+                       (julianday(vp.printed_at) IS NULL),
+                       julianday(vp.printed_at) ASC,
+                       pj.print_job_uuid,
+                       vp.id""",
                 (voucher_id,),
             ).fetchall()
             if not prints:
