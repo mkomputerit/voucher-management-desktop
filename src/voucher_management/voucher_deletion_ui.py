@@ -80,22 +80,38 @@ class VoucherDeletionMixin:
             return
 
         controller_id = getattr(self, "active_controller_id", None)
-        historically_used = (
-            self.database.historically_used_remote_ids(
+        database = getattr(self, "database", None)
+        if controller_id is None or database is None:
+            messagebox.showerror(
+                "Eliminazione sospesa",
+                "Lo storico locale del controller non è associato in modo "
+                "verificabile. L'eliminazione viene bloccata perché non è "
+                "possibile controllare uso storico e provenienza dei dati.",
+                parent=self,
+            )
+            return
+
+        try:
+            historically_used = database.historically_used_remote_ids(
                 controller_id=controller_id,
                 unifi_ids=[voucher.id for voucher in current],
             )
-            if controller_id is not None and getattr(self, "database", None) is not None
-            else frozenset()
-        )
-        usage_unknown = (
-            self.database.usage_unknown_remote_ids(
+            usage_unknown = database.usage_unknown_remote_ids(
                 controller_id=controller_id,
                 unifi_ids=[voucher.id for voucher in current],
             )
-            if controller_id is not None and getattr(self, "database", None) is not None
-            else frozenset()
-        )
+        except Exception as exc:
+            self.logger.warning(
+                "delete_lifecycle_preflight_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Eliminazione sospesa",
+                "Impossibile verificare in sicurezza lo storico locale dei "
+                "voucher selezionati. Nessun voucher è stato eliminato.",
+                parent=self,
+            )
+            return
         blocked = evaluate_delete_candidates(
             current,
             stats,
