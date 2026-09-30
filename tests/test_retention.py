@@ -627,3 +627,34 @@ def test_retention_candidate_exposes_last_actual_presence_not_absence_sync(tmp_p
         assert candidate.last_synced_at == NOW
     finally:
         database.close()
+
+
+def test_retention_candidate_keeps_unifi_description_and_local_recipient_separate(
+    tmp_path,
+):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="identity-separation",
+            code="8585858585",
+        )
+        with database.transaction() as db:
+            db.execute(
+                """UPDATE vouchers
+                   SET name='Descrizione UniFi',
+                       assigned_to='Mario Rossi'
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+
+        candidate = next(
+            item
+            for item in retention_candidates(database, now=NOW)
+            if item.voucher_id == voucher_id
+        )
+        assert candidate.controller_description == "Descrizione UniFi"
+        assert candidate.assigned_to == "Mario Rossi"
+    finally:
+        database.close()
