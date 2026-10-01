@@ -1128,3 +1128,54 @@ def test_backup_history_rejects_full_path_as_destination(tmp_path):
             )
     finally:
         db.close()
+
+
+def test_print_summary_orders_timezone_offsets_chronologically(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="2026-09-21T08:00:00+00:00",
+        )
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="timezone-print-summary",
+            code="5656565656",
+            imported_at="2026-09-21T08:00:00+00:00",
+            last_synced_at="2026-09-21T08:00:00+00:00",
+        )
+        stamps = (
+            ("earlier-offset", "2026-09-21T10:30:00+02:00"),
+            ("later-utc", "2026-09-21T09:00:00+00:00"),
+        )
+        for sequence, (job_uuid, stamp) in enumerate(stamps, start=1):
+            cursor = db.connection.execute(
+                """INSERT INTO print_jobs(
+                       print_job_uuid, created_at, submitted_at, windows_user,
+                       document_copies, status
+                   ) VALUES (?, ?, ?, 'operator', 1, 'AUDITED')""",
+                (job_uuid, stamp, stamp),
+            )
+            db.connection.execute(
+                """INSERT INTO voucher_prints(
+                       print_job_id, voucher_id, printed_at, windows_user,
+                       physical_copies, print_sequence, is_reprint
+                   ) VALUES (?, ?, ?, 'operator', 1, ?, ?)""",
+                (
+                    int(cursor.lastrowid),
+                    voucher,
+                    stamp,
+                    sequence,
+                    int(sequence > 1),
+                ),
+            )
+        db.connection.commit()
+
+        summary = db.print_summary(voucher)
+
+        assert summary.print_jobs == 2
+        assert summary.first_printed_at == "2026-09-21T10:30:00+02:00"
+        assert summary.last_printed_at == "2026-09-21T09:00:00+00:00"
+    finally:
+        db.close()
