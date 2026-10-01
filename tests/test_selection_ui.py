@@ -270,3 +270,29 @@ def test_native_keyboard_navigation_cannot_change_print_highlighting():
         assert fake.checked_ids == {"first", "second", "hidden"}
     finally:
         root.destroy()
+
+
+
+def test_unaligned_voucher_cannot_enter_print_selection_from_home():
+    visible = SimpleNamespace(id="visible", status="VALID_MULTI")
+    tree = HomeTree()
+    calls = []
+    fake = SimpleNamespace(
+        home_recent_tree=tree,
+        _home_voucher_by_iid={"home-1": visible},
+        checked_ids={"hidden"},
+        home_print_action_var=FakeVar(),
+        bell=lambda: calls.append("bell"),
+        _is_expired=VoucherApp._is_expired,
+        _voucher_alignment_ready=lambda voucher: False,
+    )
+    fake._sync_selection_ui = lambda iids=None: calls.append("sync")
+
+    result = ModernVoucherApp._on_home_recent_click(
+        fake,
+        SimpleNamespace(x=4, y=8),
+    )
+
+    assert result == "break"
+    assert fake.checked_ids == {"hidden"}
+    assert calls == ["bell"]
