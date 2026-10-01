@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,7 +34,7 @@ def main() -> int:
         (data_root / name).mkdir(parents=True, exist_ok=True)
     work_root.mkdir(parents=True, exist_ok=True)
 
-    secret = "0123456789abcdef0123456789abcdef"
+    secret = secrets.token_hex(32)
     fingerprint = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
     settings_path = data_root / "config" / "settings.json"
     settings_path.write_text(
