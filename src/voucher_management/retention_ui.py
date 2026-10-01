@@ -13,8 +13,7 @@ from .retention import (
     mark_retention_intro_seen,
     retention_intro_seen,
     reviewable_retention_candidates,
-    update_retention_days,
-    archive_retention_candidates,
+    update_retention_days
 )
 from .sync_store import load_local_vouchers
 
@@ -55,10 +54,9 @@ class RetentionIntroDialog(tk.Toplevel):
             frame,
             text=(
                 "Voucher Management conserva lo storico locale per audit e "
-                "report. I voucher utilizzati o stampati sono sempre protetti. "
-                "Solo voucher mai usati, mai stampati, non più presenti sul "
-                "controller, senza PDF generati e abbastanza vecchi possono "
-                "essere proposti per la minimizzazione."
+                "report. In questa release nessun codice voucher o dato storico "
+                "locale viene minimizzato automaticamente. La soglia serve a "
+                "individuare record anziani da riesaminare, senza cancellarli."
             ),
             wraplength=560,
             justify="left",
@@ -66,9 +64,9 @@ class RetentionIntroDialog(tk.Toplevel):
         ttk.Label(
             frame,
             text=(
-                "La soglia consigliata è 180 giorni. Nessun voucher viene "
-                "archiviato automaticamente: la pulizia richiede sempre una "
-                "revisione e una conferma esplicita."
+                "La minimizzazione privacy è una funzione futura separata. "
+                "La revoca di sicurezza dalla controller non modifica il codice "
+                "voucher né i metadati conservati localmente."
             ),
             wraplength=560,
             justify="left",
@@ -130,10 +128,10 @@ class RetentionReviewDialog(tk.Toplevel):
         ttk.Label(
             shell,
             text=(
-                "Le protezioni per voucher utilizzati e stampati sono "
-                "obbligatorie e non possono essere disattivate. L'elenco "
-                "sottostante contiene soltanto voucher non più presenti sul "
-                "controller, mai usati, mai stampati e senza PDF generati."
+                "L'elenco è solo informativo: mostra voucher anziani non più "
+                "presenti sulla controller, mai osservati usati, mai stampati e "
+                "senza PDF generati. In questa release nessun dato viene "
+                "minimizzato o cancellato da questa schermata."
             ),
             wraplength=820,
             justify="left",
@@ -189,11 +187,11 @@ class RetentionReviewDialog(tk.Toplevel):
             text="Chiudi",
             command=self.destroy,
         ).pack(side="right")
-        ttk.Button(
+        ttk.Label(
             actions,
-            text="Archivia selezionati…",
-            command=self._archive_selected,
-        ).pack(side="right", padx=(0, 8))
+            text="Minimizzazione privacy non attiva in questa release",
+            style="Muted.TLabel",
+        ).pack(side="left")
 
         self._refresh()
 
@@ -239,7 +237,7 @@ class RetentionReviewDialog(tk.Toplevel):
                 ),
             )
         self.status.set(
-            f"{len(candidates)} candidati. Nessuna archiviazione è automatica."
+            f"{len(candidates)} record da riesaminare. Nessuna minimizzazione è attiva."
         )
 
     def _save_policy(self) -> None:
@@ -259,86 +257,6 @@ class RetentionReviewDialog(tk.Toplevel):
             return
         self.days.set(str(policy.unused_unprinted_days))
         self._refresh()
-
-    def _archive_selected(self) -> None:
-        selected = [
-            int(iid)
-            for iid in self.tree.selection()
-            if iid.isdigit()
-        ]
-        if not selected:
-            messagebox.showinfo(
-                "Conservazione",
-                "Selezionare almeno un candidato da archiviare.",
-                parent=self,
-            )
-            return
-        if not messagebox.askyesno(
-            "Conferma archiviazione",
-            (
-                f"Archiviare {len(selected)} voucher selezionati?\n\n"
-                "Il record storico resterà disponibile, ma codice voucher, "
-                "destinatario, assegnazione e note verranno rimossi. "
-                "L'operazione non viene eseguita sui voucher che nel frattempo "
-                "non soddisfano più i criteri."
-            ),
-            parent=self,
-        ):
-            return
-
-        try:
-            result = archive_retention_candidates(
-                self.app.database,
-                voucher_ids=selected,
-                archived_at=self._now(),
-                windows_user=self.app._windows_operator_identity(),
-                history=self.app.history,
-                settings=self.app.settings,
-            )
-        except HistoryError:
-            messagebox.showerror(
-                "Conservazione non disponibile",
-                "La cronologia locale non è verificabile. Nessun voucher è "
-                "stato archiviato.",
-                parent=self,
-            )
-            return
-        except Exception as exc:
-            self.app.logger.warning(
-                "retention_archive_failed type=%s",
-                type(exc).__name__,
-            )
-            messagebox.showerror(
-                "Conservazione",
-                "Impossibile completare l'archiviazione selezionata. Nessun "
-                "voucher è stato minimizzato parzialmente.",
-                parent=self,
-            )
-            return
-        if self.app.active_controller_id is not None:
-            # Archivable rows are already absent from a live controller snapshot,
-            # so a connected Home does not need to replace its fresh list with
-            # the broader historical SQLite cache. In local/offline mode, reload
-            # that cache but keep Home explicitly non-live.
-            if not bool(getattr(self.app, "controller_snapshot_live", False)):
-                self.app.vouchers = load_local_vouchers(
-                    self.app.database,
-                    controller_id=self.app.active_controller_id,
-                )
-                self.app.controller_snapshot_live = False
-            self.app.checked_ids.clear()
-            self.app.populate()
-
-        self._refresh()
-        messagebox.showinfo(
-            "Conservazione",
-            (
-                f"Archiviati: {len(result.archived_ids)}. "
-                f"Non più idonei e quindi ignorati: {len(result.skipped_ids)}."
-            ),
-            parent=self,
-        )
-
 
 class RetentionMixin:
     """Compose retention onboarding and review into the Windows shell."""
