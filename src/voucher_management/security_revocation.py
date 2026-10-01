@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from .database import Database
+from .database import Database, PRINT_STATE_PRINTED
 
 SECURITY_REVOKE_DAYS_KEY = "security_revoke_printed_unused_days"
 
@@ -25,6 +25,7 @@ class SecurityRevocationCandidate:
     code: str
     recipient: str
     last_printed_at: str
+    print_date_known: bool
     last_seen_at: str
     last_synced_at: str
 
@@ -95,8 +96,11 @@ def security_revocation_candidates(
     - the operator must configure a threshold explicitly;
     - the voucher is still present on UniFi and not reported expired;
     - usage was observed and has never been positive;
-    - a controller observation exists *after* the most recent print;
-    - the most recent physical print is older than the configured threshold;
+    - print_state is positively PRINTED and alignment is complete;
+    - with a known print date, a controller observation exists after the most
+      recent print and that last print is older than the configured threshold;
+    - with PRINTED but no historical print date, review is immediate because no
+      safe age calculation is possible;
     - no previous security-revocation event exists.
 
     The caller must still perform a fresh controller read immediately before
@@ -109,7 +113,7 @@ def security_revocation_candidates(
         return ()
 
     cutoff = (_normalize_now(now) - timedelta(days=days)).isoformat()
-    params: list[object] = []
+    params: list[object] = [PRINT_STATE_PRINTED]
     controller_clause = ""
     if controller_id is not None:
         controller_clause = "AND v.controller_id=?"
@@ -129,13 +133,15 @@ def security_revocation_candidates(
                 v.last_synced_at
             FROM vouchers AS v
             JOIN controllers AS c ON c.id=v.controller_id
-            JOIN voucher_prints AS vp ON vp.voucher_id=v.id
+            LEFT JOIN voucher_prints AS vp ON vp.voucher_id=v.id
             WHERE v.archived_at IS NULL
               AND v.present_on_controller=1
               AND v.expired=0
               AND v.usage_observed=1
               AND v.ever_used=0
               AND v.authorized_guest_count=0
+              AND v.alignment_completed_at IS NOT NULL
+              AND v.print_state=?
               AND NOT EXISTS (
                   SELECT 1
                   FROM voucher_events AS ve
@@ -149,10 +155,18 @@ def security_revocation_candidates(
             GROUP BY
                 v.id, v.controller_id, c.name, v.unifi_id, v.code, v.name,
                 v.last_seen_at, v.last_synced_at
-            HAVING MAX(vp.printed_at) <= ?
-               AND v.last_seen_at IS NOT NULL
-               AND julianday(v.last_seen_at) > julianday(MAX(vp.printed_at))
-            ORDER BY MAX(vp.printed_at) ASC, v.id ASC""",
+            HAVING (
+                    MAX(vp.printed_at) IS NULL
+                    OR (
+                        MAX(vp.printed_at) <= ?
+                        AND v.last_seen_at IS NOT NULL
+                        AND julianday(v.last_seen_at) > julianday(MAX(vp.printed_at))
+                    )
+                )
+            ORDER BY
+                CASE WHEN MAX(vp.printed_at) IS NULL THEN 0 ELSE 1 END,
+                MAX(vp.printed_at) ASC,
+                v.id ASC""",
         tuple(params),
     ).fetchall()
 
@@ -165,6 +179,7 @@ def security_revocation_candidates(
             code=str(row["code"]),
             recipient=str(row["name"] or "").strip(),
             last_printed_at=str(row["last_printed_at"] or ""),
+            print_date_known=bool(str(row["last_printed_at"] or "").strip()),
             last_seen_at=str(row["last_seen_at"] or ""),
             last_synced_at=str(row["last_synced_at"] or ""),
         )
