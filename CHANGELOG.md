@@ -31,6 +31,11 @@
   evidence beyond an explicit threshold, with fresh per-voucher UniFi
   revalidation, durable pre-DELETE intent, anti-replay reconciliation and full
   preservation of the local voucher history.
+- Harden export integrity: report rows are keyed by durable voucher identity,
+  duplicate/ambiguous voucher codes fail closed before print auditing or PDF
+  generation, non-nominal vouchers have a dedicated export, security-revocation
+  totals are included in summaries, and history exchange refuses duplicate
+  modern event identities.
 
 - Print only the recipient value inside each cut voucher, without the
   "Destinatario:" prefix.
