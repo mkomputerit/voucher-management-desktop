@@ -352,6 +352,7 @@ SET assigned_to=CASE
         ELSE assigned_to
     END,
     name='',
+    created_at=NULL,
     origin='UNKNOWN'
 WHERE controller_id IN (
     SELECT id FROM controllers
