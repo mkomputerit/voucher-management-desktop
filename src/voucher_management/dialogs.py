@@ -329,20 +329,30 @@ class ReprintConfirmDialog(tk.Toplevel):
                 frame,
                 text=f"Voucher: {code}",
             ).pack(anchor="w")
-            ttk.Label(
-                frame,
-                text=(
-                    "Ultima stampa: "
-                    f"{_local_print_time(warning.last_printed_at)}"
-                ),
-            ).pack(anchor="w", pady=(4, 0))
-            ttk.Label(
-                frame,
-                text=(
-                    "Stampe precedenti: "
-                    f"{warning.previous_print_jobs}"
-                ),
-            ).pack(anchor="w", pady=(4, 0))
+            if warning.print_history_incomplete:
+                ttk.Label(
+                    frame,
+                    text="Ultima stampa: non determinabile",
+                ).pack(anchor="w", pady=(4, 0))
+                ttk.Label(
+                    frame,
+                    text="Stampe precedenti: numero non determinabile",
+                ).pack(anchor="w", pady=(4, 0))
+            else:
+                ttk.Label(
+                    frame,
+                    text=(
+                        "Ultima stampa: "
+                        f"{_local_print_time(warning.last_printed_at)}"
+                    ),
+                ).pack(anchor="w", pady=(4, 0))
+                ttk.Label(
+                    frame,
+                    text=(
+                        "Stampe precedenti: "
+                        f"{warning.previous_print_jobs}"
+                    ),
+                ).pack(anchor="w", pady=(4, 0))
             continue_text = "Ristampa voucher"
         else:
             self.title("Conferma ristampe")
@@ -373,12 +383,17 @@ class ReprintConfirmDialog(tk.Toplevel):
             details_button.pack(anchor="w", pady=(0, 8))
 
             for code, warning in self.warnings:
-                ttk.Label(
-                    self.details,
-                    text=(
+                detail = (
+                    f"{code} — storico stampa precedente non determinabile"
+                    if warning.print_history_incomplete
+                    else (
                         f"{code} — {warning.previous_print_jobs} stampe — "
                         f"ultima {_local_print_time(warning.last_printed_at)}"
-                    ),
+                    )
+                )
+                ttk.Label(
+                    self.details,
+                    text=detail,
                 ).pack(anchor="w", pady=2)
             continue_text = "Continua con le ristampe"
 
