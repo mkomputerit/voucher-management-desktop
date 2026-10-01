@@ -97,7 +97,7 @@ class _LegacyBackupMaterial:
 class _RecoveredMetadata:
     recipient: str = ""
     duration_minutes: int | None = None
-    created_at: str | None = None
+    generated_at: str | None = None
 
 
 def _file_sha256(path: Path) -> str:
@@ -397,7 +397,7 @@ def _metadata_by_code(
         payload = item.row.payload
         current = result.get(code)
         stamp = item.row.timestamp
-        if current is not None and current.created_at and current.created_at <= stamp:
+        if current is not None and current.generated_at and current.generated_at <= stamp:
             continue
         duration = payload.get("duration_minutes")
         result[code] = _RecoveredMetadata(
@@ -407,7 +407,7 @@ def _metadata_by_code(
                 if type(duration) is int and duration >= 0
                 else None
             ),
-            created_at=stamp,
+            generated_at=stamp,
         )
     return result
 
