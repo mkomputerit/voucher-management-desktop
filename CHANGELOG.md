@@ -41,11 +41,11 @@
   audit history, and history exchange refuses duplicate modern event identities.
   Routine reports hide voucher codes; the complete-history report can include
   preserved clear codes only after an explicit operator request.
-- Keep report data lineage explicit: detailed PDF/CSV exports now show the
-  immutable UniFi ID, local recipient, UniFi description and local notes as
-  separate fields. Confirmed application creation persists the operator-entered
-  recipient locally; verified legacy imports enrich only an empty local
-  recipient and never overwrite operator-owned metadata.
+- Keep report data lineage explicit: detailed PDF/CSV exports show the
+  immutable UniFi ID, the controller-owned recipient/description, local notes,
+  provenance, nominality and print-state evidence without inventing a second
+  recipient field. Verified legacy imports never overwrite live UniFi-owned
+  text or operator-owned local notes.
 
 - Print only the recipient value inside each cut voucher, without the
   "Destinatario:" prefix.
