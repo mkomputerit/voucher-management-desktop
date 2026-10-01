@@ -155,6 +155,33 @@ def test_nominality_patch_rejects_non_classified_choice(tmp_path):
         db.close()
 
 
+def test_notes_backend_rejects_multi_voucher_update(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        first = _voucher(db, controller, "v1", "1111122222")
+        second = _voucher(db, controller, "v2", "3333344444")
+
+        with pytest.raises(ValueError, match="un solo voucher"):
+            apply_local_voucher_patch(
+                db,
+                controller_id=controller,
+                voucher_ids=[first, second],
+                patch=LocalVoucherPatch(
+                    apply_notes=True,
+                    notes="Nota condivisa non consentita",
+                ),
+                updated_at=NOW,
+                windows_user="operator",
+            )
+
+        rows = db.connection.execute(
+            "SELECT notes FROM vouchers ORDER BY id"
+        ).fetchall()
+        assert [row["notes"] for row in rows] == ["", ""]
+    finally:
+        db.close()
+
+
 def test_batch_is_atomic_if_one_row_is_not_from_active_controller(tmp_path):
     db, controller = _db(tmp_path)
     other = db.create_controller(
