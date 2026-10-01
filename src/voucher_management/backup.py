@@ -239,6 +239,45 @@ class BackupService:
                 "Sincronizzare l'elenco prima di creare o ripristinare un backup."
             )
 
+    def _assert_no_pending_remote_mutation(self) -> None:
+        """Block restore while an uncertain remote DELETE still needs reconciliation."""
+
+        database_path = self._database_path()
+        if not database_path.is_file():
+            return
+        connection = None
+        try:
+            connection = sqlite3.connect(database_path, timeout=5.0)
+            table = connection.execute(
+                """SELECT 1 FROM sqlite_master
+                   WHERE type='table' AND name='voucher_events'"""
+            ).fetchone()
+            if table is None:
+                return
+            pending = connection.execute(
+                """SELECT 1 FROM voucher_events
+                   WHERE event_type IN (
+                       'PREPARATION_DELETE_REQUESTED',
+                       'SECURITY_REVOKE_REQUESTED'
+                   )
+                   LIMIT 1"""
+            ).fetchone()
+        except (sqlite3.DatabaseError, sqlite3.OperationalError) as exc:
+            raise BackupError(
+                "Impossibile verificare in sicurezza eventuali operazioni "
+                "remote da riconciliare prima del ripristino."
+            ) from exc
+        finally:
+            if connection is not None:
+                connection.close()
+
+        if pending is not None:
+            raise BackupError(
+                "Esiste una cancellazione o revoca UniFi con esito ancora da "
+                "riconciliare. Sincronizzare la controller prima di ripristinare "
+                "un backup."
+            )
+
     @staticmethod
     def is_encrypted_backup(source: Path) -> bool:
         """Return True for a Voucher Management protected backup container."""
@@ -924,6 +963,7 @@ class BackupService:
         source = Path(source)
         self._assert_no_pending_print_audit()
         self._assert_no_pending_create()
+        self._assert_no_pending_remote_mutation()
         if not self.is_encrypted_backup(source):
             return self._restore_zip(source)
         if password is None:
