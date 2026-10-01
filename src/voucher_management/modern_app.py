@@ -967,12 +967,18 @@ class ModernVoucherApp(
     """Windows 11 operator shell around the stable voucher engine."""
 
     def _retention_intro_allowed_on_startup(self) -> bool:
-        """Only legacy/existing installs need the separate retention intro."""
+        """Run retention gating for existing and already-configured installs.
 
-        return (
-            startup_onboarding_state(self)
-            is OnboardingState.EXISTING_INSTALLATION
-        )
+        Fresh/incomplete onboarding owns the mandatory threshold itself. Older
+        5.x installations may already have a completed installation profile but
+        no explicit threshold marker, so COMPLETE must still pass through the
+        lightweight retention gate; configured installs return immediately.
+        """
+
+        return startup_onboarding_state(self) in {
+            OnboardingState.EXISTING_INSTALLATION,
+            OnboardingState.COMPLETE,
+        }
 
     def __init__(self):
         super().__init__()
