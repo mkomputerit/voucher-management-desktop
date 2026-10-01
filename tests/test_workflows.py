@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from voucher_management.database import PRINT_STATE_NOT_PRINTED, PRINT_STATE_PRINTED, PRINT_STATE_UNKNOWN
 from voucher_management.history import HistoryError, PrintStats
 from voucher_management.unifi_api import (
     ApiVoucher,
@@ -228,6 +229,9 @@ def test_delete_candidates_are_reread_before_policy():
     blocked = evaluate_delete_candidates(
         current,
         {now_used.code_formatted: PrintStats()},
+        historically_used_ids=frozenset(),
+        local_print_states={"v1": PRINT_STATE_NOT_PRINTED},
+        aligned_ids=frozenset({"v1"}),
     )
 
     assert client.get_calls == ["v1"]
@@ -244,6 +248,8 @@ def test_delete_policy_blocks_voucher_with_durable_historical_use():
         [current],
         {current.code_formatted: PrintStats()},
         historically_used_ids=frozenset({"v1"}),
+        local_print_states={"v1": PRINT_STATE_NOT_PRINTED},
+        aligned_ids=frozenset({"v1"}),
     )
 
     assert len(blocked) == 1
@@ -260,10 +266,51 @@ def test_delete_policy_also_blocks_locally_printed_voucher():
                 printed_copies=1,
             )
         },
+        historically_used_ids=frozenset(),
+        local_print_states={"v1": PRINT_STATE_PRINTED},
+        aligned_ids=frozenset({"v1"}),
     )
 
     assert len(blocked) == 1
     assert blocked[0].policy.reason == "printed"
+
+
+def test_delete_policy_blocks_unknown_print_state():
+    current = voucher("v1", "1111122222")
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        historically_used_ids=frozenset(),
+        local_print_states={"v1": PRINT_STATE_UNKNOWN},
+        aligned_ids=frozenset({"v1"}),
+    )
+    assert len(blocked) == 1
+    assert blocked[0].policy.reason == "print_unknown"
+
+
+def test_delete_policy_blocks_unaligned_voucher_even_if_state_says_unprinted():
+    current = voucher("v1", "1111122222")
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        historically_used_ids=frozenset(),
+        local_print_states={"v1": PRINT_STATE_NOT_PRINTED},
+        aligned_ids=frozenset(),
+    )
+    assert len(blocked) == 1
+    assert blocked[0].policy.reason == "not_aligned"
+
+
+def test_delete_policy_allows_aligned_unprinted_unused_voucher():
+    current = voucher("v1", "1111122222")
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        historically_used_ids=frozenset(),
+        local_print_states={"v1": PRINT_STATE_NOT_PRINTED},
+        aligned_ids=frozenset({"v1"}),
+    )
+    assert blocked == []
 
 
 def test_delete_success_refresh_failure_removes_deleted_rows_from_cache():
