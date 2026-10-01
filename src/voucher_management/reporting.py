@@ -113,6 +113,7 @@ class ReportRow:
     last_synced_at: str = ""
     nominality_redacted: bool = False
     security_revoked_at: str = ""
+    unifi_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -397,6 +398,7 @@ def build_report_dataset(
             last_synced_at=str(raw["last_synced_at"] or ""),
             nominality_redacted=nominality_redacted,
             security_revoked_at=str(raw["security_revoked_at"] or ""),
+            unifi_id=str(raw["unifi_id"] or ""),
         )
         if _matches(kind, row):
             rows.append(row)
