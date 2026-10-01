@@ -116,7 +116,8 @@ def test_home_displays_ten_recent_vouchers_and_collapses_activity(root):
     fake = SimpleNamespace()
     for name in (
         "home_controller_name", "home_last_sync", "home_ready", "home_sync_action",
-        "home_backup_summary", "home_to_print", "home_active", "home_used", "home_expired", "home_print_action",
+        "home_backup_summary", "home_to_print", "home_active", "home_used", "home_expired",
+        "home_unprinted_alert", "home_security_alert", "home_print_action",
     ):
         setattr(fake, name + "_var", tk.StringVar(root, value="0"))
     for name in ("_home_sync_or_connect", "create", "create_backup", "_home_print_selected",
@@ -134,6 +135,7 @@ def test_home_displays_ten_recent_vouchers_and_collapses_activity(root):
     fake._is_expired = lambda voucher: False
     fake._print_state = lambda stat: "DA STAMPARE"
     fake._refresh_home_activity = lambda: None
+    fake._refresh_home_threshold_alerts = lambda: None
     fake._refresh_controller_workspace_status = lambda: None
     ModernVoucherApp._update_operator_summary(fake, {})
     root.update()
@@ -156,6 +158,8 @@ def test_home_metrics_do_not_present_local_cache_as_live_controller_state():
         home_active_var=Var("99"),
         home_used_var=Var("99"),
         home_expired_var=Var("99"),
+        home_unprinted_alert_var=Var("99"),
+        home_security_alert_var=Var("99"),
         controller_snapshot_live=False,
         _refresh_home_activity=lambda: None,
         _refresh_controller_workspace_status=lambda: None,
@@ -165,6 +169,42 @@ def test_home_metrics_do_not_present_local_cache_as_live_controller_state():
     assert fake.home_active_var.get() == "—"
     assert fake.home_used_var.get() == "—"
     assert fake.home_expired_var.get() == "—"
+    assert fake.home_unprinted_alert_var.get() == "—"
+    assert fake.home_security_alert_var.get() == "—"
+
+
+def test_home_threshold_alerts_distinguish_unconfigured_and_candidates(monkeypatch):
+    fake = SimpleNamespace(
+        home_unprinted_alert_var=Var(),
+        home_security_alert_var=Var(),
+        controller_snapshot_live=True,
+        active_controller_id=7,
+        database=object(),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+    monkeypatch.setattr(modern_app, "unprinted_warning_days", lambda _db: 10)
+    monkeypatch.setattr(modern_app, "security_revoke_days", lambda _db: 30)
+    monkeypatch.setattr(
+        modern_app,
+        "unprinted_warning_candidates",
+        lambda _db, **kwargs: (object(), object()),
+    )
+    monkeypatch.setattr(
+        modern_app,
+        "security_revocation_candidates",
+        lambda _db, **kwargs: (object(),),
+    )
+
+    ModernVoucherApp._refresh_home_threshold_alerts(fake)
+
+    assert fake.home_unprinted_alert_var.get() == "2 oltre 10 gg"
+    assert fake.home_security_alert_var.get() == "1 da rivedere"
+
+    monkeypatch.setattr(modern_app, "unprinted_warning_days", lambda _db: None)
+    monkeypatch.setattr(modern_app, "security_revoke_days", lambda _db: None)
+    ModernVoucherApp._refresh_home_threshold_alerts(fake)
+    assert fake.home_unprinted_alert_var.get() == "Soglia da configurare"
+    assert fake.home_security_alert_var.get() == "Soglia da configurare"
 
 
 def test_controller_failure_invalidates_live_home_metrics():
