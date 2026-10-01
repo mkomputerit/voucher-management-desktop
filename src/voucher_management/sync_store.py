@@ -52,6 +52,7 @@ def persist_successful_snapshot(
     sync_uuid: str | None = None,
     application_created_ids: list[str] | tuple[str, ...] = (),
     application_created_is_nominal: bool | None = None,
+    application_created_assigned_to: str | None = None,
 ) -> str:
     """Persist one complete successful UniFi voucher-list snapshot.
 
@@ -132,6 +133,7 @@ def persist_successful_snapshot(
                 controller_id=controller_id,
                 unifi_ids=application_created_ids,
                 is_nominal=application_created_is_nominal,
+                assigned_to=application_created_assigned_to,
                 connection=tx,
             )
 
@@ -252,6 +254,7 @@ def persist_create_result_to_path(
     snapshot_complete: bool,
     snapshot_observed: bool,
     is_nominal: bool,
+    assigned_to: str = "",
     observed_at: str,
 ) -> None:
     """Persist a create result without inventing controller facts.
@@ -274,6 +277,7 @@ def persist_create_result_to_path(
                 observed_at=observed_at,
                 application_created_ids=created_ids,
                 application_created_is_nominal=bool(is_nominal),
+                application_created_assigned_to=str(assigned_to or "").strip(),
             )
         elif created:
             # A stale-but-successful GET is useful positive evidence for rows it
@@ -308,6 +312,7 @@ def persist_create_result_to_path(
                     controller_id=int(controller_id),
                     unifi_ids=created_ids,
                     is_nominal=bool(is_nominal),
+                    assigned_to=str(assigned_to or "").strip(),
                     connection=tx,
                 )
     finally:
