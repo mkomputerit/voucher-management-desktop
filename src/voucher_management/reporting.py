@@ -325,7 +325,14 @@ def build_report_dataset(
     rows: list[ReportRow] = []
     controllers: set[str] = set()
     code_exposed = False
+    seen_voucher_ids: set[int] = set()
     for raw in raw_rows:
+        voucher_id = int(raw["voucher_id"])
+        if voucher_id in seen_voucher_ids:
+            raise RuntimeError(
+                "report source returned a duplicate voucher identity"
+            )
+        seen_voucher_ids.add(voucher_id)
         controller_name = str(raw["controller_name"] or "").strip() or "Controller"
         controllers.add(controller_name)
         clear_code = report_code_value(
@@ -348,8 +355,17 @@ def build_report_dataset(
         recipient = assigned_to or str(raw["name"] or "").strip()
         ever_used = bool(raw["ever_used"])
         usage_observed = bool(raw["usage_observed"])
+        nominality_redacted = bool(raw["nominality_redacted"])
+        if ever_used and not usage_observed:
+            raise RuntimeError(
+                "report source contains used voucher without usage evidence"
+            )
+        if nominality_redacted and is_nominal is not None:
+            raise RuntimeError(
+                "report source contains both nominal classification and redaction"
+            )
         row = ReportRow(
-            voucher_id=int(raw["voucher_id"]),
+            voucher_id=voucher_id,
             controller_name=controller_name,
             code=clear_code,
             recipient=recipient,
@@ -379,7 +395,7 @@ def build_report_dataset(
             origin=str(raw["origin"] or "UNKNOWN"),
             is_nominal=is_nominal,
             last_synced_at=str(raw["last_synced_at"] or ""),
-            nominality_redacted=bool(raw["nominality_redacted"]),
+            nominality_redacted=nominality_redacted,
             security_revoked_at=str(raw["security_revoked_at"] or ""),
         )
         if _matches(kind, row):
