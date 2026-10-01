@@ -8,6 +8,10 @@ import pytest
 
 from voucher_management.database import Database
 from voucher_management.operational_alerts import set_unprinted_warning_days
+from voucher_management.preparation_deletion import (
+    record_preparation_delete_requests,
+    reconcile_preparation_delete_requests,
+)
 from voucher_management.report_policy import ReportPurpose
 from voucher_management.reporting import ReportKind, build_report_dataset
 from voucher_management.security_revocation import (
@@ -1043,5 +1047,61 @@ def test_full_history_can_explicitly_export_preserved_revoked_voucher_code(tmp_p
         assert explicit_row.code == "6060606060"
         assert explicit.code_exposed is True
         assert explicit_row.security_revoked_at
+    finally:
+        db.close()
+
+
+
+def test_preparation_deleted_report_preserves_reason_and_timestamp(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "deleted-preparation",
+            "7070707070",
+            name="Errore preparazione",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET print_state='NOT_PRINTED',
+                       alignment_completed_at=?,
+                       usage_observed=1,
+                       ever_used=0,
+                       authorized_guest_count=0
+                   WHERE id=?""",
+                (NOW, voucher_id),
+            )
+
+        record_preparation_delete_requests(
+            db,
+            controller_id=controller,
+            unifi_ids=["deleted-preparation"],
+            reason="Voucher creato per errore",
+            requested_at=NOW,
+            windows_user=r"PC\operator",
+        )
+        deleted, not_applied = reconcile_preparation_delete_requests(
+            db,
+            controller_id=controller,
+            present_unifi_ids=frozenset(),
+            observed_at="2026-09-29T10:05:00+00:00",
+        )
+        assert deleted == (voucher_id,)
+        assert not_applied == ()
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.PREPARATION_DELETED,
+            generated_at="2026-09-29T10:10:00+00:00",
+        )
+
+        assert [row.voucher_id for row in dataset.rows] == [voucher_id]
+        row = dataset.rows[0]
+        assert row.preparation_deleted_at == "2026-09-29T10:05:00+00:00"
+        assert row.preparation_delete_reason == "Voucher creato per errore"
+        assert row.status == "Eliminato dalla controller"
+        assert dataset.totals.preparation_deleted_vouchers == 1
     finally:
         db.close()
