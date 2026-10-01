@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from voucher_management.database import Database
@@ -9,6 +11,7 @@ from voucher_management.local_data import (
     LocalVoucherPatch,
     apply_local_voucher_patch,
 )
+from voucher_management.local_data_ui import local_data_selection_candidates
 
 
 NOW = "2026-10-01T09:00:00+00:00"
@@ -211,3 +214,13 @@ def test_patch_requires_at_least_one_explicit_field(tmp_path):
             )
     finally:
         db.close()
+
+
+
+def test_local_data_selection_includes_expired_rows():
+    active = SimpleNamespace(id="active", status="VALID_MULTI")
+    expired = SimpleNamespace(id="expired", status="EXPIRED")
+
+    candidates = local_data_selection_candidates([active, expired])
+
+    assert candidates == (active, expired)
