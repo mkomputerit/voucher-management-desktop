@@ -718,3 +718,59 @@ def test_complete_snapshot_closes_pending_security_revocation_when_still_present
         assert event["windows_user"] == "SYSTEM"
     finally:
         db.close()
+
+
+
+def test_security_reconciliation_failure_rolls_back_entire_snapshot(tmp_path, monkeypatch):
+    from voucher_management import sync_store
+
+    db = Database(tmp_path / "security-atomic.sqlite")
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("atomic")],
+            observed_at="2026-09-25T10:00:00+00:00",
+            sync_uuid="atomic-before",
+        )
+
+        def fail_reconciliation(*args, **kwargs):
+            raise RuntimeError("synthetic security reconciliation failure")
+
+        monkeypatch.setattr(
+            sync_store,
+            "reconcile_pending_security_revocations",
+            fail_reconciliation,
+        )
+
+        try:
+            persist_successful_snapshot(
+                db,
+                controller_id=controller,
+                vouchers=[voucher("atomic", used=2)],
+                observed_at="2026-09-25T11:00:00+00:00",
+                sync_uuid="atomic-failing",
+            )
+        except RuntimeError as exc:
+            assert "synthetic security reconciliation failure" in str(exc)
+        else:
+            raise AssertionError("reconciliation failure must abort the snapshot")
+
+        row = db.connection.execute(
+            """SELECT authorized_guest_count, last_synced_at
+               FROM vouchers WHERE controller_id=? AND unifi_id='atomic'""",
+            (controller,),
+        ).fetchone()
+        assert row["authorized_guest_count"] == 0
+        assert row["last_synced_at"] == "2026-09-25T10:00:00+00:00"
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM sync_runs WHERE sync_uuid='atomic-failing'"
+        ).fetchone()[0] == 0
+    finally:
+        db.close()
