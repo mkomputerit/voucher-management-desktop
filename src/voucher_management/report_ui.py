@@ -30,6 +30,7 @@ REPORT_CHOICES = (
     ("Origine creazione non determinabile", ReportKind.ORIGIN_UNKNOWN),
     ("Nominalità rimossa per privacy", ReportKind.NOMINALITY_REDACTED),
     ("Revocati per sicurezza", ReportKind.SECURITY_REVOKED),
+    ("Eliminati dalla controller", ReportKind.PREPARATION_DELETED),
     ("Storico completo", ReportKind.FULL_HISTORY),
 )
 REPORT_KIND_BY_LABEL = dict(REPORT_CHOICES)
