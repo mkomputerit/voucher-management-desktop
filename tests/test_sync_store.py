@@ -315,7 +315,6 @@ def test_create_result_persists_application_origin_and_nominal_flag(tmp_path):
         snapshot_complete=True,
         snapshot_observed=True,
         is_nominal=True,
-        assigned_to="Pinco Pallino",
         observed_at="2026-09-29T08:01:00+00:00",
     )
 
@@ -323,13 +322,13 @@ def test_create_result_persists_application_origin_and_nominal_flag(tmp_path):
     try:
         check.initialize()
         row = check.connection.execute(
-            """SELECT origin, is_nominal, assigned_to, name
+            """SELECT origin, is_nominal, print_state, name
                FROM vouchers WHERE unifi_id=?""",
             ("nominal-created",),
         ).fetchone()
         assert row["origin"] == "APPLICATION"
         assert row["is_nominal"] == 1
-        assert row["assigned_to"] == "Pinco Pallino"
+        assert row["print_state"] == "NOT_PRINTED"
         assert row["name"] == "Pinco Pallino"
     finally:
         check.close()
@@ -358,7 +357,6 @@ def test_partial_create_result_does_not_mark_unseen_local_rows_absent(tmp_path):
         snapshot_complete=False,
         snapshot_observed=True,
         is_nominal=False,
-        assigned_to="Local created guest",
         observed_at="2026-09-29T08:05:00+00:00",
     )
 
@@ -369,14 +367,14 @@ def test_partial_create_result_does_not_mark_unseen_local_rows_absent(tmp_path):
             row["unifi_id"]: row
             for row in check.connection.execute(
                 """SELECT unifi_id, present_on_controller, origin, is_nominal,
-                          assigned_to, name
+                          print_state, name
                    FROM vouchers"""
             )
         }
         assert rows["existing"]["present_on_controller"] == 1
         assert rows["created"]["origin"] == "APPLICATION"
         assert rows["created"]["is_nominal"] == 0
-        assert rows["created"]["assigned_to"] == "Local created guest"
+        assert rows["created"]["print_state"] == "NOT_PRINTED"
     finally:
         check.close()
 
