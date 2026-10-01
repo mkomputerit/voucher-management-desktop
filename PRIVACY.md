@@ -42,6 +42,17 @@ non-nominal and a person's name can be nominal only when the operator selects
 the flag. Existing vouchers for which that choice was never recorded remain
 "non classificati"; the application does not infer nominal status from names.
 
+
+Administrative report exports use two privacy levels. **Riepilogo storico** is
+aggregate-only and does not include per-voucher recipient data, UniFi
+descriptions, local notes or Windows print-operator identities. Detailed PDF/CSV
+reports do not expose the clear voucher code for administrative purposes, but
+may include the immutable UniFi voucher ID, controller name, local recipient,
+UniFi description, local notes, timestamps, nominal classification and Windows
+operator identities associated with printing. These detailed exports are
+therefore sensitive local operational data and should be stored and shared with
+the same access controls used for the application database and backups.
+
 If a physical print was submitted but its audit write has not completed, a
 local `pending_print_audit.json` file temporarily stores only HMAC voucher
 identifiers plus print metadata needed for idempotent recovery. It does not
