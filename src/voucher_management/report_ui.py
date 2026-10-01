@@ -18,7 +18,7 @@ REPORT_CHOICES = (
     ("Utilizzati almeno una volta", ReportKind.USED),
     ("Scaduti", ReportKind.EXPIRED),
     ("Stampati", ReportKind.PRINTED),
-    ("Stampati mai osservati usati", ReportKind.PRINTED_UNUSED),
+    ("Stampati senza uso positivo osservato", ReportKind.PRINTED_UNUSED),
     ("Mai stampati", ReportKind.NEVER_PRINTED),
     ("Nominali", ReportKind.NOMINAL),
     ("Non classificati", ReportKind.UNCLASSIFIED),
