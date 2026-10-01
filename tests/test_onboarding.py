@@ -8,7 +8,6 @@ import pytest
 
 from voucher_management.database import Database
 from voucher_management.onboarding import (
-    DEFAULT_VOUCHER_RETENTION_DAYS,
     OnboardingDraft,
     OnboardingState,
     begin_onboarding,
@@ -22,7 +21,8 @@ from voucher_management.onboarding_ui import (
     schedule_first_run_onboarding,
     startup_onboarding_state,
 )
-from voucher_management.retention import retention_intro_seen
+from voucher_management.operational_alerts import unprinted_warning_days
+from voucher_management.security_revocation import security_revoke_days
 from voucher_management.settings import DEFAULT_SETTINGS, SettingsStore
 
 
@@ -46,30 +46,30 @@ def _draft():
         pdf_subtitle="Voucher temporaneo",
         pdf_contact="Reception",
         pdf_notes="Conservare il voucher",
-        unused_unprinted_days=180,
+        unprinted_warning_days=14,
+        security_revoke_days=30,
     )
 
 
 @pytest.mark.parametrize(
-    ("state", "expected"),
+    "state",
     [
-        (OnboardingState.EXISTING_INSTALLATION, True),
-        (OnboardingState.COMPLETE, True),
-        (OnboardingState.REQUIRED, False),
-        (OnboardingState.MIGRATION_AVAILABLE, False),
+        OnboardingState.EXISTING_INSTALLATION,
+        OnboardingState.COMPLETE,
+        OnboardingState.REQUIRED,
+        OnboardingState.MIGRATION_AVAILABLE,
     ],
 )
-def test_retention_startup_gate_covers_completed_upgrades(
+def test_privacy_retention_startup_gate_is_disabled(
     monkeypatch,
     state,
-    expected,
 ):
     monkeypatch.setattr(
         "voucher_management.modern_app.startup_onboarding_state",
         lambda _app: state,
     )
     fake = object()
-    assert ModernVoucherApp._retention_intro_allowed_on_startup(fake) is expected
+    assert ModernVoucherApp._retention_intro_allowed_on_startup(fake) is False
 
 
 def test_fresh_database_requires_onboarding(tmp_path):
@@ -130,7 +130,7 @@ def test_existing_operational_database_is_not_forced_through_new_install(tmp_pat
         database.close()
 
 
-def test_complete_onboarding_persists_profile_retention_and_nonsecret_settings(
+def test_complete_onboarding_persists_profile_thresholds_and_nonsecret_settings(
     tmp_path,
 ):
     database = _database(tmp_path)
@@ -150,11 +150,10 @@ def test_complete_onboarding_persists_profile_retention_and_nonsecret_settings(
         assert profile["pdf_title"] == "Accesso Wi-Fi"
         assert profile["pdf_contact"] == "Reception"
 
-        retention = database.retention_policy()
-        assert retention["unused_unprinted_days"] == 180
-        assert retention["protect_used"] == 1
-        assert retention["protect_printed"] == 1
-        assert retention_intro_seen(database) is True
+        assert unprinted_warning_days(database) == 14
+        assert security_revoke_days(database) == 30
+        assert unprinted_warning_days(database) is None
+        assert security_revoke_days(database) is None
 
         assert settings["structure_name"] == "Sala Assemblee"
         assert settings["wifi_title"] == "Wi-Fi ospiti"
@@ -175,7 +174,8 @@ def test_onboarding_completion_is_idempotent_and_updates_profile(tmp_path):
             **{
                 **_draft().__dict__,
                 "installation_name": "Postazione aggiornata",
-                "unused_unprinted_days": 365,
+                "unprinted_warning_days": 21,
+                "security_revoke_days": 45,
             }
         )
         complete_onboarding(
@@ -191,7 +191,8 @@ def test_onboarding_completion_is_idempotent_and_updates_profile(tmp_path):
         assert database.installation_profile()["installation_name"] == (
             "Postazione aggiornata"
         )
-        assert database.retention_policy()["unused_unprinted_days"] == 365
+        assert unprinted_warning_days(database) == 21
+        assert security_revoke_days(database) == 45
     finally:
         database.close()
 
@@ -243,18 +244,19 @@ def test_onboarding_draft_has_no_credential_fields():
     )
 
 
+@pytest.mark.parametrize("field", ["unprinted_warning_days", "security_revoke_days"])
 @pytest.mark.parametrize("days", [0, -1, 3651])
-def test_onboarding_rejects_unsafe_retention(days, tmp_path):
+def test_onboarding_rejects_unsafe_thresholds(field, days, tmp_path):
     database = _database(tmp_path)
     store = SettingsStore(tmp_path / "settings.json")
     try:
         draft = OnboardingDraft(
             **{
                 **_draft().__dict__,
-                "unused_unprinted_days": days,
+                field: days,
             }
         )
-        with pytest.raises(ValueError, match="retention"):
+        with pytest.raises(ValueError, match="soglia"):
             complete_onboarding(
                 database,
                 store,
@@ -263,6 +265,8 @@ def test_onboarding_rejects_unsafe_retention(days, tmp_path):
             )
 
         assert database.installation_profile() is None
+        assert unprinted_warning_days(database) is None
+        assert security_revoke_days(database) is None
     finally:
         database.close()
 
@@ -525,7 +529,7 @@ def test_scheduler_does_not_force_existing_installation(tmp_path):
 
 
 
-def test_onboarding_requires_explicit_retention_value(tmp_path):
+def test_onboarding_requires_both_explicit_threshold_values(tmp_path):
     database = _database(tmp_path)
     store = SettingsStore(tmp_path / "settings.json")
     try:
