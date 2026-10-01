@@ -52,6 +52,39 @@ function Assert-Rights {
 
 try {
     New-Item -ItemType Directory -Force -Path $root | Out-Null
+
+    # A failure before the staged application swap must never destroy the
+    # previously installed version or leave a shared-deployment marker behind.
+    New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+    $oldInstallSentinel = Join-Path $installRoot "old-install.txt"
+    Set-Content -LiteralPath $oldInstallSentinel -Value "old" -Encoding ascii
+    $invalidDataRoot = Join-Path $root "invalid-data-root"
+    Set-Content -LiteralPath $invalidDataRoot -Value "not-a-directory" -Encoding ascii
+    $failedAsExpected = $false
+    try {
+        $failedArgs = @{
+            SourcePath = $SourcePath
+            InstallRoot = $installRoot
+            DataRoot = $invalidDataRoot
+            OperatorGroup = $groupName
+            OperatorUser = $operatorUser
+            SkipShortcut = $true
+        }
+        & $installer @failedArgs
+    }
+    catch {
+        $failedAsExpected = $true
+    }
+    if (-not $failedAsExpected) {
+        throw "Il test di installazione fallita non ha prodotto un errore."
+    }
+    if (-not (Test-Path -LiteralPath $oldInstallSentinel -PathType Leaf)) {
+        throw "Un'installazione fallita ha distrutto la versione precedente."
+    }
+    if (Test-Path -LiteralPath (Join-Path $installRoot "voucher-management-deployment.json")) {
+        throw "Un'installazione fallita ha scritto il marker shared mode."
+    }
+
     New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
     $legacyFile = Join-Path $dataRoot "legacy-permissive.txt"
     Set-Content -LiteralPath $legacyFile -Value "legacy" -Encoding ascii
