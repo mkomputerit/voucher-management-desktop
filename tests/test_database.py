@@ -690,6 +690,92 @@ def test_intermediate_schema_three_with_redaction_column_upgrades_idempotently(t
         migrated.close()
 
 
+def test_schema_four_upgrade_moves_only_legacy_recipient_to_local_metadata(tmp_path):
+    path = tmp_path / "schema-four-legacy-recipient.db"
+    db = Database(path)
+    db.initialize()
+    legacy_controller = db.create_controller(
+        name="Archivio backup precedente",
+        api_root="legacy-backup://fixture",
+        created_at="t",
+    )
+    live_controller = db.create_controller(
+        name="UniFi reale",
+        api_root="https://controller.example",
+        created_at="t",
+    )
+    legacy_id = db.upsert_voucher(
+        controller_id=legacy_controller,
+        unifi_id="legacy-backup-fixture-1",
+        code="12345-67890",
+        name="Ospite legacy",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    preserved_id = db.upsert_voucher(
+        controller_id=legacy_controller,
+        unifi_id="legacy-backup-fixture-2",
+        code="11111-22222",
+        name="Vecchio destinatario recuperato",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    live_id = db.upsert_voucher(
+        controller_id=live_controller,
+        unifi_id="real-uuid",
+        code="98765-43210",
+        name="Descrizione UniFi",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            "UPDATE vouchers SET assigned_to=? WHERE id=?",
+            ("Destinatario locale già corretto", preserved_id),
+        )
+        tx.execute(
+            "UPDATE vouchers SET assigned_to=? WHERE id=?",
+            ("Destinatario live", live_id),
+        )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("PRAGMA user_version = 4")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '4')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        legacy = migrated.connection.execute(
+            "SELECT name, assigned_to FROM vouchers WHERE id=?",
+            (legacy_id,),
+        ).fetchone()
+        preserved = migrated.connection.execute(
+            "SELECT name, assigned_to FROM vouchers WHERE id=?",
+            (preserved_id,),
+        ).fetchone()
+        live = migrated.connection.execute(
+            "SELECT name, assigned_to FROM vouchers WHERE id=?",
+            (live_id,),
+        ).fetchone()
+
+        assert legacy["name"] == ""
+        assert legacy["assigned_to"] == "Ospite legacy"
+        assert preserved["name"] == ""
+        assert preserved["assigned_to"] == "Destinatario locale già corretto"
+        assert live["name"] == "Descrizione UniFi"
+        assert live["assigned_to"] == "Destinatario live"
+        assert migrated.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0] == SCHEMA_VERSION
+    finally:
+        migrated.close()
+
+
 def test_failed_schema_two_upgrade_rolls_back_partial_ddl(tmp_path, monkeypatch):
     path = tmp_path / "schema-two-failure.db"
     db = Database(path)
