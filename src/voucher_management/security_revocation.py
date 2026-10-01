@@ -124,7 +124,6 @@ def security_revocation_candidates(
                 v.unifi_id,
                 v.code,
                 v.name,
-                v.assigned_to,
                 MAX(vp.printed_at) AS last_printed_at,
                 v.last_seen_at,
                 v.last_synced_at
@@ -149,7 +148,7 @@ def security_revocation_candidates(
               {controller_clause}
             GROUP BY
                 v.id, v.controller_id, c.name, v.unifi_id, v.code, v.name,
-                v.assigned_to, v.last_seen_at, v.last_synced_at
+                v.last_seen_at, v.last_synced_at
             HAVING MAX(vp.printed_at) <= ?
                AND v.last_seen_at IS NOT NULL
                AND julianday(v.last_seen_at) > julianday(MAX(vp.printed_at))
@@ -164,10 +163,7 @@ def security_revocation_candidates(
             controller_name=str(row["controller_name"] or "Controller"),
             unifi_id=str(row["unifi_id"]),
             code=str(row["code"]),
-            recipient=(
-                str(row["assigned_to"] or "").strip()
-                or str(row["name"] or "").strip()
-            ),
+            recipient=str(row["name"] or "").strip(),
             last_printed_at=str(row["last_printed_at"] or ""),
             last_seen_at=str(row["last_seen_at"] or ""),
             last_synced_at=str(row["last_synced_at"] or ""),
