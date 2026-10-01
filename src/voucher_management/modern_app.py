@@ -29,6 +29,7 @@ from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
 from .report_ui import ReportDialog
 from .reporting import ReportKind, build_report_dataset_from_path
+from .retention import retention_days_configured
 from .retention_ui import RetentionMixin
 from .security_revocation_ui import SecurityRevocationMixin
 from .utils import format_fingerprint
@@ -1961,8 +1962,8 @@ class ModernVoucherApp(
                 "Voucher utilizzati, stampati o con PDF generato restano "
                 "protetti. Le evidenze legacy importate sono anch'esse "
                 "conservate fuori dalla retention ordinaria. Gli altri voucher "
-                "possono diventare candidati solo dopo il periodo configurato "
-                "e vengono sempre mostrati prima di qualsiasi minimizzazione."
+                "possono essere riesaminati solo dopo la soglia scelta "
+                "esplicitamente. In questa release nessuna minimizzazione è attiva."
             ),
             style="Muted.TLabel",
             wraplength=760,
@@ -2349,13 +2350,14 @@ class ModernVoucherApp(
         if not hasattr(self, "settings_retention_summary_var"):
             return
         policy = self.database.retention_policy()
-        if policy is None:
+        if policy is None or not retention_days_configured(self.database):
             self.settings_retention_summary_var.set(
-                "Conservazione voucher non ancora configurata."
+                "Soglia retention non ancora scelta. Selezionare un valore "
+                "esplicito prima di calcolare i record da riesaminare."
             )
             return
         self.settings_retention_summary_var.set(
-            "I voucher mai usati e mai stampati diventano candidati dopo "
+            "I record mai usati e mai stampati vengono riesaminati dopo "
             f"{int(policy['unused_unprinted_days'])} giorni."
         )
 
