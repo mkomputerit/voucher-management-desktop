@@ -11,7 +11,8 @@ from voucher_management.local_data import (
     LocalVoucherPatch,
     apply_local_voucher_patch,
 )
-from voucher_management.local_data_ui import selected_workspace_vouchers
+import voucher_management.local_data_ui as local_data_ui
+from voucher_management.local_data_ui import LocalDataMixin, selected_workspace_vouchers
 
 
 NOW = "2026-10-01T09:00:00+00:00"
@@ -240,3 +241,55 @@ def test_explicit_actions_use_existing_workspace_multiselection():
     )
 
     assert selected_workspace_vouchers(app) == (one, three)
+
+
+
+class _LocalDataHarness(LocalDataMixin):
+    pass
+
+
+def test_notes_action_rejects_multiple_workspace_selection(monkeypatch):
+    one = SimpleNamespace(id="one")
+    two = SimpleNamespace(id="two")
+    app = _LocalDataHarness()
+    app.checked_ids = {"one", "two"}
+    app.vouchers = (one, two)
+
+    messages = []
+    opened = []
+    monkeypatch.setattr(
+        local_data_ui.messagebox,
+        "showinfo",
+        lambda *args, **kwargs: messages.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        local_data_ui,
+        "NotesDialog",
+        lambda *args, **kwargs: opened.append((args, kwargs)),
+    )
+
+    app.edit_selected_notes()
+
+    assert opened == []
+    assert len(messages) == 1
+    assert "un solo voucher" in messages[0][0][1]
+
+
+def test_notes_action_opens_for_exactly_one_selected_voucher(monkeypatch):
+    one = SimpleNamespace(id="one")
+    two = SimpleNamespace(id="two")
+    app = _LocalDataHarness()
+    app.checked_ids = {"two"}
+    app.vouchers = (one, two)
+
+    opened = []
+    monkeypatch.setattr(
+        local_data_ui,
+        "NotesDialog",
+        lambda *args, **kwargs: opened.append((args, kwargs)),
+    )
+
+    app.edit_selected_notes()
+
+    assert len(opened) == 1
+    assert opened[0][0][1] == (two,)
