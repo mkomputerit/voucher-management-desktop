@@ -45,6 +45,7 @@ def _draft():
         pdf_subtitle="Voucher temporaneo",
         pdf_contact="Reception",
         pdf_notes="Conservare il voucher",
+        unused_unprinted_days=180,
     )
 
 
@@ -127,7 +128,7 @@ def test_complete_onboarding_persists_profile_retention_and_nonsecret_settings(
         assert profile["pdf_contact"] == "Reception"
 
         retention = database.retention_policy()
-        assert retention["unused_unprinted_days"] == DEFAULT_VOUCHER_RETENTION_DAYS
+        assert retention["unused_unprinted_days"] == 180
         assert retention["protect_used"] == 1
         assert retention["protect_printed"] == 1
         assert retention_intro_seen(database) is True
@@ -496,5 +497,27 @@ def test_scheduler_does_not_force_existing_installation(tmp_path):
         state = schedule_first_run_onboarding(app)
         assert state is OnboardingState.EXISTING_INSTALLATION
         assert scheduled == []
+    finally:
+        database.close()
+
+
+
+def test_onboarding_requires_explicit_retention_value(tmp_path):
+    database = _database(tmp_path)
+    store = SettingsStore(tmp_path / "settings.json")
+    try:
+        draft = OnboardingDraft(
+            installation_name="Postazione reception",
+            structure_name="Sala Assemblee",
+            wifi_title="Wi-Fi ospiti",
+        )
+        with pytest.raises(ValueError):
+            complete_onboarding(
+                database,
+                store,
+                draft,
+                observed_at=NOW,
+            )
+        assert database.installation_profile() is None
     finally:
         database.close()
