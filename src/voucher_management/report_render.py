@@ -112,7 +112,7 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
 
 
 def _detail_headers(dataset: ReportDataset) -> list[str]:
-    headers = ["Controller"]
+    headers = ["Controller", "ID UniFi"]
     if dataset.code_exposed:
         headers.append("Voucher")
     headers.extend(
@@ -138,7 +138,7 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
 
 
 def _detail_row(dataset: ReportDataset, row) -> list[str]:
-    values = [row.controller_name]
+    values = [row.controller_name, row.unifi_id]
     if dataset.code_exposed:
         values.append(row.code)
     values.extend(
@@ -243,6 +243,7 @@ def render_report_pdf(
             for row in dataset.rows
             for value in (
                 row.controller_name,
+                row.unifi_id,
                 row.recipient,
                 row.status,
                 ", ".join(row.print_operators),
@@ -376,9 +377,9 @@ def render_report_pdf(
             else:
                 usable = page_width - 20 * mm
                 if dataset.code_exposed:
-                    weights = [0.72, 0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.72, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
+                    weights = [0.65, 0.9, 0.72, 1.0, 0.84, 0.52, 0.64, 0.64, 0.64, 0.68, 0.62, 0.44, 0.38, 0.38, 0.38, 0.42, 0.68, 0.52]
                 else:
-                    weights = [0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.72, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
+                    weights = [0.65, 0.9, 1.0, 0.84, 0.52, 0.64, 0.64, 0.64, 0.68, 0.62, 0.44, 0.38, 0.38, 0.38, 0.42, 0.68, 0.52]
                 scale = usable / sum(weights)
                 detail_table = Table(
                     rows,
