@@ -321,6 +321,32 @@ def test_printed_never_observed_used_uses_historical_usage_fact(tmp_path):
         db.close()
 
 
+def test_print_operator_is_preserved_in_report_dataset(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller, "printed-operator", "5656565656")
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="operator-job",
+            codes=["56565-65656"],
+            output_file="operator.pdf",
+            document_copies=1,
+            printed_at="2026-09-02T10:00:00+00:00",
+            windows_user=r"RECEPTION\alice",
+        )
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.PRINTED,
+            generated_at=NOW,
+        )
+
+        assert [row.voucher_id for row in dataset.rows] == [voucher_id]
+        assert dataset.rows[0].print_operators == (r"RECEPTION\alice",)
+    finally:
+        db.close()
+
+
 def test_printed_report_includes_unknown_usage_without_calling_it_unused(tmp_path):
     db, controller = _db(tmp_path)
     try:
