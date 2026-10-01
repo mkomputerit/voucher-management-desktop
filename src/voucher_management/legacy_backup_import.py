@@ -492,7 +492,7 @@ def _ensure_import_candidates(
 
     for canonical in resolved_pdf_codes:
         rows = database.connection.execute(
-            """SELECT id, controller_id, unifi_id, code, archived_at
+            """SELECT id, controller_id, unifi_id, code, assigned_to, archived_at
                FROM vouchers
                WHERE REPLACE(code, '-', '')=?
                ORDER BY id""",
@@ -541,14 +541,31 @@ def _ensure_import_candidates(
             if selected["archived_at"] is not None and retention_event is not None:
                 minimized_ids.add(selected_id)
                 continue
-            if selected["archived_at"] is not None and retention_event is None:
-                # Repair the early 5.1 import bug where archived_at was used as
-                # an import marker rather than a true retention marker.
+            meta = metadata.get(canonical, _RecoveredMetadata())
+            repair_archived = (
+                selected["archived_at"] is not None
+                and retention_event is None
+            )
+            recover_recipient = (
+                not str(selected["assigned_to"] or "").strip()
+                and bool(meta.recipient)
+            )
+            if repair_archived or recover_recipient:
                 with database.transaction() as db:
-                    db.execute(
-                        "UPDATE vouchers SET archived_at=NULL WHERE id=?",
-                        (selected_id,),
-                    )
+                    if repair_archived:
+                        # Repair the early 5.1 import bug where archived_at was
+                        # used as an import marker rather than retention.
+                        db.execute(
+                            "UPDATE vouchers SET archived_at=NULL WHERE id=?",
+                            (selected_id,),
+                        )
+                    if recover_recipient:
+                        db.execute(
+                            """UPDATE vouchers
+                               SET assigned_to=?
+                               WHERE id=? AND TRIM(assigned_to)=''""",
+                            (meta.recipient, selected_id),
+                        )
             chosen.append(
                 LegacyVoucherCandidate(
                     controller_id=int(selected["controller_id"]),
