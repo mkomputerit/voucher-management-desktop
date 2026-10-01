@@ -589,8 +589,16 @@ class LocalDataMixin:
 
     def edit_selected_notes(self) -> None:
         vouchers = self._require_workspace_selection("Note voucher")
-        if vouchers:
-            NotesDialog(self, vouchers)
+        if not vouchers:
+            return
+        if len(vouchers) != 1:
+            messagebox.showinfo(
+                "Note voucher",
+                "Le note locali possono essere modificate su un solo voucher alla volta.",
+                parent=self,
+            )
+            return
+        NotesDialog(self, vouchers)
 
     def align_pending_vouchers(self) -> None:
         if getattr(self, "active_controller_id", None) is None:
