@@ -927,3 +927,68 @@ def test_security_review_report_uses_last_print_threshold(tmp_path):
         assert dataset.title.endswith("(10 giorni dall'ultima stampa)")
     finally:
         db.close()
+
+
+
+def test_unknown_print_state_is_not_reported_as_never_printed(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "legacy-unknown-print",
+            "4040404040",
+        )
+
+        never_printed = build_report_dataset(
+            db,
+            kind=ReportKind.NEVER_PRINTED,
+            generated_at=NOW,
+        )
+        unknown = build_report_dataset(
+            db,
+            kind=ReportKind.PRINT_UNKNOWN,
+            generated_at=NOW,
+        )
+
+        assert voucher_id not in {row.voucher_id for row in never_printed.rows}
+        assert [row.voucher_id for row in unknown.rows] == [voucher_id]
+        assert unknown.totals.print_unknown_vouchers == 1
+        assert unknown.totals.never_printed == 0
+    finally:
+        db.close()
+
+
+def test_explicit_legacy_printed_state_counts_as_printed_without_known_print_date(
+    tmp_path,
+):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "legacy-known-printed",
+            "5050505050",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET print_state='PRINTED',
+                       alignment_completed_at=?
+                   WHERE id=?""",
+                (NOW, voucher_id),
+            )
+
+        printed = build_report_dataset(
+            db,
+            kind=ReportKind.PRINTED,
+            generated_at=NOW,
+        )
+
+        assert [row.voucher_id for row in printed.rows] == [voucher_id]
+        assert printed.rows[0].last_printed_at == ""
+        assert printed.rows[0].status == "Stampato"
+        assert printed.totals.printed_vouchers == 1
+        assert printed.totals.print_unknown_vouchers == 0
+    finally:
+        db.close()
