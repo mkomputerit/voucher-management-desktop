@@ -29,6 +29,7 @@ from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
 from .report_ui import ReportDialog
 from .reporting import ReportKind, build_report_dataset_from_path
 from .retention_ui import RetentionMixin
+from .security_revocation_ui import SecurityRevocationMixin
 from .utils import format_fingerprint
 from .data_maintenance_ui import DataMaintenanceMixin
 from .backup_options_ui import default_backup_directory, validate_backup_directory
@@ -953,6 +954,7 @@ class MigrationRequiredDialog(tk.Toplevel):
 
 
 class ModernVoucherApp(
+    SecurityRevocationMixin,
     RetentionMixin,
     DataMaintenanceMixin,
     ControllerConnectionMixin,
@@ -1960,6 +1962,30 @@ class ModernVoucherApp(
             retention,
             text="Rivedi conservazione…",
             command=lambda: self.open_retention_review(parent=self),
+        ).pack(anchor="w")
+
+        ttk.Separator(retention).pack(fill="x", pady=18)
+        ttk.Label(
+            retention,
+            text="Revoca di sicurezza",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            retention,
+            text=(
+                "I voucher già stampati e rimasti inutilizzati oltre una soglia "
+                "scelta dall'operatore possono essere proposti per la revoca "
+                "dalla controller. Prima della DELETE viene eseguita una nuova "
+                "lettura live del voucher. La revoca non cancella il codice né "
+                "lo storico locale."
+            ),
+            style="Muted.TLabel",
+            wraplength=760,
+        ).pack(anchor="w", pady=(8, 12))
+        ttk.Button(
+            retention,
+            text="Rivedi revoche di sicurezza…",
+            command=lambda: self.open_security_revocation(parent=self),
             style="Accent.TButton",
         ).pack(anchor="w")
 
