@@ -108,8 +108,20 @@ $destination = [IO.Path]::GetFullPath($InstallRoot)
 if (-not (Test-Path -LiteralPath (Join-Path $source "VoucherManagement.exe") -PathType Leaf)) {
     throw "VoucherManagement.exe non trovato nella cartella sorgente: $source"
 }
-if ($destination.StartsWith($source, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "La cartella di installazione non può essere contenuta nella sorgente."
+$sourceWithSeparator = $source.TrimEnd("\") + "\"
+$destinationWithSeparator = $destination.TrimEnd("\") + "\"
+if (
+    $destination -ieq $source
+    -or $destinationWithSeparator.StartsWith(
+        $sourceWithSeparator,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+    -or $sourceWithSeparator.StartsWith(
+        $destinationWithSeparator,
+        [StringComparison]::OrdinalIgnoreCase
+    )
+) {
+    throw "La sorgente e la cartella di installazione non possono sovrapporsi."
 }
 
 $running = Get-Process -Name "VoucherManagement" -ErrorAction SilentlyContinue
@@ -120,23 +132,68 @@ if ($running) {
 $operator = Resolve-InteractiveUser -ExplicitUser $OperatorUser
 $group = Ensure-OperatorGroup -Name $OperatorGroup -Member $operator
 
-if (Test-Path -LiteralPath $destination) {
-    Remove-Item -LiteralPath $destination -Recurse -Force
-}
-New-Item -ItemType Directory -Force -Path $destination | Out-Null
-Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
-    Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force
-}
-
-$marker = @{ format = 1; mode = "shared_programdata" } | ConvertTo-Json -Compress
-$utf8NoBom = [Text.UTF8Encoding]::new($false)
-[IO.File]::WriteAllText(
-    (Join-Path $destination "voucher-management-deployment.json"),
-    $marker,
-    $utf8NoBom
-)
-
+# Secure the shared data tree before making any installed executable advertise
+# shared mode. If ACL preparation fails, the previous application installation
+# remains untouched and no shared-deployment marker is written.
 Set-SharedDataAcl -Path $DataRoot -OperatorGroupSid $group.SID
+
+$destinationParent = Split-Path -Parent $destination
+New-Item -ItemType Directory -Force -Path $destinationParent | Out-Null
+$staging = $destination + ".staging-" + [Guid]::NewGuid().ToString("N")
+$previous = $destination + ".previous-" + [Guid]::NewGuid().ToString("N")
+$previousMoved = $false
+
+try {
+    New-Item -ItemType Directory -Force -Path $staging | Out-Null
+    Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $staging -Recurse -Force
+    }
+
+    $marker = @{ format = 1; mode = "shared_programdata" } | ConvertTo-Json -Compress
+    $utf8NoBom = [Text.UTF8Encoding]::new($false)
+    [IO.File]::WriteAllText(
+        (Join-Path $staging "voucher-management-deployment.json"),
+        $marker,
+        $utf8NoBom
+    )
+
+    if (Test-Path -LiteralPath $destination) {
+        Move-Item -LiteralPath $destination -Destination $previous
+        $previousMoved = $true
+    }
+
+    try {
+        Move-Item -LiteralPath $staging -Destination $destination
+    }
+    catch {
+        if (
+            $previousMoved
+            -and (Test-Path -LiteralPath $previous)
+            -and -not (Test-Path -LiteralPath $destination)
+        ) {
+            Move-Item -LiteralPath $previous -Destination $destination
+            $previousMoved = $false
+        }
+        throw
+    }
+
+    if ($previousMoved -and (Test-Path -LiteralPath $previous)) {
+        Remove-Item -LiteralPath $previous -Recurse -Force
+        $previousMoved = $false
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $staging) {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (
+        $previousMoved
+        -and (Test-Path -LiteralPath $previous)
+        -and -not (Test-Path -LiteralPath $destination)
+    ) {
+        Move-Item -LiteralPath $previous -Destination $destination -ErrorAction SilentlyContinue
+    }
+}
 
 if (-not $SkipShortcut) {
     $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs"
