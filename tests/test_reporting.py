@@ -502,6 +502,11 @@ def test_security_revoked_report_preserves_history_and_labels_status(tmp_path):
             "7777788888",
             name="Guest Revoked",
         )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET assigned_to=? WHERE id=?",
+                ("Local Guest Revoked", voucher_id),
+            )
         db.record_print_audit(
             controller_id=controller,
             audit_id="revoked-job",
@@ -526,7 +531,8 @@ def test_security_revoked_report_preserves_history_and_labels_status(tmp_path):
         assert [row.voucher_id for row in dataset.rows] == [voucher_id]
         row = dataset.rows[0]
         assert row.status == "Revocato per sicurezza"
-        assert row.recipient == "Guest Revoked"
+        assert row.recipient == "Local Guest Revoked"
+        assert row.unifi_name == "Guest Revoked"
         assert row.security_revoked_at == "2026-09-30T08:00:00+00:00"
         assert dataset.totals.security_revoked_vouchers == 1
 
@@ -766,5 +772,57 @@ def test_reporting_rejects_missing_unifi_identity(tmp_path):
                 kind=ReportKind.FULL_HISTORY,
                 generated_at=NOW,
             )
+    finally:
+        db.close()
+
+
+
+def test_report_keeps_local_recipient_distinct_from_unifi_description(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "source-separation",
+            "3131313131",
+            name="Descrizione controller",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET assigned_to=? WHERE id=?",
+                ("Destinatario locale", voucher_id),
+            )
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+        row = next(item for item in dataset.rows if item.voucher_id == voucher_id)
+        assert row.recipient == "Destinatario locale"
+        assert row.unifi_name == "Descrizione controller"
+    finally:
+        db.close()
+
+
+def test_report_does_not_infer_local_recipient_from_unifi_description(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "no-local-recipient",
+            "4141414141",
+            name="Solo descrizione UniFi",
+        )
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+        row = next(item for item in dataset.rows if item.voucher_id == voucher_id)
+        assert row.recipient == ""
+        assert row.unifi_name == "Solo descrizione UniFi"
     finally:
         db.close()
