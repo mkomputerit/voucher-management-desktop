@@ -117,7 +117,8 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
         headers.append("Voucher")
     headers.extend(
         [
-            "Destinatario",
+            "Destinatario locale",
+            "Descrizione UniFi",
             "Origine",
             "Nominale",
             "Creazione controller",
@@ -144,6 +145,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
     values.extend(
         [
             row.recipient or "—",
+            row.unifi_name or "—",
             origin_label(row.origin),
             nominal_label(
                 row.is_nominal,
@@ -376,10 +378,20 @@ def render_report_pdf(
                 )
             else:
                 usable = page_width - 20 * mm
+                weights = [0.62, 0.86]
                 if dataset.code_exposed:
-                    weights = [0.65, 0.9, 0.72, 1.0, 0.84, 0.52, 0.64, 0.64, 0.64, 0.68, 0.62, 0.44, 0.38, 0.38, 0.38, 0.42, 0.68, 0.52]
-                else:
-                    weights = [0.65, 0.9, 1.0, 0.84, 0.52, 0.64, 0.64, 0.64, 0.68, 0.62, 0.44, 0.38, 0.38, 0.38, 0.42, 0.68, 0.52]
+                    weights.append(0.70)
+                weights.extend(
+                    [
+                        0.96, 0.96, 0.80, 0.50, 0.60, 0.60, 0.60,
+                        0.64, 0.58, 0.40, 0.35, 0.35, 0.35, 0.35,
+                        0.40, 0.64, 0.50,
+                    ]
+                )
+                if len(weights) != len(headers):
+                    raise RuntimeError(
+                        "report PDF column geometry does not match export fields"
+                    )
                 scale = usable / sum(weights)
                 detail_table = Table(
                     rows,
