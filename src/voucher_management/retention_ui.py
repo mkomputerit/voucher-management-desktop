@@ -12,6 +12,7 @@ from .retention import (
     load_retention_policy,
     mark_retention_intro_seen,
     retention_intro_seen,
+    retention_days_configured,
     reviewable_retention_candidates,
     update_retention_days
 )
@@ -114,7 +115,13 @@ class RetentionReviewDialog(tk.Toplevel):
         self.minsize(760, 480)
 
         policy = load_retention_policy(app.database)
-        self.days = tk.StringVar(value=str(policy.unused_unprinted_days))
+        self.days = tk.StringVar(
+            value=(
+                str(policy.unused_unprinted_days)
+                if retention_days_configured(app.database)
+                else ""
+            )
+        )
         self.status = tk.StringVar()
 
         shell = ttk.Frame(self, padding=18)
@@ -139,7 +146,7 @@ class RetentionReviewDialog(tk.Toplevel):
 
         policy_row = ttk.Frame(shell)
         policy_row.pack(fill="x", pady=(0, 12))
-        ttk.Label(policy_row, text="Età minima").pack(side="left")
+        ttk.Label(policy_row, text="Età minima scelta").pack(side="left")
         ttk.Spinbox(
             policy_row,
             from_=1,
@@ -236,9 +243,14 @@ class RetentionReviewDialog(tk.Toplevel):
                     _display_time(candidate.last_synced_at),
                 ),
             )
-        self.status.set(
-            f"{len(candidates)} record da riesaminare. Nessuna minimizzazione è attiva."
-        )
+        if not retention_days_configured(self.app.database):
+            self.status.set(
+                "Scegliere e salvare una soglia prima di calcolare i record da riesaminare."
+            )
+        else:
+            self.status.set(
+                f"{len(candidates)} record da riesaminare. Nessuna minimizzazione è attiva."
+            )
 
     def _save_policy(self) -> None:
         try:
