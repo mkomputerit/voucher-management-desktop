@@ -538,3 +538,106 @@ def test_security_revoked_report_preserves_history_and_labels_status(tmp_path):
         assert stored["archived_at"] is None
     finally:
         db.close()
+
+
+
+def test_report_rows_remain_unique_with_multiple_prints_and_revocation_events(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller, "unique-row", "1010101010")
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="job-unique-1",
+            codes=["10101-01010"],
+            output_file="first.pdf",
+            document_copies=2,
+            printed_at="2026-09-02T10:00:00+00:00",
+            windows_user=r"PC\alice",
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="job-unique-2",
+            codes=["10101-01010"],
+            output_file="second.pdf",
+            document_copies=3,
+            printed_at="2026-09-03T10:00:00+00:00",
+            windows_user=r"PC\bob",
+        )
+        record_security_revocations(
+            db,
+            voucher_ids=[voucher_id],
+            revoked_at="2026-09-30T08:00:00+00:00",
+            windows_user=r"PC\admin",
+        )
+        # Additional historical event of the same type must not multiply report rows.
+        with db.transaction() as tx:
+            tx.execute(
+                """INSERT INTO voucher_events(
+                       event_uuid, voucher_id, event_type, occurred_at,
+                       source, windows_user, details_json
+                   ) VALUES (
+                       'extra-security-event', ?, 'SECURITY_REVOKED',
+                       '2026-09-30T09:00:00+00:00',
+                       'SYSTEM', 'PC\\admin', '{}'
+                   )""",
+                (voucher_id,),
+            )
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+
+        matching = [row for row in dataset.rows if row.voucher_id == voucher_id]
+        assert len(matching) == 1
+        row = matching[0]
+        assert row.print_jobs == 2
+        assert row.physical_copies == 5
+        assert row.reprint_jobs == 1
+        assert row.reprint_copies == 3
+        assert row.print_operators == (r"PC\alice", r"PC\bob")
+        assert row.security_revoked_at == "2026-09-30T09:00:00+00:00"
+        assert dataset.totals.vouchers == 1
+        assert dataset.totals.print_jobs == 2
+        assert dataset.totals.physical_copies == 5
+        assert dataset.totals.security_revoked_vouchers == 1
+    finally:
+        db.close()
+
+
+def test_same_code_different_unifi_ids_are_distinct_and_print_audit_fails_closed(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        first = _voucher(db, controller, "uuid-first", "2020202020", name="First")
+        second = _voucher(db, controller, "uuid-second", "2020202020", name="Second")
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+        ids = [row.voucher_id for row in dataset.rows]
+        assert ids.count(first) == 1
+        assert ids.count(second) == 1
+        assert dataset.totals.vouchers == 2
+
+        with pytest.raises(RuntimeError, match="missing or ambiguous"):
+            db.record_print_audit(
+                controller_id=controller,
+                audit_id="ambiguous-code-job",
+                codes=["20202-02020"],
+                output_file="ambiguous.pdf",
+                document_copies=1,
+                printed_at="2026-09-02T10:00:00+00:00",
+                windows_user=r"PC\operator",
+            )
+
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM print_jobs"
+        ).fetchone()[0] == 0
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM voucher_prints"
+        ).fetchone()[0] == 0
+    finally:
+        db.close()
