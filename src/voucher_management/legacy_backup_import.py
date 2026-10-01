@@ -492,7 +492,7 @@ def _ensure_import_candidates(
 
     for canonical in resolved_pdf_codes:
         rows = database.connection.execute(
-            """SELECT id, controller_id, unifi_id, code, assigned_to, archived_at
+            """SELECT id, controller_id, unifi_id, code, name, archived_at
                FROM vouchers
                WHERE REPLACE(code, '-', '')=?
                ORDER BY id""",
@@ -541,31 +541,18 @@ def _ensure_import_candidates(
             if selected["archived_at"] is not None and retention_event is not None:
                 minimized_ids.add(selected_id)
                 continue
-            meta = metadata.get(canonical, _RecoveredMetadata())
             repair_archived = (
                 selected["archived_at"] is not None
                 and retention_event is None
             )
-            recover_recipient = (
-                not str(selected["assigned_to"] or "").strip()
-                and bool(meta.recipient)
-            )
-            if repair_archived or recover_recipient:
+            if repair_archived:
                 with database.transaction() as db:
-                    if repair_archived:
-                        # Repair the early 5.1 import bug where archived_at was
-                        # used as an import marker rather than retention.
-                        db.execute(
-                            "UPDATE vouchers SET archived_at=NULL WHERE id=?",
-                            (selected_id,),
-                        )
-                    if recover_recipient:
-                        db.execute(
-                            """UPDATE vouchers
-                               SET assigned_to=?
-                               WHERE id=? AND TRIM(assigned_to)=''""",
-                            (meta.recipient, selected_id),
-                        )
+                    # Repair the early 5.1 import bug where archived_at was
+                    # used as an import marker rather than retention.
+                    db.execute(
+                        "UPDATE vouchers SET archived_at=NULL WHERE id=?",
+                        (selected_id,),
+                    )
             chosen.append(
                 LegacyVoucherCandidate(
                     controller_id=int(selected["controller_id"]),
@@ -623,12 +610,12 @@ def _ensure_import_candidates(
                 if existing is None:
                     cursor = db.execute(
                         """INSERT INTO vouchers
-                           (controller_id, unifi_id, code, name, assigned_to,
+                           (controller_id, unifi_id, code, name,
                             created_at, imported_at, duration_minutes,
                             authorized_guest_count, ever_used, usage_observed,
                             expired, present_on_controller, last_seen_at,
                             last_synced_at, archived_at, origin)
-                           VALUES (?, ?, ?, '', ?, NULL, ?, ?, 0, 0, 0, 1, 0, NULL, ?, NULL, 'UNKNOWN')""",
+                           VALUES (?, ?, ?, ?, NULL, ?, ?, 0, 0, 0, 1, 0, NULL, ?, NULL, 'UNKNOWN')""",
                         (
                             archive_controller_id,
                             unifi_id,
@@ -658,11 +645,10 @@ def _ensure_import_candidates(
                     db.execute(
                         """UPDATE vouchers
                            SET code=?,
-                               assigned_to=CASE
-                                   WHEN TRIM(assigned_to)='' THEN ?
-                                   ELSE assigned_to
+                               name=CASE
+                                   WHEN TRIM(name)='' THEN ?
+                                   ELSE name
                                END,
-                               name='',
                                origin='UNKNOWN',
                                duration_minutes=COALESCE(duration_minutes, ?),
                                expired=1, present_on_controller=0,
