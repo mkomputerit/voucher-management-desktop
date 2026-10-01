@@ -119,6 +119,7 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
         [
             "Destinatario locale",
             "Descrizione UniFi",
+            "Note locali",
             "Origine",
             "Nominale",
             "Creazione controller",
@@ -146,6 +147,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
         [
             row.recipient or "—",
             row.unifi_name or "—",
+            row.local_notes or "—",
             origin_label(row.origin),
             nominal_label(
                 row.is_nominal,
@@ -248,6 +250,7 @@ def render_report_pdf(
                 row.unifi_id,
                 row.recipient,
                 row.unifi_name,
+                row.local_notes,
                 row.status,
                 ", ".join(row.print_operators),
                 row.code,
@@ -384,7 +387,7 @@ def render_report_pdf(
                     weights.append(0.70)
                 weights.extend(
                     [
-                        0.96, 0.96, 0.80, 0.50, 0.60, 0.60, 0.60,
+                        0.96, 0.96, 1.20, 0.80, 0.50, 0.60, 0.60, 0.60,
                         0.64, 0.58, 0.40, 0.35, 0.35, 0.35, 0.35,
                         0.64, 0.50,
                     ]
