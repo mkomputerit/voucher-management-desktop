@@ -315,6 +315,7 @@ def test_create_result_persists_application_origin_and_nominal_flag(tmp_path):
         snapshot_complete=True,
         snapshot_observed=True,
         is_nominal=True,
+        assigned_to="Pinco Pallino",
         observed_at="2026-09-29T08:01:00+00:00",
     )
 
@@ -322,11 +323,14 @@ def test_create_result_persists_application_origin_and_nominal_flag(tmp_path):
     try:
         check.initialize()
         row = check.connection.execute(
-            "SELECT origin, is_nominal FROM vouchers WHERE unifi_id=?",
+            """SELECT origin, is_nominal, assigned_to, name
+               FROM vouchers WHERE unifi_id=?""",
             ("nominal-created",),
         ).fetchone()
         assert row["origin"] == "APPLICATION"
         assert row["is_nominal"] == 1
+        assert row["assigned_to"] == "Pinco Pallino"
+        assert row["name"] == "Pinco Pallino"
     finally:
         check.close()
 
