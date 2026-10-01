@@ -262,6 +262,7 @@ def render_report_pdf(
                 row.unifi_id,
                 row.recipient,
                 row.local_notes,
+                row.preparation_delete_reason,
                 row.status,
                 ", ".join(row.print_operators),
                 row.code,
