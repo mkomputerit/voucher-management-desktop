@@ -247,6 +247,7 @@ def render_report_pdf(
                 row.controller_name,
                 row.unifi_id,
                 row.recipient,
+                row.unifi_name,
                 row.status,
                 ", ".join(row.print_operators),
                 row.code,
