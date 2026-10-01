@@ -102,7 +102,7 @@ class CreateDialog(tk.Toplevel):
 
         ttk.Label(
             frame,
-            text="Numero utilizzi (Multiuso)",
+            text="Limite guest autorizzati (Multiuso)",
         ).grid(row=5, column=0, sticky="w", pady=4)
         ttk.Spinbox(
             frame,
