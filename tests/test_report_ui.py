@@ -166,3 +166,4 @@ def test_report_choices_cover_historical_core_and_data_quality_views():
     assert "Creati ma non stampati oltre soglia" in labels
     assert "Da revocare per sicurezza" in labels
     assert "Revocati per sicurezza" in labels
+    assert "Eliminati dalla controller" in labels
