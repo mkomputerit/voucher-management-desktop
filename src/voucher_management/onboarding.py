@@ -12,11 +12,14 @@ from pathlib import Path
 
 from .database import Database
 from .identity import DEFAULT_STRUCTURE_TYPE, DEFAULT_WIFI_TITLE
-from .retention import RETENTION_INTRO_KEY
+from .retention import (
+    RETENTION_INTRO_KEY,
+    RETENTION_THRESHOLD_CONFIGURED_KEY,
+)
 from .settings import DEFAULT_SETTINGS, SettingsStore
 
 
-DEFAULT_VOUCHER_RETENTION_DAYS = 180
+DEFAULT_VOUCHER_RETENTION_DAYS = 0
 ONBOARDING_IN_PROGRESS_KEY = "onboarding_in_progress"
 SHARED_FRESH_START_KEY = "shared_per_user_migration_decision"
 SHARED_FRESH_START_VALUE = "fresh_start"
@@ -207,6 +210,12 @@ def complete_onboarding(
                VALUES (?, '1', ?)
                ON CONFLICT(key) DO UPDATE SET value='1', updated_at=excluded.updated_at""",
             (RETENTION_INTRO_KEY, observed_at),
+        )
+        db.execute(
+            """INSERT INTO settings(key, value, updated_at)
+               VALUES (?, '1', ?)
+               ON CONFLICT(key) DO UPDATE SET value='1', updated_at=excluded.updated_at""",
+            (RETENTION_THRESHOLD_CONFIGURED_KEY, observed_at),
         )
         database.upsert_installation_profile(
             installation_name=clean.installation_name,
