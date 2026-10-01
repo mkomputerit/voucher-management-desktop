@@ -70,7 +70,7 @@ class NominalityDialog(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.vouchers = tuple(vouchers)
-        self.value = tk.StringVar(value="Nominale")
+        self.value = tk.StringVar(value="")
         self.status = tk.StringVar()
         self.title("Nominalità voucher")
         self.transient(app)
@@ -117,6 +117,13 @@ class NominalityDialog(tk.Toplevel):
         self.save_button.pack(side="right", padx=(0, 8))
 
     def _save(self) -> None:
+        if self.value.get() not in _NOMINAL_VALUES:
+            messagebox.showinfo(
+                "Nominalità",
+                "Selezionare Nominale oppure Non nominale.",
+                parent=self,
+            )
+            return
         try:
             voucher_ids = _local_ids(self.app, self.vouchers)
         except RuntimeError as exc:
