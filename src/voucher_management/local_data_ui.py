@@ -335,25 +335,28 @@ class AlignmentDialog(tk.Toplevel):
         self.tree.column("created", width=180, anchor="center")
         self.tree.column("print", width=180, anchor="center")
         self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._sync_alignment_fields)
 
         fields = ttk.Frame(shell)
         fields.pack(fill="x", pady=(12, 0))
         ttk.Label(fields, text="Nominalità").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(
+        self.nominal_combo = ttk.Combobox(
             fields,
             textvariable=self.nominal,
             values=tuple(_NOMINAL_VALUES),
             state="readonly",
             width=20,
-        ).grid(row=0, column=1, sticky="w", padx=(8, 20))
+        )
+        self.nominal_combo.grid(row=0, column=1, sticky="w", padx=(8, 20))
         ttk.Label(fields, text="Stato stampa").grid(row=0, column=2, sticky="w")
-        ttk.Combobox(
+        self.print_combo = ttk.Combobox(
             fields,
             textvariable=self.print_state,
             values=tuple(_PRINT_VALUES),
             state="readonly",
             width=22,
-        ).grid(row=0, column=3, sticky="w", padx=(8, 0))
+        )
+        self.print_combo.grid(row=0, column=3, sticky="w", padx=(8, 0))
 
         ttk.Label(shell, textvariable=self.status, style="Muted.TLabel").pack(
             anchor="w", pady=(10, 0)
@@ -405,6 +408,41 @@ class AlignmentDialog(tk.Toplevel):
             else "Nessun voucher da allineare."
         )
         self.save_button.state(["!disabled"] if candidates else ["disabled"])
+        self.nominal.set("")
+        self.print_state.set("")
+        self.nominal_combo.configure(state="readonly")
+        self.print_combo.configure(state="readonly")
+
+    def _sync_alignment_fields(self, _event=None) -> None:
+        selected = [
+            self._candidates[value]
+            for value in self.tree.selection()
+            if value in self._candidates
+        ]
+        if not selected:
+            self.nominal.set("")
+            self.print_state.set("")
+            self.nominal_combo.configure(state="readonly")
+            self.print_combo.configure(state="readonly")
+            return
+
+        known_nominal = {item.is_nominal for item in selected if item.is_nominal is not None}
+        unknown_nominal = any(item.is_nominal is None for item in selected)
+        if not unknown_nominal and len(known_nominal) == 1:
+            value = next(iter(known_nominal))
+            self.nominal.set("Nominale" if value else "Non nominale")
+            self.nominal_combo.configure(state="disabled")
+        else:
+            self.nominal.set("")
+            self.nominal_combo.configure(state="readonly")
+
+        verified = [bool(item.last_printed_at) for item in selected]
+        if verified and all(verified):
+            self.print_state.set("Stampato")
+            self.print_combo.configure(state="disabled")
+        else:
+            self.print_state.set("")
+            self.print_combo.configure(state="readonly")
 
     def _save(self) -> None:
         selected = tuple(self.tree.selection())
@@ -432,6 +470,33 @@ class AlignmentDialog(tk.Toplevel):
             return
 
         selected_candidates = [self._candidates[value] for value in selected]
+        verified_flags = [bool(item.last_printed_at) for item in selected_candidates]
+        if any(verified_flags) and not all(verified_flags):
+            messagebox.showinfo(
+                "Allinea voucher",
+                "La selezione mescola voucher con stampa verificata e voucher "
+                "senza storico di stampa. Allinearli in due gruppi separati.",
+                parent=self,
+            )
+            return
+
+        known_nominal = {
+            item.is_nominal
+            for item in selected_candidates
+            if item.is_nominal is not None
+        }
+        has_unknown_nominal = any(
+            item.is_nominal is None for item in selected_candidates
+        )
+        if not has_unknown_nominal and len(known_nominal) > 1:
+            messagebox.showinfo(
+                "Allinea voucher",
+                "La selezione contiene nominalità già assegnate diverse. "
+                "Allineare i gruppi separatamente.",
+                parent=self,
+            )
+            return
+
         requested_print = _PRINT_VALUES[self.print_state.get()]
         if (
             requested_print != PRINT_STATE_PRINTED
