@@ -340,12 +340,59 @@ def test_import_reuses_unique_current_voucher_when_available(tmp_path):
         )
 
         assert result.reused_vouchers == 1
-        current_id = database.connection.execute(
-            """SELECT id FROM vouchers
+        current = database.connection.execute(
+            """SELECT id, name, assigned_to FROM vouchers
                WHERE controller_id=? AND unifi_id='current-voucher'""",
             (controller,),
-        ).fetchone()["id"]
+        ).fetchone()
+        current_id = int(current["id"])
+        assert current["name"] == "Current"
+        assert current["assigned_to"] == "Ospite 1"
         assert database.print_summary(current_id).print_jobs == 1
+    finally:
+        database.close()
+
+
+def test_legacy_import_never_overwrites_existing_local_recipient(tmp_path):
+    source = _legacy_backup(tmp_path)
+    paths, database = _live(tmp_path)
+    try:
+        controller = database.create_controller(
+            name="Reception",
+            api_root="https://controller.example",
+            created_at="2026-09-28T07:00:00+00:00",
+        )
+        voucher_id = database.upsert_voucher(
+            controller_id=controller,
+            unifi_id="current-voucher",
+            code="1234567890",
+            name="Descrizione controller",
+            imported_at="2026-09-28T07:01:00+00:00",
+            last_synced_at="2026-09-28T07:01:00+00:00",
+        )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET assigned_to=? WHERE id=?",
+                ("Destinatario scelto operatore", voucher_id),
+            )
+
+        execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=source,
+            safety_backup_destination=tmp_path / "pre-import-preserve.vmbk",
+            safety_backup_password="a" * 24,
+            imported_at="2026-09-28T08:00:00+00:00",
+            migration_uuid="legacy-import-preserve-local",
+            preferred_controller_id=controller,
+        )
+
+        row = database.connection.execute(
+            "SELECT name, assigned_to FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["name"] == "Descrizione controller"
+        assert row["assigned_to"] == "Destinatario scelto operatore"
     finally:
         database.close()
 
