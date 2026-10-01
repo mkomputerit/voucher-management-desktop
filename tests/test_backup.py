@@ -16,6 +16,7 @@ from voucher_management.backup import (
     BackupService,
 )
 from voucher_management.backup_crypto import PROTECTED_BACKUP_MAGIC
+from voucher_management.database import Database, SCHEMA_VERSION
 from voucher_management.security.history_key import HistoryKeyStore
 from voucher_management.single_instance import SingleInstanceGuard
 
@@ -109,6 +110,98 @@ class BackupServiceTests(unittest.TestCase):
             self.assertNotIn(
                 "security/history_secret.bin", archive.namelist()
             )
+
+    def test_schema_two_backup_restore_migrates_to_current_schema(self):
+        database_path = self.paths.data / "voucher_management.db"
+        db = Database(database_path)
+        db.initialize()
+        controller = db.create_controller(
+            name="Legacy controller",
+            api_root="https://legacy.example",
+            created_at="2026-09-01T08:00:00+00:00",
+        )
+        voucher_id = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="used-then-zero",
+            code="1234567890",
+            imported_at="2026-09-01T09:00:00+00:00",
+            authorized_guest_count=0,
+            last_synced_at="2026-09-02T09:00:00+00:00",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """INSERT INTO sync_runs(
+                       sync_uuid, controller_id, started_at, completed_at,
+                       status, vouchers_received, changes_detected
+                   ) VALUES (
+                       'schema2-backup-reset', ?, 't', 't',
+                       'SUCCESS', 1, 1
+                   )""",
+                (controller,),
+            )
+            tx.execute(
+                """INSERT INTO voucher_sync_observations(
+                       voucher_id, observed_at, field_name,
+                       previous_value, new_value, sync_uuid
+                   ) VALUES (
+                       ?, 't', 'authorized_guest_count',
+                       '2', '0', 'schema2-backup-reset'
+                   )""",
+                (voucher_id,),
+            )
+        db.close()
+
+        raw = sqlite3.connect(database_path)
+        try:
+            raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
+            raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
+            raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
+            raw.execute("DROP INDEX IF EXISTS idx_vouchers_usage_observed")
+            raw.execute("ALTER TABLE vouchers DROP COLUMN nominality_redacted")
+            raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
+            raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
+            raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
+            raw.execute("ALTER TABLE vouchers DROP COLUMN usage_observed")
+            raw.execute("PRAGMA user_version = 2")
+            raw.execute(
+                """INSERT OR REPLACE INTO app_metadata(key, value)
+                   VALUES ('schema_version', '2')"""
+            )
+            raw.commit()
+        finally:
+            raw.close()
+
+        backup = Path(self.temp.name) / "schema-two.zip"
+        self.service.create(backup)
+
+        with zipfile.ZipFile(backup, "r") as archive:
+            manifest = json.loads(
+                archive.read("backup_manifest.json").decode("utf-8")
+            )
+            self.assertEqual(manifest["sqlite_snapshot"]["schema_version"], 2)
+
+        database_path.unlink()
+        self.service.restore(backup)
+
+        migrated = Database(database_path)
+        try:
+            migrated.initialize()
+            self.assertEqual(
+                migrated.connection.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0],
+                SCHEMA_VERSION,
+            )
+            row = migrated.connection.execute(
+                """SELECT origin, ever_used, usage_observed
+                   FROM vouchers WHERE unifi_id='used-then-zero'"""
+            ).fetchone()
+            self.assertEqual(row["origin"], "UNKNOWN")
+            self.assertEqual(row["ever_used"], 1)
+            self.assertEqual(row["usage_observed"], 1)
+            migrated.integrity_check()
+        finally:
+            migrated.close()
 
     def test_backup_captures_committed_wal_pages_without_sidecars(self):
         database = self.paths.user_root / "data" / "voucher_management.db"
