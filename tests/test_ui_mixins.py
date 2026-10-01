@@ -15,7 +15,8 @@ from voucher_management.modern_app import (
     _theme_display_label,
     _theme_setting_value,
 )
-from voucher_management.retention_ui import RetentionMixin
+from voucher_management.operational_alerts_ui import OperationalAlertsMixin
+from voucher_management.security_revocation_ui import SecurityRevocationMixin
 from voucher_management.voucher_creation_ui import VoucherCreationMixin
 from voucher_management.voucher_deletion_ui import VoucherDeletionMixin
 
@@ -23,15 +24,20 @@ from voucher_management.voucher_deletion_ui import VoucherDeletionMixin
 def test_ui_workflows_are_composed_from_focused_mixins():
     assert issubclass(VoucherApp, VoucherCreationMixin)
     assert issubclass(ModernVoucherApp, DataMaintenanceMixin)
-    assert issubclass(ModernVoucherApp, RetentionMixin)
+    assert issubclass(ModernVoucherApp, OperationalAlertsMixin)
+    assert issubclass(ModernVoucherApp, SecurityRevocationMixin)
     assert issubclass(ModernVoucherApp, ControllerConnectionMixin)
     assert issubclass(ModernVoucherApp, VoucherDeletionMixin)
 
     assert VoucherApp.create is VoucherCreationMixin.create
     assert ModernVoucherApp.create_backup is DataMaintenanceMixin.create_backup
     assert (
-        ModernVoucherApp.open_retention_review
-        is RetentionMixin.open_retention_review
+        ModernVoucherApp.open_operational_alerts
+        is OperationalAlertsMixin.open_operational_alerts
+    )
+    assert (
+        ModernVoucherApp.open_security_revocation
+        is SecurityRevocationMixin.open_security_revocation
     )
     assert ModernVoucherApp.request_close is DataMaintenanceMixin.request_close
     assert (
@@ -90,6 +96,8 @@ def test_connection_and_maintenance_mixins_do_not_define_main_window_layout():
     assert "_build_ui" not in DataMaintenanceMixin.__dict__
     assert "_build_ui" not in VoucherDeletionMixin.__dict__
     assert "_build_ui" not in VoucherCreationMixin.__dict__
+    assert "_build_ui" not in OperationalAlertsMixin.__dict__
+    assert "_build_ui" not in SecurityRevocationMixin.__dict__
 
 
 def test_restore_closes_live_database_before_replacement():
