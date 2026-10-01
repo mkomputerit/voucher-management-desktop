@@ -112,6 +112,8 @@ def test_summary_csv_is_aggregate_only_and_excludes_personal_detail(tmp_path: Pa
 
     payload = output.read_text(encoding="utf-8-sig")
     assert "Mario & Lucia" not in payload
+    assert "Descrizione UniFi originale" not in payload
+    assert "Nota locale amministrativa" not in payload
     assert r"PC\alice" not in payload
     assert "Destinatario" not in payload
     assert "Creazione Voucher Management confermata;1" in payload
