@@ -178,7 +178,7 @@ class BackupServiceTests(unittest.TestCase):
             manifest = json.loads(
                 archive.read("backup_manifest.json").decode("utf-8")
             )
-            self.assertEqual(manifest["sqlite_snapshot"]["schema_version"], 2)
+            self.assertEqual(manifest["sqlite_snapshot"]["user_version"], 2)
 
         database_path.unlink()
         self.service.restore(backup)
