@@ -24,6 +24,7 @@ class ReportKind(str, Enum):
     PRINTED_UNUSED = "printed_unused"
     NEVER_PRINTED = "never_printed"
     NOMINAL = "nominal"
+    NON_NOMINAL = "non_nominal"
     UNCLASSIFIED = "unclassified"
     USAGE_UNKNOWN = "usage_unknown"
     ORIGIN_UNKNOWN = "origin_unknown"
@@ -42,6 +43,7 @@ REPORT_TITLES = {
     ReportKind.PRINTED_UNUSED: "Voucher stampati senza uso positivo osservato",
     ReportKind.NEVER_PRINTED: "Voucher mai stampati",
     ReportKind.NOMINAL: "Voucher nominali",
+    ReportKind.NON_NOMINAL: "Voucher non nominali",
     ReportKind.UNCLASSIFIED: "Voucher non classificati",
     ReportKind.USAGE_UNKNOWN: "Voucher con utilizzo non determinabile",
     ReportKind.ORIGIN_UNKNOWN: "Voucher con origine creazione non determinabile",
@@ -237,6 +239,8 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
         return row.print_jobs == 0
     if kind is ReportKind.NOMINAL:
         return row.is_nominal is True
+    if kind is ReportKind.NON_NOMINAL:
+        return row.is_nominal is False
     if kind is ReportKind.UNCLASSIFIED:
         return row.is_nominal is None and not row.nominality_redacted
     if kind is ReportKind.USAGE_UNKNOWN:
