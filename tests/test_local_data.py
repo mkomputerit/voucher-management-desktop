@@ -1,4 +1,4 @@
-"""Regression tests for operator-owned local voucher metadata."""
+"""Regression tests for operator-owned voucher metadata."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from voucher_management.local_data import (
     LocalVoucherPatch,
     apply_local_voucher_patch,
 )
-from voucher_management.local_data_ui import local_data_selection_candidates
+from voucher_management.local_data_ui import selected_workspace_vouchers
 
 
 NOW = "2026-10-01T09:00:00+00:00"
@@ -45,7 +45,7 @@ def _voucher(db, controller, remote_id, code):
     )
 
 
-def test_batch_changes_only_local_fields_and_audits_each_changed_row(tmp_path):
+def test_batch_changes_only_notes_and_nominality_and_audits_each_changed_row(tmp_path):
     db, controller = _db(tmp_path)
     try:
         first = _voucher(db, controller, "v1", "1111122222")
@@ -56,8 +56,6 @@ def test_batch_changes_only_local_fields_and_audits_each_changed_row(tmp_path):
             controller_id=controller,
             voucher_ids=[first, second],
             patch=LocalVoucherPatch(
-                apply_assigned_to=True,
-                assigned_to="Mario Rossi",
                 apply_notes=True,
                 notes="Reception",
                 apply_is_nominal=True,
@@ -70,12 +68,12 @@ def test_batch_changes_only_local_fields_and_audits_each_changed_row(tmp_path):
         assert result.updated_ids == (first, second)
         rows = db.connection.execute(
             """SELECT id, code, name, duration_minutes, expires_at,
-                      assigned_to, notes, is_nominal, origin
+                      notes, is_nominal, origin
                FROM vouchers ORDER BY id"""
         ).fetchall()
-        assert [(row["assigned_to"], row["notes"], row["is_nominal"]) for row in rows] == [
-            ("Mario Rossi", "Reception", 1),
-            ("Mario Rossi", "Reception", 1),
+        assert [(row["notes"], row["is_nominal"]) for row in rows] == [
+            ("Reception", 1),
+            ("Reception", 1),
         ]
         assert [row["name"] for row in rows] == ["UniFi v1", "UniFi v2"]
         assert [row["code"] for row in rows] == ["1111122222", "3333344444"]
@@ -89,22 +87,22 @@ def test_batch_changes_only_local_fields_and_audits_each_changed_row(tmp_path):
         assert len(events) == 2
         assert all(row["event_type"] == "LOCAL_METADATA_UPDATED" for row in events)
         assert all(row["windows_user"] == r"PC\operator" for row in events)
-        assert all("assigned_to" in row["details_json"] for row in events)
         assert all("notes" in row["details_json"] for row in events)
         assert all("is_nominal" in row["details_json"] for row in events)
-        assert all("Mario Rossi" not in row["details_json"] for row in events)
+        assert all("Reception" not in row["details_json"] for row in events)
+        assert all("assigned_to" not in row["details_json"] for row in events)
     finally:
         db.close()
 
 
-def test_batch_can_clear_local_fields_without_touching_unifi_name(tmp_path):
+def test_batch_can_clear_notes_and_set_non_nominal_without_touching_unifi_name(tmp_path):
     db, controller = _db(tmp_path)
     try:
         voucher_id = _voucher(db, controller, "v1", "1111122222")
         with db.transaction() as tx:
             tx.execute(
                 """UPDATE vouchers
-                   SET assigned_to='Old local', notes='Old note', is_nominal=1
+                   SET notes='Old note', is_nominal=1
                    WHERE id=?""",
                 (voucher_id,),
             )
@@ -114,28 +112,44 @@ def test_batch_can_clear_local_fields_without_touching_unifi_name(tmp_path):
             controller_id=controller,
             voucher_ids=[voucher_id],
             patch=LocalVoucherPatch(
-                apply_assigned_to=True,
-                assigned_to="",
                 apply_notes=True,
                 notes="",
                 apply_is_nominal=True,
-                is_nominal=None,
+                is_nominal=False,
             ),
             updated_at=NOW,
             windows_user="operator",
         )
 
         row = db.connection.execute(
-            """SELECT name, assigned_to, notes, is_nominal,
-                      nominality_redacted
+            """SELECT name, notes, is_nominal, nominality_redacted
                FROM vouchers WHERE id=?""",
             (voucher_id,),
         ).fetchone()
         assert row["name"] == "UniFi v1"
-        assert row["assigned_to"] == ""
         assert row["notes"] == ""
-        assert row["is_nominal"] is None
+        assert row["is_nominal"] == 0
         assert row["nominality_redacted"] == 0
+    finally:
+        db.close()
+
+
+def test_nominality_patch_rejects_non_classified_choice(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller, "v1", "1111122222")
+        with pytest.raises(ValueError, match="Nominale o Non nominale"):
+            apply_local_voucher_patch(
+                db,
+                controller_id=controller,
+                voucher_ids=[voucher_id],
+                patch=LocalVoucherPatch(
+                    apply_is_nominal=True,
+                    is_nominal=None,
+                ),
+                updated_at=NOW,
+                windows_user="operator",
+            )
     finally:
         db.close()
 
@@ -184,8 +198,8 @@ def test_noop_batch_creates_no_audit_noise(tmp_path):
             controller_id=controller,
             voucher_ids=[voucher_id],
             patch=LocalVoucherPatch(
-                apply_assigned_to=True,
-                assigned_to="",
+                apply_notes=True,
+                notes="",
             ),
             updated_at=NOW,
             windows_user="operator",
@@ -216,11 +230,13 @@ def test_patch_requires_at_least_one_explicit_field(tmp_path):
         db.close()
 
 
+def test_explicit_actions_use_existing_workspace_multiselection():
+    one = SimpleNamespace(id="one")
+    two = SimpleNamespace(id="two")
+    three = SimpleNamespace(id="three")
+    app = SimpleNamespace(
+        checked_ids={"one", "three"},
+        vouchers=(one, two, three),
+    )
 
-def test_local_data_selection_includes_expired_rows():
-    active = SimpleNamespace(id="active", status="VALID_MULTI")
-    expired = SimpleNamespace(id="expired", status="EXPIRED")
-
-    candidates = local_data_selection_candidates([active, expired])
-
-    assert candidates == (active, expired)
+    assert selected_workspace_vouchers(app) == (one, three)
