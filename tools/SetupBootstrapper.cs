@@ -54,9 +54,13 @@ namespace VoucherManagementSetup
                 }
             }
 
+            // Setup runs elevated. Keep the extracted script/payload below
+            // Program Files rather than the invoking user's writable TEMP so a
+            // non-elevated process cannot tamper with code before PowerShell
+            // executes it with administrative privileges.
             string workRoot = Path.Combine(
-                Path.GetTempPath(),
-                "VoucherManagementSetup-" + Guid.NewGuid().ToString("N")
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                ".VoucherManagementSetup-" + Guid.NewGuid().ToString("N")
             );
 
             try
