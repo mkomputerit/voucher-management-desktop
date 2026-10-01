@@ -140,7 +140,10 @@ def security_revocation_candidates(
                   SELECT 1
                   FROM voucher_events AS ve
                   WHERE ve.voucher_id=v.id
-                    AND ve.event_type='SECURITY_REVOKED'
+                    AND ve.event_type IN (
+                        'SECURITY_REVOKE_REQUESTED',
+                        'SECURITY_REVOKED'
+                    )
               )
               {controller_clause}
             GROUP BY
@@ -362,6 +365,53 @@ def revoke_security_candidates_live(
         skipped_ids=tuple(skipped),
         failed_ids=tuple(failed),
         local_persistence_failed_ids=tuple(persistence_failed),
+    )
+
+
+def reconcile_pending_security_revocations(
+    database: Database,
+    *,
+    controller_id: int,
+    live_voucher_ids: set[str] | frozenset[str],
+    observed_at: str,
+    windows_user: str,
+) -> tuple[int, ...]:
+    """Confirm pending revocations that are absent from a fresh full snapshot.
+
+    This function must only be called after a successful, complete UniFi voucher
+    list operation.  Absence from that snapshot confirms that the credential no
+    longer exists remotely; pending requests that are still present remain
+    blocked and are never replayed automatically.
+    """
+
+    live_ids = {str(value).strip() for value in live_voucher_ids if str(value).strip()}
+    pending = database.connection.execute(
+        """SELECT DISTINCT v.id, v.unifi_id
+           FROM vouchers AS v
+           JOIN voucher_events AS req
+             ON req.voucher_id=v.id
+            AND req.event_type='SECURITY_REVOKE_REQUESTED'
+           WHERE v.controller_id=?
+             AND NOT EXISTS (
+                 SELECT 1 FROM voucher_events AS done
+                 WHERE done.voucher_id=v.id
+                   AND done.event_type='SECURITY_REVOKED'
+             )
+           ORDER BY v.id""",
+        (int(controller_id),),
+    ).fetchall()
+    confirmed = [
+        int(row["id"])
+        for row in pending
+        if str(row["unifi_id"] or "").strip() not in live_ids
+    ]
+    if not confirmed:
+        return ()
+    return record_security_revocations(
+        database,
+        voucher_ids=confirmed,
+        revoked_at=observed_at,
+        windows_user=windows_user,
     )
 
 
