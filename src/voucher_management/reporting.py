@@ -39,7 +39,7 @@ REPORT_TITLES = {
     ReportKind.USED: "Voucher utilizzati",
     ReportKind.EXPIRED: "Voucher scaduti",
     ReportKind.PRINTED: "Voucher stampati",
-    ReportKind.PRINTED_UNUSED: "Voucher stampati mai osservati utilizzati",
+    ReportKind.PRINTED_UNUSED: "Voucher stampati senza uso positivo osservato",
     ReportKind.NEVER_PRINTED: "Voucher mai stampati",
     ReportKind.NOMINAL: "Voucher nominali",
     ReportKind.UNCLASSIFIED: "Voucher non classificati",
@@ -78,6 +78,7 @@ class ReportTotals:
     unknown_origin_vouchers: int = 0
     redacted_nominality_vouchers: int = 0
     security_revoked_vouchers: int = 0
+    printed_usage_unknown: int = 0
 
 
 @dataclass(frozen=True)
@@ -231,7 +232,7 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind is ReportKind.PRINTED:
         return row.print_jobs > 0
     if kind is ReportKind.PRINTED_UNUSED:
-        return row.print_jobs > 0 and row.usage_observed and not row.ever_used
+        return row.print_jobs > 0 and not row.ever_used
     if kind is ReportKind.NEVER_PRINTED:
         return row.print_jobs == 0
     if kind is ReportKind.NOMINAL:
@@ -287,6 +288,10 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
         ),
         security_revoked_vouchers=sum(
             bool(row.security_revoked_at) for row in materialized
+        ),
+        printed_usage_unknown=sum(
+            row.print_jobs > 0 and not row.usage_observed
+            for row in materialized
         ),
     )
 
