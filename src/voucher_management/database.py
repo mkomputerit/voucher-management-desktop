@@ -18,7 +18,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+
+PRINT_STATE_UNKNOWN = "UNKNOWN"
+PRINT_STATE_NOT_PRINTED = "NOT_PRINTED"
+PRINT_STATE_PRINTED = "PRINTED"
+PRINT_STATES = frozenset(
+    {PRINT_STATE_UNKNOWN, PRINT_STATE_NOT_PRINTED, PRINT_STATE_PRINTED}
+)
 
 BACKUP_AUDIT_DESTINATIONS = frozenset(
     {
@@ -102,6 +109,8 @@ CREATE TABLE IF NOT EXISTS vouchers (
     origin TEXT NOT NULL DEFAULT 'CONTROLLER'
         CHECK (origin IN ('CONTROLLER', 'APPLICATION', 'LEGACY_APPLICATION', 'UNKNOWN')),
     is_nominal INTEGER CHECK (is_nominal IS NULL OR is_nominal IN (0, 1)),
+    print_state TEXT NOT NULL DEFAULT 'UNKNOWN'
+        CHECK (print_state IN ('UNKNOWN', 'NOT_PRINTED', 'PRINTED')),
     nominality_redacted INTEGER NOT NULL DEFAULT 0
         CHECK (nominality_redacted IN (0, 1)),
     archived_at TEXT,
@@ -360,6 +369,36 @@ WHERE controller_id IN (
 );
 """
 
+
+MIGRATION_5_TO_6_SQL = """
+ALTER TABLE vouchers ADD COLUMN print_state TEXT NOT NULL DEFAULT 'UNKNOWN'
+    CHECK (print_state IN ('UNKNOWN', 'NOT_PRINTED', 'PRINTED'));
+
+UPDATE vouchers
+SET print_state='PRINTED'
+WHERE EXISTS (
+    SELECT 1 FROM voucher_prints AS vp WHERE vp.voucher_id=vouchers.id
+);
+
+UPDATE vouchers
+SET print_state='NOT_PRINTED'
+WHERE origin='APPLICATION'
+  AND NOT EXISTS (
+      SELECT 1 FROM voucher_prints AS vp WHERE vp.voucher_id=vouchers.id
+  );
+
+-- Schema v5 temporarily moved the recovered legacy display name into
+-- assigned_to. Restore it to name for archive-only legacy rows so the product
+-- no longer depends on a second recipient field.
+UPDATE vouchers
+SET name=assigned_to
+WHERE controller_id IN (
+    SELECT id FROM controllers WHERE api_root LIKE 'legacy-backup://%'
+)
+  AND TRIM(COALESCE(name, ''))=''
+  AND TRIM(COALESCE(assigned_to, ''))<>'';
+"""
+
 @dataclass(frozen=True)
 class PrintAuditSummary:
     """Aggregated local print facts used by the duplicate-print warning."""
@@ -494,6 +533,23 @@ COMMIT;
 """
                 )
                 current = 5
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 5:
+            try:
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + MIGRATION_5_TO_6_SQL
+                    + """
+PRAGMA user_version = 6;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '6');
+COMMIT;
+"""
+                )
+                current = 6
             except Exception:
                 self.connection.rollback()
                 raise
@@ -983,15 +1039,14 @@ COMMIT;
         controller_id: int,
         unifi_ids: list[str] | tuple[str, ...],
         is_nominal: bool,
-        assigned_to: str | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> None:
         """Attach application-owned facts to a confirmed create result.
 
-        UniFi owns its voucher name field. The recipient entered by the
-        operator is stored separately in assigned_to when available, so
-        reporting never infers local ownership from controller data.
-        Recovery may omit assigned_to and preserve the current local value.
+        The recipient is the UniFi-owned name already persisted by the
+        controller snapshot. Voucher Management adds only its local
+        classification and knows that a newly-created voucher has not yet been
+        printed by this workstation.
         """
 
         ids = tuple(
@@ -1004,47 +1059,24 @@ COMMIT;
         if not ids:
             return
 
-        local_recipient = (
-            None
-            if assigned_to is None
-            else str(assigned_to or "").strip()
-        )
-        if local_recipient is not None and len(local_recipient) > 200:
-            raise ValueError("assigned_to exceeds supported length")
-
         placeholders = ",".join("?" for _ in ids)
 
         def write(db: sqlite3.Connection) -> None:
-            if local_recipient is None:
-                params = (
-                    "APPLICATION",
-                    int(bool(is_nominal)),
-                    int(controller_id),
-                    *ids,
-                )
-                cursor = db.execute(
-                    f"""UPDATE vouchers
-                        SET origin=?, is_nominal=?, nominality_redacted=0
-                        WHERE controller_id=?
-                          AND unifi_id IN ({placeholders})""",
-                    params,
-                )
-            else:
-                params = (
-                    "APPLICATION",
-                    int(bool(is_nominal)),
-                    local_recipient,
-                    int(controller_id),
-                    *ids,
-                )
-                cursor = db.execute(
-                    f"""UPDATE vouchers
-                        SET origin=?, is_nominal=?, assigned_to=?,
-                            nominality_redacted=0
-                        WHERE controller_id=?
-                          AND unifi_id IN ({placeholders})""",
-                    params,
-                )
+            params = (
+                "APPLICATION",
+                int(bool(is_nominal)),
+                PRINT_STATE_NOT_PRINTED,
+                int(controller_id),
+                *ids,
+            )
+            cursor = db.execute(
+                f"""UPDATE vouchers
+                    SET origin=?, is_nominal=?, print_state=?,
+                        nominality_redacted=0
+                    WHERE controller_id=?
+                      AND unifi_id IN ({placeholders})""",
+                params,
+            )
             if cursor.rowcount != len(ids):
                 raise RuntimeError(
                     "confirmed created vouchers are missing from the local snapshot"
@@ -1195,6 +1227,11 @@ COMMIT;
                     raise RuntimeError(
                         "Print audit id already exists with different voucher data"
                     )
+                for voucher_id in expected_prints:
+                    db.execute(
+                        "UPDATE vouchers SET print_state=? WHERE id=?",
+                        (PRINT_STATE_PRINTED, voucher_id),
+                    )
                 return
 
             cursor = db.execute(
@@ -1234,6 +1271,10 @@ COMMIT;
                         sequence,
                         int(sequence > 1),
                     ),
+                )
+                db.execute(
+                    "UPDATE vouchers SET print_state=? WHERE id=?",
+                    (PRINT_STATE_PRINTED, voucher_id),
                 )
 
     def controller_name(self, controller_id: int) -> str | None:
@@ -1293,6 +1334,7 @@ COMMIT;
                     v.notes,
                     v.origin,
                     v.is_nominal,
+                    v.print_state,
                     v.nominality_redacted,
                     v.ever_used,
                     v.usage_observed,
