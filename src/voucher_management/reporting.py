@@ -9,7 +9,15 @@ from pathlib import Path
 from typing import Iterable
 
 from .database import Database
+from .operational_alerts import (
+    unprinted_warning_candidates,
+    unprinted_warning_days,
+)
 from .report_policy import ReportPurpose, report_code_value
+from .security_revocation import (
+    security_revocation_candidates,
+    security_revoke_days,
+)
 
 
 class ReportKind(str, Enum):
@@ -23,6 +31,8 @@ class ReportKind(str, Enum):
     PRINTED = "printed"
     PRINTED_UNUSED = "printed_unused"
     NEVER_PRINTED = "never_printed"
+    UNPRINTED_WARNING = "unprinted_warning"
+    SECURITY_REVIEW = "security_review"
     NOMINAL = "nominal"
     NON_NOMINAL = "non_nominal"
     UNCLASSIFIED = "unclassified"
@@ -42,6 +52,8 @@ REPORT_TITLES = {
     ReportKind.PRINTED: "Voucher stampati",
     ReportKind.PRINTED_UNUSED: "Voucher stampati senza uso positivo osservato",
     ReportKind.NEVER_PRINTED: "Voucher mai stampati",
+    ReportKind.UNPRINTED_WARNING: "Voucher creati ma non stampati oltre soglia",
+    ReportKind.SECURITY_REVIEW: "Voucher da revocare per sicurezza",
     ReportKind.NOMINAL: "Voucher nominali",
     ReportKind.NON_NOMINAL: "Voucher non nominali",
     ReportKind.UNCLASSIFIED: "Voucher non classificati",
@@ -240,6 +252,8 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
         return row.print_jobs > 0 and not row.ever_used
     if kind is ReportKind.NEVER_PRINTED:
         return row.print_jobs == 0
+    if kind in {ReportKind.UNPRINTED_WARNING, ReportKind.SECURITY_REVIEW}:
+        raise ValueError("threshold report kind requires candidate selection")
     if kind is ReportKind.NOMINAL:
         return row.is_nominal is True
     if kind is ReportKind.NON_NOMINAL:
@@ -351,6 +365,33 @@ def build_report_dataset(
     purpose = _purpose_for_kind(kind)
     raw_rows = database.report_voucher_rows(controller_id=controller_id)
 
+    threshold_candidate_ids: set[int] | None = None
+    report_title = REPORT_TITLES[kind]
+    if kind is ReportKind.UNPRINTED_WARNING:
+        days = unprinted_warning_days(database)
+        threshold_candidate_ids = {
+            item.voucher_id
+            for item in unprinted_warning_candidates(
+                database,
+                now=generated_at,
+                controller_id=controller_id,
+            )
+        }
+        if days is not None:
+            report_title = f"{report_title} ({days} giorni dalla creazione)"
+    elif kind is ReportKind.SECURITY_REVIEW:
+        days = security_revoke_days(database)
+        threshold_candidate_ids = {
+            item.voucher_id
+            for item in security_revocation_candidates(
+                database,
+                now=generated_at,
+                controller_id=controller_id,
+            )
+        }
+        if days is not None:
+            report_title = f"{report_title} ({days} giorni dall'ultima stampa)"
+
     rows: list[ReportRow] = []
     controllers: set[str] = set()
     code_exposed = False
@@ -440,7 +481,10 @@ def build_report_dataset(
             unifi_name=unifi_name,
             local_notes=local_notes,
         )
-        if _matches(kind, row):
+        if threshold_candidate_ids is not None:
+            if voucher_id in threshold_candidate_ids:
+                rows.append(row)
+        elif _matches(kind, row):
             rows.append(row)
 
     if controller_id is None:
@@ -458,7 +502,7 @@ def build_report_dataset(
     return ReportDataset(
         kind=kind,
         purpose=purpose,
-        title=REPORT_TITLES[kind],
+        title=report_title,
         generated_at=str(generated_at),
         controller_label=controller_label,
         rows=materialized,
