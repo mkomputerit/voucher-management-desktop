@@ -155,6 +155,9 @@ class SecurityRevocationDialog(tk.Toplevel):
             return
         self.days.set(str(days))
         self._refresh()
+        refresh_home = getattr(self.app, "_refresh_home_threshold_alerts", None)
+        if refresh_home is not None:
+            refresh_home()
 
     def _refresh(self) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -268,6 +271,9 @@ class SecurityRevocationDialog(tk.Toplevel):
         def completed(result) -> None:
             self.app.checked_ids.clear()
             self._refresh()
+            refresh_home = getattr(self.app, "_refresh_home_threshold_alerts", None)
+            if refresh_home is not None:
+                refresh_home()
             try:
                 self.app.refresh()
             except Exception:
