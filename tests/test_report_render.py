@@ -204,3 +204,18 @@ def test_csv_neutralizes_formula_like_operator_text(tmp_path: Path):
     assert "'+SUM" in payload
     assert "'@operator" in payload
     assert "'-controller" in payload
+
+
+
+def test_summary_csv_includes_security_revocation_total(tmp_path: Path):
+    output = tmp_path / "summary-revoked.csv"
+    base = _dataset(kind=ReportKind.SUMMARY, purpose=ReportPurpose.SUMMARY)
+    dataset = replace(
+        base,
+        totals=replace(base.totals, security_revoked_vouchers=3),
+    )
+
+    render_report_csv(dataset, output)
+
+    payload = output.read_text(encoding="utf-8-sig")
+    assert "Revocati per sicurezza;3" in payload
