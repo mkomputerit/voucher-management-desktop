@@ -96,7 +96,8 @@ def security_revocation_candidates(
     - the operator must configure a threshold explicitly;
     - the voucher is still present on UniFi and not reported expired;
     - usage was observed and has never been positive;
-    - print_state is positively PRINTED and alignment is complete;
+    - print_state is positively PRINTED; security review does not depend on
+      nominality/alignment completion;
     - with a known print date, a controller observation exists after the most
       recent print and that last print is older than the configured threshold;
     - with PRINTED but no historical print date, review is immediate because no
@@ -140,7 +141,6 @@ def security_revocation_candidates(
               AND v.usage_observed=1
               AND v.ever_used=0
               AND v.authorized_guest_count=0
-              AND v.alignment_completed_at IS NOT NULL
               AND v.print_state=?
               AND NOT EXISTS (
                   SELECT 1
