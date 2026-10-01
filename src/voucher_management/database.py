@@ -357,13 +357,6 @@ WHERE controller_id IN (
     SELECT id FROM controllers
     WHERE api_root LIKE 'legacy-backup://%'
 );
-
-UPDATE vouchers
-SET origin='UNKNOWN'
-WHERE controller_id IN (
-    SELECT id FROM controllers
-    WHERE api_root LIKE 'legacy-backup://%'
-);
 """
 
 @dataclass(frozen=True)
