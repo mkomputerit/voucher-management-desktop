@@ -357,6 +357,11 @@ def security_revocation_candidates(
                  WHERE review.voucher_id=v.id
                    AND review.event_type='LEGACY_IDENTITY_REVIEW_REQUIRED'
              )
+             AND NOT EXISTS (
+                 SELECT 1 FROM security_revocations AS pending
+                 WHERE pending.voucher_id=v.id
+                   AND pending.status='PREPARED'
+             )
              {controller_clause}
            GROUP BY v.id
            HAVING julianday(v.last_seen_at) >= julianday(last_printed_at)
