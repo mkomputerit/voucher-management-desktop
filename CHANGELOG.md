@@ -9,12 +9,12 @@
 - Add an explicit **Voucher nominale** flag to voucher creation. The choice is
   local reporting metadata and is never sent to UniFi; recipient text is no
   longer used to infer nominal status.
-- Upgrade SQLite to schema 5 with durable voucher provenance, tri-state nominal
-  classification, a monotonic ever-used fact, compatibility for historical
-  nominality-redaction state and a provenance repair for legacy-imported
-  recipients. Existing rows migrate conservatively instead of receiving
-  guessed classifications; legacy recovered recipients are moved to local
-  metadata rather than being presented as UniFi-owned descriptions.
+- Upgrade SQLite to schema 7 with durable voucher provenance, tri-state nominal
+  classification, explicit print state/alignment, a monotonic ever-used fact,
+  compatibility for historical nominality-redaction state and conservative
+  repair for legacy-imported recipients. Existing rows migrate without guessed
+  classifications; legacy recovered recipients remain distinct from live
+  UniFi-owned facts.
 - Rebuild administrative report semantics around durable facts: add confirmed
   Voucher Management creation, generated-without-positive-use-evidence,
   printed, nominal, unclassified and usage-indeterminate views; make positive
@@ -26,9 +26,10 @@
   fail closed when durable history says a voucher was used or its usage cannot
   be established. A confirmed UniFi create is also never reported as failed
   merely because local reporting persistence fails afterward.
-- Require an explicit operator-selected retention threshold and keep privacy
-  minimization disabled for this release; retention review never replaces the
-  voucher code or removes local historical metadata.
+- Require two explicit operator-selected voucher thresholds on new installs:
+  one for created-but-never-printed operational warnings and one for
+  printed-but-never-used security review. Privacy minimization remains disabled
+  for this release and never replaces the voucher code or local history.
 - Add security revocation for printed vouchers left without positive-use
   evidence beyond an explicit threshold, with fresh per-voucher UniFi
   revalidation, durable pre-DELETE intent, anti-replay reconciliation and full
@@ -36,8 +37,10 @@
 - Harden export integrity: report rows are keyed by durable voucher identity,
   duplicate/ambiguous voucher codes fail closed before print auditing or PDF
   generation, non-nominal vouchers have a dedicated export, security-revocation
-  totals are included in summaries, and history exchange refuses duplicate
-  modern event identities.
+  and preparation-deletion facts are reportable, deletion reasons remain in
+  audit history, and history exchange refuses duplicate modern event identities.
+  Routine reports hide voucher codes; the complete-history report can include
+  preserved clear codes only after an explicit operator request.
 - Keep report data lineage explicit: detailed PDF/CSV exports now show the
   immutable UniFi ID, local recipient, UniFi description and local notes as
   separate fields. Confirmed application creation persists the operator-entered
