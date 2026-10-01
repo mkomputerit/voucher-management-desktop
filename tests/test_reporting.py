@@ -994,3 +994,44 @@ def test_explicit_legacy_printed_state_counts_as_printed_without_known_print_dat
         assert printed.totals.print_unknown_vouchers == 0
     finally:
         db.close()
+
+
+
+def test_full_history_can_explicitly_export_preserved_revoked_voucher_code(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "revoked-readable",
+            "6060606060",
+        )
+        record_security_revocations(
+            db,
+            voucher_ids=[voucher_id],
+            revoked_at=NOW,
+            windows_user=r"PC\operator",
+        )
+
+        private = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+            include_code_requested=False,
+        )
+        explicit = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+            include_code_requested=True,
+        )
+
+        private_row = next(row for row in private.rows if row.voucher_id == voucher_id)
+        explicit_row = next(row for row in explicit.rows if row.voucher_id == voucher_id)
+        assert private_row.code == ""
+        assert private.code_exposed is False
+        assert explicit_row.code == "6060606060"
+        assert explicit.code_exposed is True
+        assert explicit_row.security_revoked_at
+    finally:
+        db.close()
