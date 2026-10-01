@@ -18,6 +18,11 @@ from .database import Database
 DEFAULT_UNUSED_UNPRINTED_DAYS = 180
 RETENTION_INTRO_KEY = "retention_intro_seen"
 
+# Privacy minimization is deliberately out of scope for the current release.
+# Revocation and historical retention must preserve the complete local voucher
+# identity.  A future, separately designed privacy feature may change this.
+PRIVACY_MINIMIZATION_ENABLED = False
+
 
 @dataclass(frozen=True)
 class RetentionPolicy:
@@ -321,87 +326,19 @@ def archive_retention_candidates(
     history,
     settings: dict,
 ) -> RetentionResult:
-    """Minimize only candidates that still satisfy policy inside the write txn."""
+    """Reject privacy minimization while that feature is intentionally disabled.
 
-    stamp = _normalize_now(archived_at).isoformat()
-    operator = str(windows_user or "").strip()
-    if not operator:
-        raise ValueError("windows user is required")
+    The current release preserves voucher codes and local historical metadata,
+    including after a security revocation.  Keeping this public function as an
+    explicit fail-closed boundary prevents an old UI path, plugin, or future
+    refactor from silently reviving the previous ARCHIVED-<id> scrubbing logic.
+    """
 
     requested = tuple(dict.fromkeys(int(value) for value in voucher_ids))
     if not requested:
         return RetentionResult(archived_ids=(), skipped_ids=())
-
-    generated_blockers = generated_retention_blockers(
-        database,
-        history=history,
-        settings=settings,
-        voucher_ids=requested,
-    )
-    policy = ensure_retention_policy(database, now=stamp)
-    cutoff = (
-        _normalize_now(stamp) - timedelta(days=policy.unused_unprinted_days)
-    ).isoformat()
-    archived: list[int] = []
-    skipped: list[int] = []
-
-    with database.transaction() as db:
-        for voucher_id in requested:
-            if voucher_id in generated_blockers:
-                skipped.append(voucher_id)
-                continue
-            row = db.execute(
-                """SELECT v.id
-                   FROM vouchers AS v
-                   WHERE v.id=?
-                     AND v.archived_at IS NULL
-                     AND v.present_on_controller=0
-                     AND v.usage_observed=1
-                     AND v.ever_used=0
-                     AND v.authorized_guest_count=0
-                     AND v.expired=1
-                     AND v.expires_at IS NOT NULL
-                     AND julianday(v.last_seen_at) >= julianday(v.expires_at)
-                     AND NOT EXISTS (
-                         SELECT 1 FROM voucher_prints AS vp
-                         WHERE vp.voucher_id=v.id
-                     )
-                     AND COALESCE(v.expires_at, v.created_at, v.imported_at) <= ?""",
-                (voucher_id, cutoff),
-            ).fetchone()
-            if row is None:
-                skipped.append(voucher_id)
-                continue
-
-            db.execute(
-                """UPDATE vouchers
-                   SET code=?, name='', assigned_to='', notes='',
-                       is_nominal=NULL, nominality_redacted=1, archived_at=?
-                   WHERE id=?""",
-                (f"ARCHIVED-{voucher_id}", stamp, voucher_id),
-            )
-            db.execute(
-                """INSERT INTO voucher_events(
-                       event_uuid, voucher_id, event_type, occurred_at,
-                       source, windows_user, details_json
-                   ) VALUES (?, ?, 'RETENTION_ARCHIVED', ?, 'OPERATOR', ?, ?)""",
-                (
-                    str(uuid4()),
-                    voucher_id,
-                    stamp,
-                    operator,
-                    Database.encode_event_details(
-                        {
-                            "unused_unprinted_days": policy.unused_unprinted_days,
-                            "credential_removed": True,
-                            "personal_text_removed": True,
-                        }
-                    ),
-                ),
-            )
-            archived.append(voucher_id)
-
-    return RetentionResult(
-        archived_ids=tuple(archived),
-        skipped_ids=tuple(skipped),
-    )
+    if not PRIVACY_MINIMIZATION_ENABLED:
+        raise RuntimeError(
+            "privacy minimization is not enabled in this release"
+        )
+    raise RuntimeError("privacy minimization implementation is unavailable")
