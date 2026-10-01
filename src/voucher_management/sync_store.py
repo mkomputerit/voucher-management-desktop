@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from .database import Database
 from .preparation_deletion import reconcile_preparation_delete_requests
+from .security_revocation import reconcile_pending_security_revocations
 from .unifi_api import ApiVoucher
 
 
@@ -184,6 +185,18 @@ def persist_successful_snapshot(
                SET last_successful_sync_at=? WHERE id=?""",
             (observed_at, controller_id),
         )
+
+    # Security revocation reconciliation deliberately runs only after the full
+    # snapshot transaction has committed. If this audit step fails, the pending
+    # marker remains and the next successful complete snapshot can retry it;
+    # the remote DELETE is never replayed automatically.
+    reconcile_pending_security_revocations(
+        database,
+        controller_id=controller_id,
+        live_voucher_ids=seen_remote_ids,
+        observed_at=observed_at,
+        windows_user="SYSTEM",
+    )
 
     return run_uuid
 
