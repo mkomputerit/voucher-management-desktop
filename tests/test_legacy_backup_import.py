@@ -205,14 +205,19 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
             "SELECT COUNT(*) FROM voucher_prints"
         ).fetchone()[0] == 2
         rows = database.connection.execute(
-            """SELECT code, present_on_controller, expired, archived_at,
-                      origin, is_nominal, usage_observed
+            """SELECT code, name, assigned_to, present_on_controller, expired,
+                      archived_at, origin, is_nominal, usage_observed
                FROM vouchers ORDER BY code"""
         ).fetchall()
         assert [row["code"] for row in rows] == [
             "12345-67890",
             "98765-43210",
         ]
+        assert [row["assigned_to"] for row in rows] == [
+            "Ospite 1",
+            "Ospite 2",
+        ]
+        assert all(row["name"] == "" for row in rows)
         assert all(row["present_on_controller"] == 0 for row in rows)
         assert all(row["expired"] == 1 for row in rows)
         assert all(row["archived_at"] is None for row in rows)
@@ -257,6 +262,11 @@ def test_legacy_prints_appear_in_printed_without_positive_use_report(tmp_path):
 
         assert len(dataset.rows) == 2
         assert all(row.print_jobs > 0 for row in dataset.rows)
+        assert [row.recipient for row in dataset.rows] == [
+            "Ospite 1",
+            "Ospite 2",
+        ]
+        assert all(row.unifi_name == "" for row in dataset.rows)
         assert all(row.usage_observed is False for row in dataset.rows)
         assert dataset.totals.printed_never_used == 0
         assert dataset.totals.printed_usage_unknown == 2
