@@ -502,11 +502,6 @@ def test_security_revoked_report_preserves_history_and_labels_status(tmp_path):
             "7777788888",
             name="Guest Revoked",
         )
-        with db.transaction() as tx:
-            tx.execute(
-                "UPDATE vouchers SET assigned_to=? WHERE id=?",
-                ("Local Guest Revoked", voucher_id),
-            )
         db.record_print_audit(
             controller_id=controller,
             audit_id="revoked-job",
@@ -531,7 +526,7 @@ def test_security_revoked_report_preserves_history_and_labels_status(tmp_path):
         assert [row.voucher_id for row in dataset.rows] == [voucher_id]
         row = dataset.rows[0]
         assert row.status == "Revocato per sicurezza"
-        assert row.recipient == "Local Guest Revoked"
+        assert row.recipient == "Guest Revoked"
         assert row.unifi_name == "Guest Revoked"
         assert row.security_revoked_at == "2026-09-30T08:00:00+00:00"
         assert dataset.totals.security_revoked_vouchers == 1
@@ -777,7 +772,7 @@ def test_reporting_rejects_missing_unifi_identity(tmp_path):
 
 
 
-def test_report_keeps_local_recipient_distinct_from_unifi_description(tmp_path):
+def test_report_uses_unifi_name_as_the_single_recipient(tmp_path):
     db, controller = _db(tmp_path)
     try:
         voucher_id = _voucher(
@@ -788,9 +783,11 @@ def test_report_keeps_local_recipient_distinct_from_unifi_description(tmp_path):
             name="Descrizione controller",
         )
         with db.transaction() as tx:
+            # assigned_to is a deprecated compatibility column from an earlier
+            # 5.1 preview and must never override the controller-owned name.
             tx.execute(
                 "UPDATE vouchers SET assigned_to=?, notes=? WHERE id=?",
-                ("Destinatario locale", "Nota amministrativa", voucher_id),
+                ("Valore locale obsoleto", "Nota amministrativa", voucher_id),
             )
 
         dataset = build_report_dataset(
@@ -799,20 +796,20 @@ def test_report_keeps_local_recipient_distinct_from_unifi_description(tmp_path):
             generated_at=NOW,
         )
         row = next(item for item in dataset.rows if item.voucher_id == voucher_id)
-        assert row.recipient == "Destinatario locale"
+        assert row.recipient == "Descrizione controller"
         assert row.unifi_name == "Descrizione controller"
         assert row.local_notes == "Nota amministrativa"
     finally:
         db.close()
 
 
-def test_report_does_not_infer_local_recipient_from_unifi_description(tmp_path):
+def test_report_preserves_controller_recipient_without_local_duplicate(tmp_path):
     db, controller = _db(tmp_path)
     try:
         voucher_id = _voucher(
             db,
             controller,
-            "no-local-recipient",
+            "canonical-recipient",
             "4141414141",
             name="Solo descrizione UniFi",
         )
@@ -823,7 +820,7 @@ def test_report_does_not_infer_local_recipient_from_unifi_description(tmp_path):
             generated_at=NOW,
         )
         row = next(item for item in dataset.rows if item.voucher_id == voucher_id)
-        assert row.recipient == ""
+        assert row.recipient == "Solo descrizione UniFi"
         assert row.unifi_name == "Solo descrizione UniFi"
     finally:
         db.close()
