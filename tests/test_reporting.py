@@ -641,3 +641,105 @@ def test_same_code_different_unifi_ids_are_distinct_and_print_audit_fails_closed
         ).fetchone()[0] == 0
     finally:
         db.close()
+
+
+
+def test_nominality_exports_partition_rows_without_overlap(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        nominal = _voucher(db, controller, "nominal-partition", "3030303030")
+        non_nominal = _voucher(db, controller, "non-nominal-partition", "4040404040")
+        unclassified = _voucher(db, controller, "unclassified-partition", "5050505050")
+        redacted = _voucher(db, controller, "redacted-partition", "6060606060")
+
+        db.mark_application_created_vouchers(
+            controller_id=controller,
+            unifi_ids=["nominal-partition"],
+            is_nominal=True,
+        )
+        db.mark_application_created_vouchers(
+            controller_id=controller,
+            unifi_ids=["non-nominal-partition"],
+            is_nominal=False,
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET is_nominal=NULL, nominality_redacted=1
+                   WHERE id=?""",
+                (redacted,),
+            )
+
+        nominal_ds = build_report_dataset(
+            db, kind=ReportKind.NOMINAL, generated_at=NOW
+        )
+        non_nominal_ds = build_report_dataset(
+            db, kind=ReportKind.NON_NOMINAL, generated_at=NOW
+        )
+        unclassified_ds = build_report_dataset(
+            db, kind=ReportKind.UNCLASSIFIED, generated_at=NOW
+        )
+        redacted_ds = build_report_dataset(
+            db, kind=ReportKind.NOMINALITY_REDACTED, generated_at=NOW
+        )
+        summary = build_report_dataset(
+            db, kind=ReportKind.SUMMARY, generated_at=NOW
+        )
+
+        assert {row.voucher_id for row in nominal_ds.rows} == {nominal}
+        assert {row.voucher_id for row in non_nominal_ds.rows} == {non_nominal}
+        assert {row.voucher_id for row in unclassified_ds.rows} == {unclassified}
+        assert {row.voucher_id for row in redacted_ds.rows} == {redacted}
+        assert (
+            summary.totals.nominal_vouchers
+            + summary.totals.non_nominal_vouchers
+            + summary.totals.unclassified_vouchers
+            + summary.totals.redacted_nominality_vouchers
+            == summary.totals.vouchers
+        )
+    finally:
+        db.close()
+
+
+def test_reporting_fails_closed_on_inconsistent_usage_state(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller, "bad-usage", "7070707070")
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET ever_used=1, usage_observed=0
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+
+        with pytest.raises(RuntimeError, match="without usage evidence"):
+            build_report_dataset(
+                db,
+                kind=ReportKind.SUMMARY,
+                generated_at=NOW,
+            )
+    finally:
+        db.close()
+
+
+def test_reporting_fails_closed_on_inconsistent_nominality_state(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller, "bad-nominality", "8080808080")
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET is_nominal=1, nominality_redacted=1
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+
+        with pytest.raises(RuntimeError, match="classification and redaction"):
+            build_report_dataset(
+                db,
+                kind=ReportKind.SUMMARY,
+                generated_at=NOW,
+            )
+    finally:
+        db.close()
