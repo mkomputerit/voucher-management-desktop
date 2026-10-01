@@ -151,9 +151,10 @@ class VoucherDeletionMixin:
                 )
             messagebox.showwarning(
                 "Eliminazione non consentita",
-                f"{detail}\n\nVoucher Management consente solo la pulizia "
-                "dei voucher non ancora emessi. L'eventuale revoca resta di "
-                "competenza dell'amministratore IT.",
+                f"{detail}\n\nVoucher Management consente qui solo la pulizia "
+                "dei voucher non ancora emessi. Per i voucher stampati e mai "
+                "utilizzati usare Revoca sicurezza nella sezione Retention, "
+                "quando soddisfano la policy configurata.",
                 parent=self,
             )
             return
