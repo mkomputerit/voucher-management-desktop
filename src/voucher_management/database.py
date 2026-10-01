@@ -886,6 +886,16 @@ COMMIT;
                     raise RuntimeError(
                         "Un voucher non soddisfa più i requisiti per la revoca."
                     )
+                pending = db.execute(
+                    """SELECT 1 FROM security_revocations
+                       WHERE voucher_id=? AND status='PREPARED'
+                       LIMIT 1""",
+                    (voucher_id,),
+                ).fetchone()
+                if pending is not None:
+                    raise RuntimeError(
+                        "Un voucher ha già una revoca di sicurezza da riconciliare."
+                    )
                 printed = db.execute(
                     "SELECT 1 FROM voucher_prints WHERE voucher_id=? LIMIT 1",
                     (voucher_id,),
