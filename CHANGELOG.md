@@ -9,19 +9,28 @@
 - Add an explicit **Voucher nominale** flag to voucher creation. The choice is
   local reporting metadata and is never sent to UniFi; recipient text is no
   longer used to infer nominal status.
-- Upgrade SQLite to schema 3 with durable voucher provenance, tri-state nominal
-  classification and a monotonic ever-used fact. Existing rows migrate as
-  unknown/unclassified instead of receiving guessed classifications.
-- Rebuild administrative report semantics around durable facts: add generated
-  by Voucher Management, generated-and-never-used, printed, nominal,
-  unclassified and usage-indeterminate views; make used/never-used historical
-  rather than dependent on only the latest controller counter; preserve legacy
-  generation provenance only when verified migration evidence exists.
+- Upgrade SQLite to schema 4 with durable voucher provenance, tri-state nominal
+  classification, a monotonic ever-used fact and explicit compatibility for
+  historical nominality-redaction state. Existing rows migrate conservatively
+  as unknown/unclassified instead of receiving guessed classifications.
+- Rebuild administrative report semantics around durable facts: add confirmed
+  Voucher Management creation, generated-without-positive-use-evidence,
+  printed, nominal, unclassified and usage-indeterminate views; make positive
+  historical use monotonic instead of depending only on the latest controller
+  counter. Legacy PDF-generation evidence remains print/document history and is
+  not treated as proof that Voucher Management created the controller voucher.
 - Distinguish "mai utilizzato" from missing usage evidence, keep ever-used
   monotonic across later controller counter resets, and make deletion/retention
   fail closed when durable history says a voucher was used or its usage cannot
   be established. A confirmed UniFi create is also never reported as failed
   merely because local reporting persistence fails afterward.
+- Require an explicit operator-selected retention threshold and keep privacy
+  minimization disabled for this release; retention review never replaces the
+  voucher code or removes local historical metadata.
+- Add security revocation for printed vouchers left without positive-use
+  evidence beyond an explicit threshold, with fresh per-voucher UniFi
+  revalidation, durable pre-DELETE intent, anti-replay reconciliation and full
+  preservation of the local voucher history.
 
 - Print only the recipient value inside each cut voucher, without the
   "Destinatario:" prefix.
