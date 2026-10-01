@@ -127,10 +127,27 @@ try {
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
         throw "Python venv non disponibile per il test restore operatore."
     }
+
+    # The test account needs only read/execute access to the checked-out code
+    # and venv. Product-data write access still comes exclusively from the
+    # installed operator-group ACL on DataRoot.
+    & icacls.exe $repoRoot /grant "*${groupSid}:(OI)(CI)RX" /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Impossibile concedere accesso di sola lettura alla sonda operatore."
+    }
+
     $credential = [PSCredential]::new("$env:COMPUTERNAME\$limitedUser", $securePassword)
     $argumentLine = ('"' + $restoreProbe + '" "' + $repoRoot + '" "' + $dataRoot + '" "' + $operatorWork + '"')
-    $limitedProcess = Start-Process -FilePath $python -ArgumentList $argumentLine -Credential $credential -WorkingDirectory $repoRoot -Wait -PassThru
+    $stdoutPath = Join-Path $operatorWork "restore-probe.stdout.txt"
+    $stderrPath = Join-Path $operatorWork "restore-probe.stderr.txt"
+    $limitedProcess = Start-Process -FilePath $python -ArgumentList $argumentLine -Credential $credential -WorkingDirectory $repoRoot -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -Wait -PassThru
     if ($limitedProcess.ExitCode -ne 0) {
+        $probeOut = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
+        $probeErr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
+        Write-Host "Limited operator probe stdout:"
+        Write-Host $probeOut
+        Write-Host "Limited operator probe stderr:"
+        Write-Host $probeErr
         throw "Il restore come operatore limitato è fallito con exit code $($limitedProcess.ExitCode)."
     }
 
