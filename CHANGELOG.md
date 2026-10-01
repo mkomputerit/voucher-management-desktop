@@ -9,10 +9,12 @@
 - Add an explicit **Voucher nominale** flag to voucher creation. The choice is
   local reporting metadata and is never sent to UniFi; recipient text is no
   longer used to infer nominal status.
-- Upgrade SQLite to schema 4 with durable voucher provenance, tri-state nominal
-  classification, a monotonic ever-used fact and explicit compatibility for
-  historical nominality-redaction state. Existing rows migrate conservatively
-  as unknown/unclassified instead of receiving guessed classifications.
+- Upgrade SQLite to schema 5 with durable voucher provenance, tri-state nominal
+  classification, a monotonic ever-used fact, compatibility for historical
+  nominality-redaction state and a provenance repair for legacy-imported
+  recipients. Existing rows migrate conservatively instead of receiving
+  guessed classifications; legacy recovered recipients are moved to local
+  metadata rather than being presented as UniFi-owned descriptions.
 - Rebuild administrative report semantics around durable facts: add confirmed
   Voucher Management creation, generated-without-positive-use-evidence,
   printed, nominal, unclassified and usage-indeterminate views; make positive
@@ -36,6 +38,11 @@
   generation, non-nominal vouchers have a dedicated export, security-revocation
   totals are included in summaries, and history exchange refuses duplicate
   modern event identities.
+- Keep report data lineage explicit: detailed PDF/CSV exports now show the
+  immutable UniFi ID, local recipient, UniFi description and local notes as
+  separate fields. Confirmed application creation persists the operator-entered
+  recipient locally; verified legacy imports enrich only an empty local
+  recipient and never overwrite operator-owned metadata.
 
 - Print only the recipient value inside each cut voucher, without the
   "Destinatario:" prefix.
