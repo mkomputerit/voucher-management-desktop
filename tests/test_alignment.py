@@ -140,6 +140,57 @@ def test_explicit_unknown_print_state_can_complete_alignment(tmp_path):
         db.close()
 
 
+def test_verified_print_history_cannot_be_downgraded_by_alignment(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[_voucher("external-verified-print")],
+            observed_at="2026-10-01T08:00:00+00:00",
+            sync_uuid="discover-verified-print",
+        )
+        voucher_id = int(
+            db.connection.execute(
+                "SELECT id FROM vouchers WHERE unifi_id='external-verified-print'"
+            ).fetchone()["id"]
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="verified-alignment-print",
+            codes=["CODE-external-verified-print"],
+            output_file="legacy.pdf",
+            document_copies=1,
+            printed_at="2026-09-20T08:00:00+00:00",
+            windows_user="MIGRATION",
+        )
+
+        try:
+            align_vouchers(
+                db,
+                controller_id=controller,
+                voucher_ids=[voucher_id],
+                is_nominal=True,
+                print_state="NOT_PRINTED",
+                aligned_at="2026-10-01T09:00:00+00:00",
+                windows_user="PC\\operatore",
+            )
+        except ValueError as exc:
+            assert "stampa verificata" in str(exc)
+        else:
+            raise AssertionError("verified print evidence must not be downgraded")
+
+        row = db.connection.execute(
+            """SELECT print_state, alignment_completed_at
+               FROM vouchers WHERE id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert row["print_state"] == PRINT_STATE_PRINTED
+        assert row["alignment_completed_at"] is None
+    finally:
+        db.close()
+
+
 def test_alignment_is_atomic_for_mixed_controller_selection(tmp_path):
     db, controller = _db(tmp_path)
     other = db.create_controller(
