@@ -117,8 +117,7 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
         headers.append("Voucher")
     headers.extend(
         [
-            "Destinatario locale",
-            "Descrizione UniFi",
+            "Destinatario",
             "Note locali",
             "Origine",
             "Nominale",
@@ -146,7 +145,6 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
     values.extend(
         [
             row.recipient or "—",
-            row.unifi_name or "—",
             row.local_notes or "—",
             origin_label(row.origin),
             nominal_label(
@@ -249,7 +247,6 @@ def render_report_pdf(
                 row.controller_name,
                 row.unifi_id,
                 row.recipient,
-                row.unifi_name,
                 row.local_notes,
                 row.status,
                 ", ".join(row.print_operators),
