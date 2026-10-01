@@ -660,7 +660,11 @@ class BackupServiceTests(unittest.TestCase):
         real_copytree = shutil.copytree
 
         def failing_copytree(src, dst, *args, **kwargs):
-            if Path(src) == self.paths.user_root:
+            src_path = Path(src)
+            if (
+                src_path == self.paths.user_root / "config"
+                and "voucher-management-rollback-build-" in str(Path(dst))
+            ):
                 Path(dst).mkdir(parents=True, exist_ok=True)
                 (Path(dst) / "partial.txt").write_text(
                     "partial",
@@ -1131,3 +1135,30 @@ if __name__ == "__main__":
             )
         finally:
             connection.close()
+
+
+def test_restore_rollback_ignores_unmanaged_root_files(tmp_path):
+    root = tmp_path / "managed-root"
+    for name in ("config", "data", "Print", "Loghi"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    (root / "config" / "settings.json").write_text("{}", encoding="utf-8")
+    (root / "data" / "history.jsonl").write_text("", encoding="utf-8")
+    unmanaged = root / "unmanaged-root-file.txt"
+    unmanaged.write_text("leave-me-alone", encoding="utf-8")
+
+    paths = SimpleNamespace(user_root=root, data=root / "data")
+    service = BackupService(paths)
+    backup = tmp_path / "managed-only-rollback.zip"
+    service.create(backup)
+
+    with patch(
+        "voucher_management.backup.shutil.copytree",
+        wraps=__import__("shutil").copytree,
+    ) as copied:
+        rollback = service.restore(backup)
+
+    copied_sources = {Path(call.args[0]) for call in copied.call_args_list}
+    assert root not in copied_sources
+    assert unmanaged not in copied_sources
+    assert unmanaged.read_text(encoding="utf-8") == "leave-me-alone"
+    assert not (rollback / unmanaged.name).exists()
