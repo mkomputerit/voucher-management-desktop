@@ -29,6 +29,16 @@ class SecurityRevocationCandidate:
     last_synced_at: str
 
 
+@dataclass(frozen=True)
+class SecurityRevocationBatchResult:
+    """Outcome of a fresh-read security revocation batch."""
+
+    revoked_ids: tuple[int, ...]
+    skipped_ids: tuple[int, ...]
+    failed_ids: tuple[int, ...]
+    local_persistence_failed_ids: tuple[int, ...]
+
+
 def _normalize_now(value: str) -> datetime:
     text = str(value or "").strip()
     if not text:
@@ -159,6 +169,202 @@ def security_revocation_candidates(
     )
 
 
+def live_security_revocation_allowed(
+    candidate: SecurityRevocationCandidate,
+    live_voucher,
+) -> bool:
+    """Return whether a fresh UniFi read still permits destructive revocation.
+
+    The controller read is authoritative at the mutation boundary.  Historical
+    SQLite eligibility only decides which rows are worth checking; it never
+    authorizes DELETE by itself.
+    """
+
+    if str(getattr(live_voucher, "id", "") or "").strip() != candidate.unifi_id:
+        return False
+    if str(getattr(live_voucher, "status", "") or "").upper() == "EXPIRED":
+        return False
+    try:
+        used = int(getattr(live_voucher, "used", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return used == 0
+
+
+def record_security_revocation_request(
+    database: Database,
+    *,
+    voucher_id: int,
+    requested_at: str,
+    windows_user: str,
+) -> bool:
+    """Persist a durable intent marker immediately before the remote DELETE.
+
+    If the process dies after UniFi receives DELETE but before the local
+    confirmation commit, this marker prevents the mutation from becoming an
+    invisible historical gap.  A subsequent reconciliation can inspect the
+    pending request rather than blindly replaying DELETE.
+    """
+
+    stamp = _normalize_now(requested_at).isoformat()
+    operator = str(windows_user or "").strip()
+    if not operator:
+        raise ValueError("windows user is required")
+
+    with database.transaction() as db:
+        row = db.execute(
+            """SELECT id FROM vouchers
+               WHERE id=? AND archived_at IS NULL""",
+            (int(voucher_id),),
+        ).fetchone()
+        if row is None:
+            return False
+
+        confirmed = db.execute(
+            """SELECT 1 FROM voucher_events
+               WHERE voucher_id=? AND event_type='SECURITY_REVOKED'
+               LIMIT 1""",
+            (int(voucher_id),),
+        ).fetchone()
+        if confirmed is not None:
+            return True
+
+        pending = db.execute(
+            """SELECT 1 FROM voucher_events
+               WHERE voucher_id=? AND event_type='SECURITY_REVOKE_REQUESTED'
+               LIMIT 1""",
+            (int(voucher_id),),
+        ).fetchone()
+        if pending is not None:
+            return True
+
+        db.execute(
+            """INSERT INTO voucher_events(
+                   event_uuid, voucher_id, event_type, occurred_at,
+                   source, windows_user, details_json
+               ) VALUES (?, ?, 'SECURITY_REVOKE_REQUESTED', ?, 'OPERATOR', ?, ?)""",
+            (
+                str(uuid4()),
+                int(voucher_id),
+                stamp,
+                operator,
+                Database.encode_event_details(
+                    {
+                        "reason": "printed_unused_threshold",
+                        "remote_delete_confirmed": False,
+                    }
+                ),
+            ),
+        )
+    return True
+
+
+def pending_security_revocation_ids(
+    database: Database,
+    *,
+    controller_id: int | None = None,
+) -> tuple[int, ...]:
+    """Return durable requests that do not yet have a confirmed revocation."""
+
+    params: list[object] = []
+    controller_clause = ""
+    if controller_id is not None:
+        controller_clause = "AND v.controller_id=?"
+        params.append(int(controller_id))
+    rows = database.connection.execute(
+        f"""SELECT DISTINCT v.id
+            FROM vouchers AS v
+            JOIN voucher_events AS req
+              ON req.voucher_id=v.id
+             AND req.event_type='SECURITY_REVOKE_REQUESTED'
+            WHERE NOT EXISTS (
+                SELECT 1 FROM voucher_events AS done
+                WHERE done.voucher_id=v.id
+                  AND done.event_type='SECURITY_REVOKED'
+            )
+            {controller_clause}
+            ORDER BY v.id""",
+        tuple(params),
+    ).fetchall()
+    return tuple(int(row["id"]) for row in rows)
+
+
+def revoke_security_candidates_live(
+    database: Database,
+    *,
+    client,
+    candidates: list[SecurityRevocationCandidate] | tuple[SecurityRevocationCandidate, ...],
+    revoked_at: str,
+    windows_user: str,
+) -> SecurityRevocationBatchResult:
+    """Fresh-read, revoke and audit candidates one by one.
+
+    Every candidate is read by UUID immediately before mutation.  A durable
+    SECURITY_REVOKE_REQUESTED event is committed before DELETE.  Known
+    ineligible rows are skipped; read/delete failures are isolated per row.
+    If the remote DELETE succeeds but the confirmation commit fails, the row is
+    reported separately and the durable request marker remains for recovery.
+    """
+
+    revoked: list[int] = []
+    skipped: list[int] = []
+    failed: list[int] = []
+    persistence_failed: list[int] = []
+
+    for candidate in candidates:
+        try:
+            live = client.get_voucher(candidate.unifi_id)
+        except Exception:
+            failed.append(candidate.voucher_id)
+            continue
+
+        if not live_security_revocation_allowed(candidate, live):
+            skipped.append(candidate.voucher_id)
+            continue
+
+        try:
+            requested = record_security_revocation_request(
+                database,
+                voucher_id=candidate.voucher_id,
+                requested_at=revoked_at,
+                windows_user=windows_user,
+            )
+        except Exception:
+            persistence_failed.append(candidate.voucher_id)
+            continue
+        if not requested:
+            skipped.append(candidate.voucher_id)
+            continue
+
+        try:
+            client.delete_vouchers([candidate.unifi_id])
+        except Exception:
+            # Keep SECURITY_REVOKE_REQUESTED deliberately: the transport may
+            # have failed after the mutation boundary and replaying DELETE
+            # automatically would be unsafe.
+            failed.append(candidate.voucher_id)
+            continue
+
+        try:
+            record_security_revocations(
+                database,
+                voucher_ids=[candidate.voucher_id],
+                revoked_at=revoked_at,
+                windows_user=windows_user,
+            )
+        except Exception:
+            persistence_failed.append(candidate.voucher_id)
+            continue
+        revoked.append(candidate.voucher_id)
+
+    return SecurityRevocationBatchResult(
+        revoked_ids=tuple(revoked),
+        skipped_ids=tuple(skipped),
+        failed_ids=tuple(failed),
+        local_persistence_failed_ids=tuple(persistence_failed),
+    )
+
+
 def record_security_revocations(
     database: Database,
     *,
@@ -205,24 +411,42 @@ def record_security_revocations(
                    WHERE id=?""",
                 (stamp, voucher_id),
             )
-            db.execute(
-                """INSERT INTO voucher_events(
-                       event_uuid, voucher_id, event_type, occurred_at,
-                       source, windows_user, details_json
-                   ) VALUES (?, ?, 'SECURITY_REVOKED', ?, 'OPERATOR', ?, ?)""",
-                (
-                    str(uuid4()),
-                    voucher_id,
-                    stamp,
-                    operator,
-                    Database.encode_event_details(
-                        {
-                            "reason": "printed_unused_threshold",
-                            "credential_preserved_locally": True,
-                        }
-                    ),
-                ),
+            pending = db.execute(
+                """SELECT id FROM voucher_events
+                   WHERE voucher_id=? AND event_type='SECURITY_REVOKE_REQUESTED'
+                   ORDER BY id DESC LIMIT 1""",
+                (voucher_id,),
+            ).fetchone()
+            details = Database.encode_event_details(
+                {
+                    "reason": "printed_unused_threshold",
+                    "remote_delete_confirmed": True,
+                    "credential_preserved_locally": True,
+                }
             )
+            if pending is not None:
+                db.execute(
+                    """UPDATE voucher_events
+                       SET event_type='SECURITY_REVOKED',
+                           occurred_at=?, source='OPERATOR',
+                           windows_user=?, details_json=?
+                       WHERE id=?""",
+                    (stamp, operator, details, int(pending["id"])),
+                )
+            else:
+                db.execute(
+                    """INSERT INTO voucher_events(
+                           event_uuid, voucher_id, event_type, occurred_at,
+                           source, windows_user, details_json
+                       ) VALUES (?, ?, 'SECURITY_REVOKED', ?, 'OPERATOR', ?, ?)""",
+                    (
+                        str(uuid4()),
+                        voucher_id,
+                        stamp,
+                        operator,
+                        details,
+                    ),
+                )
             recorded.append(voucher_id)
 
     return tuple(recorded)
