@@ -1570,7 +1570,7 @@ class ModernVoucherApp(
             ("created", "Creazione", 132, False),
             ("firstprint", "Prima stampa", 132, False),
             ("duration", "Durata", 78, False),
-            ("usage", "Utilizzi", 86, False),
+            ("usage", "Guest autorizzati", 118, False),
             ("printstatus", "Stato stampa", 118, False),
             ("copies", "Copie", 65, False),
             ("expires", "Scadenza", 132, False),
