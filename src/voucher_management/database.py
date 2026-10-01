@@ -1257,6 +1257,7 @@ COMMIT;
                     v.code,
                     v.name,
                     v.assigned_to,
+                    v.notes,
                     v.origin,
                     v.is_nominal,
                     v.nominality_redacted,
