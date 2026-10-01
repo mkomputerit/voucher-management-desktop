@@ -5,9 +5,13 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog
 
 from .create_reporting_recovery import reconcile_pending_create_reporting_to_path
+from .preparation_deletion import (
+    preparation_delete_facts,
+    record_preparation_delete_requests_to_path,
+)
 from .sync_store import persist_refresh_snapshot_to_path
 from .unifi_api import UniFiClient
 from .workflows import (
@@ -80,18 +84,52 @@ class VoucherDeletionMixin:
             return
 
         controller_id = getattr(self, "active_controller_id", None)
-        historically_used = (
-            self.database.historically_used_remote_ids(
-                controller_id=controller_id,
-                unifi_ids=[voucher.id for voucher in current],
+        paths = getattr(self, "paths", None)
+        if (
+            controller_id is None
+            or getattr(self, "database", None) is None
+            or paths is None
+        ):
+            messagebox.showwarning(
+                "Eliminazione non consentita",
+                "Lo storico locale non è disponibile. Sincronizzare la controller "
+                "prima di riprovare.",
+                parent=self,
             )
-            if controller_id is not None and getattr(self, "database", None) is not None
-            else frozenset()
+            return
+
+        remote_ids = [str(voucher.id) for voucher in current]
+        historically_used = self.database.historically_used_remote_ids(
+            controller_id=controller_id,
+            unifi_ids=remote_ids,
         )
+        local_facts = preparation_delete_facts(
+            self.database,
+            controller_id=controller_id,
+            unifi_ids=remote_ids,
+        )
+        if len(local_facts) != len(set(remote_ids)):
+            messagebox.showwarning(
+                "Eliminazione non consentita",
+                "Uno o più voucher non sono presenti nello storico locale. "
+                "Eseguire Sincronizza e riprovare.",
+                parent=self,
+            )
+            return
+
         blocked = evaluate_delete_candidates(
             current,
             stats,
             historically_used_ids=historically_used,
+            local_print_states={
+                remote_id: fact.print_state
+                for remote_id, fact in local_facts.items()
+            },
+            aligned_ids=frozenset(
+                remote_id
+                for remote_id, fact in local_facts.items()
+                if fact.alignment_completed
+            ),
         )
         if blocked:
             reasons = {item.policy.reason for item in blocked}
@@ -104,6 +142,14 @@ class VoucherDeletionMixin:
                 detail = (
                     "Almeno un voucher selezionato risulta già stampato."
                 )
+            elif "print_unknown" in reasons:
+                detail = (
+                    "Per almeno un voucher lo stato di stampa è Non determinabile."
+                )
+            elif "not_aligned" in reasons:
+                detail = (
+                    "Almeno un voucher selezionato deve ancora essere allineato."
+                )
             else:
                 detail = (
                     "Almeno un voucher selezionato non è eliminabile "
@@ -111,9 +157,29 @@ class VoucherDeletionMixin:
                 )
             messagebox.showwarning(
                 "Eliminazione non consentita",
-                f"{detail}\n\nVoucher Management consente solo la pulizia "
-                "dei voucher non ancora emessi. L'eventuale revoca resta di "
-                "competenza dell'amministratore IT.",
+                f"{detail}\n\nLa cancellazione ordinaria è consentita soltanto "
+                "come correzione di preparazione per voucher allineati e "
+                "positivamente Non stampati. Gli altri casi devono seguire "
+                "il relativo workflow di verifica o sicurezza.",
+                parent=self,
+            )
+            return
+
+        reason = simpledialog.askstring(
+            "Motivazione cancellazione",
+            (
+                "Indicare obbligatoriamente il motivo della correzione di "
+                "preparazione. La motivazione resterà nello storico locale."
+            ),
+            parent=self,
+        )
+        if reason is None:
+            return
+        reason = reason.strip()
+        if not reason:
+            messagebox.showwarning(
+                "Motivazione obbligatoria",
+                "Inserire una motivazione prima di cancellare il voucher.",
                 parent=self,
             )
             return
@@ -121,8 +187,9 @@ class VoucherDeletionMixin:
         if not messagebox.askyesno(
             "Elimina dal server UniFi",
             f"Eliminare {len(current)} voucher dal server UniFi?\n\n"
+            f"Motivazione: {reason}\n\n"
             "Questa operazione rimuove i voucher dal controller. Lo storico "
-            "locale e gli eventuali PDF già generati non verranno cancellati.",
+            "locale e la motivazione verranno conservati.",
             parent=self,
         ):
             return
@@ -178,21 +245,46 @@ class VoucherDeletionMixin:
                 parent=self,
             )
 
+        class _PreparationAuditFailure(RuntimeError):
+            pass
+
         def failed(exc: Exception) -> None:
+            if isinstance(exc, _PreparationAuditFailure):
+                self.logger.error(
+                    "preparation_delete_audit_failed cause=%s",
+                    type(exc.__cause__).__name__ if exc.__cause__ is not None else "unknown",
+                )
+                messagebox.showerror(
+                    "Eliminazione non eseguita",
+                    "Non è stato possibile salvare la motivazione nello storico. "
+                    "Nessun comando DELETE è stato inviato a UniFi.",
+                    parent=self,
+                )
+                return
             self._recover_after_delete_error(
                 client,
                 exc,
             )
 
-        controller_id = getattr(self, "active_controller_id", None)
-        paths = getattr(self, "paths", None)
-        database_path = (
-            Path(paths.database)
-            if controller_id is not None and paths is not None
-            else None
-        )
+        database_path = Path(paths.database)
+        requested_at = datetime.now(timezone.utc).isoformat()
+        operator = self._windows_operator_identity()
 
         def worker():
+            try:
+                record_preparation_delete_requests_to_path(
+                    database_path,
+                    controller_id=int(controller_id),
+                    unifi_ids=[str(voucher.id) for voucher in current],
+                    reason=reason,
+                    requested_at=requested_at,
+                    windows_user=operator,
+                )
+            except Exception as exc:
+                raise _PreparationAuditFailure(
+                    "preparation delete audit failed"
+                ) from exc
+
             outcome = delete_vouchers_and_refresh(
                 client,
                 cached,
