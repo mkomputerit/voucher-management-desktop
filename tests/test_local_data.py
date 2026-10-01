@@ -46,7 +46,7 @@ def _voucher(db, controller, remote_id, code):
     )
 
 
-def test_batch_changes_only_notes_and_nominality_and_audits_each_changed_row(tmp_path):
+def test_batch_changes_nominality_only_and_audits_each_changed_row(tmp_path):
     db, controller = _db(tmp_path)
     try:
         first = _voucher(db, controller, "v1", "1111122222")
@@ -57,8 +57,6 @@ def test_batch_changes_only_notes_and_nominality_and_audits_each_changed_row(tmp
             controller_id=controller,
             voucher_ids=[first, second],
             patch=LocalVoucherPatch(
-                apply_notes=True,
-                notes="Reception",
                 apply_is_nominal=True,
                 is_nominal=True,
             ),
@@ -73,8 +71,8 @@ def test_batch_changes_only_notes_and_nominality_and_audits_each_changed_row(tmp
                FROM vouchers ORDER BY id"""
         ).fetchall()
         assert [(row["notes"], row["is_nominal"]) for row in rows] == [
-            ("Reception", 1),
-            ("Reception", 1),
+            ("", 1),
+            ("", 1),
         ]
         assert [row["name"] for row in rows] == ["UniFi v1", "UniFi v2"]
         assert [row["code"] for row in rows] == ["1111122222", "3333344444"]
@@ -88,9 +86,8 @@ def test_batch_changes_only_notes_and_nominality_and_audits_each_changed_row(tmp
         assert len(events) == 2
         assert all(row["event_type"] == "LOCAL_METADATA_UPDATED" for row in events)
         assert all(row["windows_user"] == r"PC\operator" for row in events)
-        assert all("notes" in row["details_json"] for row in events)
+        assert all("notes" not in row["details_json"] for row in events)
         assert all("is_nominal" in row["details_json"] for row in events)
-        assert all("Reception" not in row["details_json"] for row in events)
         assert all("assigned_to" not in row["details_json"] for row in events)
     finally:
         db.close()
@@ -199,17 +196,17 @@ def test_batch_is_atomic_if_one_row_is_not_from_active_controller(tmp_path):
                 controller_id=controller,
                 voucher_ids=[valid, foreign],
                 patch=LocalVoucherPatch(
-                    apply_notes=True,
-                    notes="Must not persist",
+                    apply_is_nominal=True,
+                    is_nominal=True,
                 ),
                 updated_at=NOW,
                 windows_user="operator",
             )
 
         assert db.connection.execute(
-            "SELECT notes FROM vouchers WHERE id=?",
+            "SELECT is_nominal FROM vouchers WHERE id=?",
             (valid,),
-        ).fetchone()["notes"] == ""
+        ).fetchone()["is_nominal"] is None
         assert db.connection.execute(
             "SELECT COUNT(*) FROM voucher_events"
         ).fetchone()[0] == 0
