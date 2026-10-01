@@ -113,11 +113,13 @@ def test_nominal_report_uses_explicit_flag_not_recipient_text(tmp_path):
             controller_id=controller,
             unifi_ids=["emi"],
             is_nominal=False,
+            aligned_at="2026-10-01T08:00:00+00:00",
         )
         db.mark_application_created_vouchers(
             controller_id=controller,
             unifi_ids=["pinco"],
             is_nominal=True,
+            aligned_at="2026-10-01T08:00:00+00:00",
         )
         dataset = build_report_dataset(db, kind=ReportKind.NOMINAL, generated_at=NOW)
         assert [row.voucher_id for row in dataset.rows] == [pinco]
@@ -136,6 +138,7 @@ def test_only_confirmed_application_origin_counts_as_generated(tmp_path):
             controller_id=controller,
             unifi_ids=["app"],
             is_nominal=False,
+            aligned_at="2026-10-01T08:00:00+00:00",
         )
         with db.transaction() as tx:
             tx.execute(
@@ -170,6 +173,7 @@ def test_generated_unused_requires_confirmed_origin_and_observed_zero(tmp_path):
             controller_id=controller,
             unifi_ids=["created-unused", "created-used", "unknown-usage"],
             is_nominal=False,
+            aligned_at="2026-10-01T08:00:00+00:00",
         )
         with db.transaction() as tx:
             tx.execute(
@@ -254,6 +258,7 @@ def test_summary_exposes_data_quality_and_freshness_without_clear_codes(tmp_path
             controller_id=controller,
             unifi_ids=["nominal"],
             is_nominal=True,
+            aligned_at="2026-10-01T08:00:00+00:00",
         )
         dataset = build_report_dataset(
             db,
@@ -661,11 +666,13 @@ def test_nominality_exports_partition_rows_without_overlap(tmp_path):
             controller_id=controller,
             unifi_ids=["nominal-partition"],
             is_nominal=True,
+            aligned_at="2026-10-01T08:00:00+00:00",
         )
         db.mark_application_created_vouchers(
             controller_id=controller,
             unifi_ids=["non-nominal-partition"],
             is_nominal=False,
+            aligned_at="2026-10-01T08:00:00+00:00",
         )
         with db.transaction() as tx:
             tx.execute(
