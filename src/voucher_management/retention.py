@@ -244,6 +244,11 @@ def _candidate_rows(
                      WHERE vp.voucher_id=v.id
                  )
              )
+             AND NOT EXISTS (
+                 SELECT 1 FROM voucher_events AS review
+                 WHERE review.voucher_id=v.id
+                   AND review.event_type='LEGACY_IDENTITY_REVIEW_REQUIRED'
+             )
              AND COALESCE(
                     v.revoked_for_security_at,
                     v.last_synced_at,
@@ -627,6 +632,11 @@ def archive_retention_candidates(
                              SELECT 1 FROM voucher_prints AS vp
                              WHERE vp.voucher_id=v.id
                          )
+                     )
+                     AND NOT EXISTS (
+                         SELECT 1 FROM voucher_events AS review
+                         WHERE review.voucher_id=v.id
+                           AND review.event_type='LEGACY_IDENTITY_REVIEW_REQUIRED'
                      )
                      AND COALESCE(
                             v.revoked_for_security_at,
