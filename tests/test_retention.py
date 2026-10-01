@@ -43,7 +43,7 @@ def _history(*, generated_codes=()):
 
     return SimpleNamespace(stats_for_codes=stats_for_codes)
 
-def _database(tmp_path):
+def _database(tmp_path, *, configure=True):
     database = Database(tmp_path / "retention.db")
     database.initialize()
     controller_id = database.create_controller(
@@ -51,6 +51,12 @@ def _database(tmp_path):
         api_root="https://controller.example",
         created_at=OLD,
     )
+    if configure:
+        update_retention_days(
+            database,
+            days=DEFAULT_UNUSED_UNPRINTED_DAYS,
+            now=NOW,
+        )
     return database, controller_id
 
 
@@ -563,3 +569,24 @@ def test_legacy_evidence_ready_generation_blocks_before_materialization(tmp_path
     finally:
         database.close()
 
+
+
+
+def test_candidates_are_disabled_until_operator_chooses_threshold(tmp_path):
+    database, controller = _database(tmp_path, configure=False)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="unconfigured",
+            code="4545454545",
+        )
+        assert retention_candidates(database, now=NOW) == ()
+
+        update_retention_days(database, days=30, now=NOW)
+        assert [item.voucher_id for item in retention_candidates(
+            database,
+            now=NOW,
+        )] == [voucher_id]
+    finally:
+        database.close()
