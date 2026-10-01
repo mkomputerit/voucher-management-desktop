@@ -1,4 +1,4 @@
-name: Build Windows portable
+name: Build Windows
 
 on:
   push:
@@ -206,6 +206,14 @@ jobs:
             ForEach-Object { "$($_.Hash.ToLower())  VoucherManagement.exe" } |
             Out-File -Encoding ascii dist\VoucherManagement\SHA256SUMS.txt
 
+      - name: Build self-contained Windows Setup
+        shell: pwsh
+        run: .\tools\Build-WindowsSetup.ps1 -SourcePath .\dist\VoucherManagement -OutputDirectory .\dist\installer
+
+      - name: Test self-contained Windows Setup
+        shell: pwsh
+        run: $version = (Get-Content version.txt -Raw).Trim(); .\tools\Test-WindowsSetupBootstrap.ps1 -SetupPath ".\dist\installer\VoucherManagement-Setup-$version.exe"
+
       - name: Package public release files
         if: github.event.repository.private == false && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
         shell: pwsh
@@ -215,9 +223,15 @@ jobs:
             throw "Public stable release requires a stable SemVer X.Y.Z version: $version"
           }
           $archive = "VoucherManagement-$version-Windows-x64.zip"
+          $setup = "VoucherManagement-Setup-$version.exe"
           Compress-Archive -Path dist\VoucherManagement\* -DestinationPath $archive -CompressionLevel Optimal
+          Copy-Item "dist\installer\$setup" $setup
           $zipHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
-          "$zipHash  $archive" | Out-File -Encoding ascii SHA256SUMS.txt
+          $setupHash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          @(
+            "$zipHash  $archive",
+            "$setupHash  $setup"
+          ) | Out-File -Encoding ascii SHA256SUMS.txt
 
       - name: Upload public release files
         if: github.event.repository.private == false && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
@@ -226,6 +240,7 @@ jobs:
           name: VoucherManagement-release-${{ github.sha }}
           path: |
             VoucherManagement-*-Windows-x64.zip
+            VoucherManagement-Setup-*.exe
             SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
@@ -242,6 +257,17 @@ jobs:
         with:
           name: VoucherManagement-Windows-x64-${{ github.sha }}
           path: dist/VoucherManagement/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Setup build
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || github.ref == 'refs/heads/feature/5.1-reporting-core'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: VoucherManagement-Setup-Windows-x64-${{ github.sha }}
+          path: |
+            dist/installer/VoucherManagement-Setup-*.exe
+            dist/installer/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -267,8 +293,9 @@ jobs:
         run: |
           set -euo pipefail
           archive="$(find release-files -maxdepth 1 -type f -name 'VoucherManagement-*-Windows-x64.zip' -print -quit)"
-          if [ -z "$archive" ]; then
-            echo "Release archive not found"
+          setup="$(find release-files -maxdepth 1 -type f -name 'VoucherManagement-Setup-*.exe' -print -quit)"
+          if [ -z "$archive" ] || [ -z "$setup" ]; then
+            echo "Release archive or Setup.exe not found"
             exit 1
           fi
           base="$(basename "$archive")"
@@ -289,6 +316,7 @@ jobs:
           fi
           gh release create "$tag" \
             "$archive" \
+            "$setup" \
             release-files/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
