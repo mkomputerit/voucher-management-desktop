@@ -20,7 +20,15 @@ from voucher_management.legacy_backup_import import (
     inspect_legacy_backup,
 )
 from voucher_management.legacy_migration import LegacyMigrationError
+from voucher_management.reporting import ReportKind, build_report_dataset
+from voucher_management.retention import (
+    configure_retention_policy,
+    prepare_security_revocation_operation,
+    security_revocation_candidates,
+)
 from voucher_management.security.history_key import HistoryKeyStore
+from voucher_management.sync_store import persist_successful_snapshot
+from voucher_management.unifi_api import ApiVoucher
 
 
 FIXTURE_KEY = secrets.token_hex(32)
@@ -660,5 +668,147 @@ def test_specific_legacy_import_error_is_preserved_after_safety_backup(
             assert str(exc) == "Percorso PDF del backup non sicuro"
         else:
             raise AssertionError("specific LegacyMigrationError must propagate")
+    finally:
+        database.close()
+
+
+def test_legacy_print_becomes_live_printed_unused_then_security_revoked(tmp_path):
+    """Golden lifecycle: legacy print -> live UniFi -> report -> revocation audit."""
+
+    source = _legacy_backup(
+        tmp_path,
+        codes=("12345-67890",),
+        backup_name="legacy-security-lifecycle.zip",
+        event_prefix="security-",
+    )
+    paths, database = _live(tmp_path)
+    try:
+        imported = execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=source,
+            safety_backup_destination=tmp_path / "pre-import-security.vmbk",
+            safety_backup_password="a" * 24,
+            imported_at="2026-09-28T08:00:00+00:00",
+            migration_uuid="legacy-security-import",
+        )
+        assert imported.materialization.print_rows == 1
+
+        live_controller = database.create_controller(
+            name="Reception",
+            api_root="https://controller.example",
+            created_at="2026-09-28T09:00:00+00:00",
+        )
+        live = ApiVoucher(
+            id="live-security-voucher",
+            code="1234567890",
+            recipient="Ospite 1",
+            duration_minutes=0,
+            create_time=1_758_793_000,
+            quota=1,
+            used=0,
+            status="VALID_MULTI",
+            start_time=0,
+            end_time=0,
+        )
+        observed_at = "2026-09-30T10:00:00+00:00"
+        persist_successful_snapshot(
+            database,
+            controller_id=live_controller,
+            vouchers=[live],
+            observed_at=observed_at,
+            sync_uuid="legacy-security-live-sync",
+        )
+        configure_retention_policy(
+            database,
+            unused_unprinted_days=180,
+            printed_unused_revoke_days=1,
+            now=observed_at,
+        )
+
+        live_row = database.connection.execute(
+            """SELECT id, usage_observed, ever_used, present_on_controller
+               FROM vouchers
+               WHERE controller_id=? AND unifi_id=?""",
+            (live_controller, live.id),
+        ).fetchone()
+        assert live_row is not None
+        live_id = int(live_row["id"])
+        assert live_row["usage_observed"] == 1
+        assert live_row["ever_used"] == 0
+        assert live_row["present_on_controller"] == 1
+        assert database.print_summary(live_id).print_jobs == 1
+
+        # The synthetic archive identity was consolidated, not double-counted.
+        assert database.connection.execute(
+            """SELECT COUNT(*) FROM vouchers AS v
+               JOIN controllers AS c ON c.id=v.controller_id
+               WHERE REPLACE(v.code, '-', '')='1234567890'"""
+        ).fetchone()[0] == 1
+
+        printed_unused = build_report_dataset(
+            database,
+            kind=ReportKind.PRINTED_UNUSED,
+            generated_at=observed_at,
+            controller_id=live_controller,
+        )
+        assert [row.voucher_id for row in printed_unused.rows] == [live_id]
+        assert printed_unused.rows[0].print_jobs == 1
+        assert printed_unused.rows[0].usage_observed is True
+        assert printed_unused.rows[0].ever_used is False
+
+        candidates = security_revocation_candidates(
+            database,
+            now=observed_at,
+            controller_id=live_controller,
+        )
+        assert [item.voucher_id for item in candidates] == [live_id]
+
+        candidate_report = build_report_dataset(
+            database,
+            kind=ReportKind.SECURITY_REVOCATION_CANDIDATES,
+            generated_at=observed_at,
+            controller_id=live_controller,
+        )
+        assert [row.voucher_id for row in candidate_report.rows] == [live_id]
+
+        remote_ids = prepare_security_revocation_operation(
+            database,
+            controller_id=live_controller,
+            voucher_ids=[live_id],
+            operation_uuid="security-revoke-golden",
+            requested_at=observed_at,
+            windows_user=r"PC\operator",
+        )
+        assert remote_ids == (live.id,)
+
+        # A later complete snapshot proves the controller credential is gone.
+        confirmed_at = "2026-09-30T10:05:00+00:00"
+        persist_successful_snapshot(
+            database,
+            controller_id=live_controller,
+            vouchers=[],
+            observed_at=confirmed_at,
+            sync_uuid="legacy-security-revoked-sync",
+        )
+
+        row = database.connection.execute(
+            """SELECT present_on_controller, revoked_for_security_at
+               FROM vouchers WHERE id=?""",
+            (live_id,),
+        ).fetchone()
+        assert row["present_on_controller"] == 0
+        assert row["revoked_for_security_at"] == confirmed_at
+        assert database.print_summary(live_id).print_jobs == 1
+
+        revoked_report = build_report_dataset(
+            database,
+            kind=ReportKind.SECURITY_REVOKED,
+            generated_at=confirmed_at,
+            controller_id=live_controller,
+        )
+        assert [row.voucher_id for row in revoked_report.rows] == [live_id]
+        assert revoked_report.rows[0].status == "Revocato per sicurezza"
+        assert revoked_report.rows[0].print_jobs == 1
     finally:
         database.close()
