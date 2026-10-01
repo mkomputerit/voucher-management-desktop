@@ -521,6 +521,7 @@ def record_security_revocations(
     source = str(confirmation_source or "").strip()
     if source not in {"delete_response", "fresh_snapshot_absent"}:
         raise ValueError("unsupported security revocation confirmation source")
+    event_source = "OPERATOR" if source == "delete_response" else "SYSTEM"
     requested = tuple(dict.fromkeys(int(value) for value in voucher_ids))
     if not requested:
         return ()
@@ -575,21 +576,22 @@ def record_security_revocations(
                 db.execute(
                     """UPDATE voucher_events
                        SET event_type='SECURITY_REVOKED',
-                           occurred_at=?, source='OPERATOR',
+                           occurred_at=?, source=?,
                            windows_user=?, details_json=?
                        WHERE id=?""",
-                    (stamp, operator, details, int(pending["id"])),
+                    (stamp, event_source, operator, details, int(pending["id"])),
                 )
             else:
                 db.execute(
                     """INSERT INTO voucher_events(
                            event_uuid, voucher_id, event_type, occurred_at,
                            source, windows_user, details_json
-                       ) VALUES (?, ?, 'SECURITY_REVOKED', ?, 'OPERATOR', ?, ?)""",
+                       ) VALUES (?, ?, 'SECURITY_REVOKED', ?, ?, ?, ?)""",
                     (
                         str(uuid4()),
                         voucher_id,
                         stamp,
+                        event_source,
                         operator,
                         details,
                     ),
