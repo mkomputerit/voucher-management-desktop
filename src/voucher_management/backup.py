@@ -175,7 +175,13 @@ class BackupService:
 
     @staticmethod
     def _copytree_without_live_sqlite(source: Path, destination: Path) -> None:
-        """Copy application data while excluding live SQLite/WAL artifacts."""
+        """Copy only restore-managed data, excluding live SQLite/WAL artifacts.
+
+        Restore itself replaces only config/data/Print/Loghi.  Rollback must
+        therefore snapshot exactly that same managed set rather than traversing
+        unrelated root files (logs, deployment artifacts, stale legacy files)
+        that a limited shared-install operator may not be able to read.
+        """
 
         database_names = {
             "voucher_management.db",
@@ -184,16 +190,13 @@ class BackupService:
             "voucher_management.db-journal",
         }
 
-        source_root = Path(source).resolve()
+        source_root = Path(source)
+        destination_root = Path(destination)
+        destination_root.mkdir(parents=True, exist_ok=True)
 
         def ignore(path, names):
-            current = Path(path).resolve()
+            current = Path(path)
             ignored: list[str] = []
-            if current == source_root:
-                if "application.instance.lock" in names:
-                    ignored.append("application.instance.lock")
-                if ".maintenance" in names:
-                    ignored.append(".maintenance")
             if current.name == "data":
                 ignored.extend(
                     name for name in names if name in database_names
@@ -202,7 +205,15 @@ class BackupService:
                     ignored.append("application.instance.lock")
             return ignored
 
-        shutil.copytree(source, destination, ignore=ignore)
+        for dirname in BackupService.DATA_DIRS:
+            managed_source = source_root / dirname
+            if not managed_source.exists():
+                continue
+            shutil.copytree(
+                managed_source,
+                destination_root / dirname,
+                ignore=ignore,
+            )
 
     def consume_restore_warnings(self) -> tuple[str, ...]:
         """Return and clear non-fatal compatibility warnings from restore."""
