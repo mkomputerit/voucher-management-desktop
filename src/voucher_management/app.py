@@ -612,7 +612,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             if controller_id is not None
             else None
         )
-        operator = self._windows_operator_identity()
+        operator = VoucherApp._windows_operator_identity()
 
         def worker():
             snapshot = list(refresh_vouchers(client))
