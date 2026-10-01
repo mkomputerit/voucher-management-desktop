@@ -90,10 +90,11 @@ def test_detail_csv_hides_codes_but_keeps_sanitized_administrative_detail(tmp_pa
     payload = output.read_text(encoding="utf-8-sig")
     assert "Voucher;" not in payload
     assert "12345-67890" not in payload
-    assert "Destinatario locale" in payload
-    assert "Descrizione UniFi" in payload
+    assert "Destinatario" in payload
+    assert "Destinatario locale" not in payload
+    assert "Descrizione UniFi" not in payload
     assert "Mario & Lucia <ospiti>" in payload
-    assert "Descrizione UniFi originale" in payload
+    assert "Descrizione UniFi originale" not in payload
     assert "Note locali" in payload
     assert "Nota locale amministrativa" in payload
     assert "ID UniFi" in payload
