@@ -3496,6 +3496,10 @@ class ModernVoucherApp(
             return "DA ALLINEARE"
 
         print_state = local[1]
+        # A confirmed physical-print audit is stronger evidence than any older
+        # classification value that may have survived an import.
+        if stat and stat.print_jobs:
+            return "STAMPATO"
         if print_state == "PRINTED":
             return "STAMPATO"
         if print_state == "UNKNOWN":
@@ -3504,9 +3508,7 @@ class ModernVoucherApp(
             return "NON DETERMINABILE"
 
         # Once the local lifecycle positively says NOT_PRINTED, the HMAC/PDF
-        # history can refine the preparation state without inventing a print.
-        if stat and stat.print_jobs:
-            return "STAMPATO"
+        # history can refine preparation state without inventing a print.
         if stat and stat.generated_documents:
             return "PDF CREATO"
         return "DA STAMPARE"
