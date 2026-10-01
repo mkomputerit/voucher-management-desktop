@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from voucher_management.database import Database
+from voucher_management.security_revocation import (
+    pending_security_revocation_ids,
+    record_security_revocation_request,
+)
 from voucher_management.sync_store import (
     load_local_vouchers,
     persist_connection_snapshot_to_path,
@@ -611,3 +615,106 @@ def test_stale_successful_create_snapshot_upserts_positive_rows_without_absence(
         assert rows["created"]["is_nominal"] == 0
     finally:
         check.close()
+
+
+
+def test_complete_snapshot_reconciles_pending_security_revocation(tmp_path):
+    db = Database(tmp_path / "security-reconcile.sqlite")
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("pending-security")],
+            observed_at="2026-09-25T10:00:00+00:00",
+            sync_uuid="security-before",
+        )
+        row = db.connection.execute(
+            "SELECT id FROM vouchers WHERE controller_id=? AND unifi_id=?",
+            (controller, "pending-security"),
+        ).fetchone()
+        voucher_id = int(row["id"])
+        record_security_revocation_request(
+            db,
+            voucher_id=voucher_id,
+            requested_at="2026-09-25T11:00:00+00:00",
+            windows_user=r"PC\operator",
+        )
+        assert pending_security_revocation_ids(db) == (voucher_id,)
+
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[],
+            observed_at="2026-09-25T12:00:00+00:00",
+            sync_uuid="security-after",
+        )
+
+        assert pending_security_revocation_ids(db) == ()
+        event = db.connection.execute(
+            """SELECT event_type, source, windows_user, details_json
+               FROM voucher_events WHERE voucher_id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert event["event_type"] == "SECURITY_REVOKED"
+        assert event["source"] == "SYSTEM"
+        assert event["windows_user"] == "SYSTEM"
+        assert '"confirmation_source":"fresh_snapshot_absent"' in event["details_json"]
+    finally:
+        db.close()
+
+
+def test_complete_snapshot_closes_pending_security_revocation_when_still_present(
+    tmp_path,
+):
+    db = Database(tmp_path / "security-present.sqlite")
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("pending-present")],
+            observed_at="2026-09-25T10:00:00+00:00",
+            sync_uuid="security-present-before",
+        )
+        row = db.connection.execute(
+            "SELECT id FROM vouchers WHERE controller_id=? AND unifi_id=?",
+            (controller, "pending-present"),
+        ).fetchone()
+        voucher_id = int(row["id"])
+        record_security_revocation_request(
+            db,
+            voucher_id=voucher_id,
+            requested_at="2026-09-25T11:00:00+00:00",
+            windows_user=r"PC\operator",
+        )
+
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("pending-present")],
+            observed_at="2026-09-25T12:00:00+00:00",
+            sync_uuid="security-present-after",
+        )
+
+        assert pending_security_revocation_ids(db) == ()
+        event = db.connection.execute(
+            """SELECT event_type, source, windows_user
+               FROM voucher_events WHERE voucher_id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert event["event_type"] == "SECURITY_REVOKE_NOT_APPLIED"
+        assert event["source"] == "SYSTEM"
+        assert event["windows_user"] == "SYSTEM"
+    finally:
+        db.close()
