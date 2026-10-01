@@ -267,7 +267,9 @@ def test_request_marker_is_durable_and_promoted_on_confirmation(tmp_path):
             (voucher_id,),
         ).fetchall()
         assert [row["event_type"] for row in events] == ["SECURITY_REVOKED"]
+        assert '"confirmation_source":"delete_response"' in events[0]["details_json"]
         assert '"remote_delete_confirmed":true' in events[0]["details_json"]
+        assert '"fresh_snapshot_confirmed_absent":false' in events[0]["details_json"]
         assert '"credential_preserved_locally":true' in events[0]["details_json"]
     finally:
         db.close()
@@ -438,6 +440,14 @@ def test_fresh_full_snapshot_reconciles_absent_pending_revocation(tmp_path):
         ).fetchone()
         assert row["code"] == "1234567890"
         assert row["present_on_controller"] == 0
+        event = db.connection.execute(
+            """SELECT details_json FROM voucher_events
+               WHERE voucher_id=? AND event_type='SECURITY_REVOKED'""",
+            (voucher_id,),
+        ).fetchone()
+        assert '"confirmation_source":"fresh_snapshot_absent"' in event["details_json"]
+        assert '"remote_delete_confirmed":false' in event["details_json"]
+        assert '"fresh_snapshot_confirmed_absent":true' in event["details_json"]
     finally:
         db.close()
 
