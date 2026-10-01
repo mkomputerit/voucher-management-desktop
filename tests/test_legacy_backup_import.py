@@ -808,7 +808,8 @@ def test_legacy_print_becomes_live_printed_unused_then_security_revoked(tmp_path
             controller_id=live_controller,
         )
         assert [row.voucher_id for row in revoked_report.rows] == [live_id]
-        assert revoked_report.rows[0].status == "Revocato per sicurezza"
+        assert revoked_report.rows[0].status.startswith("Revocato per sicurezza")
+        assert "non presente su UniFi" in revoked_report.rows[0].status
         assert revoked_report.rows[0].print_jobs == 1
     finally:
         database.close()
