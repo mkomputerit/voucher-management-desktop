@@ -176,9 +176,7 @@ class FirstRunWizard(tk.Toplevel):
             value="Connessione non ancora verificata"
         )
 
-        self.retention_days_var = tk.StringVar(
-            value=str(DEFAULT_VOUCHER_RETENTION_DAYS)
-        )
+        self.retention_days_var = tk.StringVar(value="")
 
         self.backup_directory_var = tk.StringVar(value=default_backup_directory(app))
         self.backup_on_close_var = tk.BooleanVar(value=bool(settings.get("backup_on_close", True)))
@@ -417,15 +415,16 @@ class FirstRunWizard(tk.Toplevel):
     def _render_retention(self) -> None:
         self.header_var.set("Conservazione dello storico")
         self.subtitle_var.set(
-            "I valori raccomandati sono già adatti alla maggior parte delle "
-            "installazioni. La pulizia resta sempre sottoposta a revisione."
+            "La soglia deve essere scelta esplicitamente per questa "
+            "installazione. Nessun valore viene precompilato."
         )
         ttk.Label(
             self.body,
             text=(
                 "Voucher utilizzati: sempre protetti\n"
                 "Voucher fisicamente stampati: sempre protetti\n"
-                "Mai usati e mai stampati: candidati solo dopo il periodo indicato"
+                "Record mai usati e mai stampati: riesaminabili solo dopo la "
+                "soglia scelta qui"
             ),
             wraplength=650,
         ).pack(anchor="w", pady=(18, 16))
@@ -446,8 +445,8 @@ class FirstRunWizard(tk.Toplevel):
         ttk.Label(
             self.body,
             text=(
-                "Nessun voucher viene eliminato automaticamente dal wizard. "
-                "La futura pulizia mostrerà sempre i candidati prima di agire."
+                "La soglia è obbligatoria ma non attiva alcuna cancellazione. "
+                "La minimizzazione privacy non fa parte di questa release."
             ),
             style="Muted.TLabel",
             wraplength=650,
@@ -587,7 +586,7 @@ class FirstRunWizard(tk.Toplevel):
         except (TypeError, ValueError, tk.TclError):
             messagebox.showerror(
                 "Prima configurazione",
-                "La retention deve essere compresa tra 1 e 3650 giorni.",
+                "Scegliere esplicitamente una soglia retention tra 1 e 3650 giorni.",
                 parent=self,
             )
             return None
