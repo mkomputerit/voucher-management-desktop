@@ -14,6 +14,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .database import Database
+from .preparation_deletion import reconcile_preparation_delete_requests
 from .unifi_api import ApiVoucher
 
 
@@ -170,6 +171,14 @@ def persist_successful_snapshot(
                WHERE sync_uuid=?""",
             (len(changes), run_uuid),
         )
+        reconcile_preparation_delete_requests(
+            database,
+            controller_id=controller_id,
+            present_unifi_ids=seen_remote_ids,
+            observed_at=observed_at,
+            connection=tx,
+        )
+
         tx.execute(
             """UPDATE controllers
                SET last_successful_sync_at=? WHERE id=?""",
