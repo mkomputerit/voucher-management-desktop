@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 from voucher_management.database import Database
+from types import SimpleNamespace
+
 from voucher_management.security_revocation import (
+    live_security_revocation_allowed,
+    pending_security_revocation_ids,
+    record_security_revocation_request,
     record_security_revocations,
+    revoke_security_candidates_live,
     security_revocation_candidates,
     set_security_revoke_days,
 )
@@ -177,5 +183,180 @@ def test_record_revocation_is_idempotent(tmp_path):
             (voucher_id,),
         ).fetchone()[0]
         assert count == 1
+    finally:
+        db.close()
+
+
+
+def test_live_check_requires_same_uuid_nonexpired_and_zero_usage(tmp_path):
+    db, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller)
+        _print(db, controller)
+        set_security_revoke_days(db, days=10, now=NOW)
+        candidate = security_revocation_candidates(db, now=NOW)[0]
+
+        assert live_security_revocation_allowed(
+            candidate,
+            SimpleNamespace(id="v1", status="VALID_MULTI", used=0),
+        )
+        assert not live_security_revocation_allowed(
+            candidate,
+            SimpleNamespace(id="other", status="VALID_MULTI", used=0),
+        )
+        assert not live_security_revocation_allowed(
+            candidate,
+            SimpleNamespace(id="v1", status="EXPIRED", used=0),
+        )
+        assert not live_security_revocation_allowed(
+            candidate,
+            SimpleNamespace(id="v1", status="VALID_MULTI", used=1),
+        )
+        assert voucher_id == candidate.voucher_id
+    finally:
+        db.close()
+
+
+def test_request_marker_is_durable_and_promoted_on_confirmation(tmp_path):
+    db, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller)
+        assert record_security_revocation_request(
+            db,
+            voucher_id=voucher_id,
+            requested_at=NOW,
+            windows_user=r"PC\operator",
+        )
+        assert pending_security_revocation_ids(db) == (voucher_id,)
+
+        recorded = record_security_revocations(
+            db,
+            voucher_ids=[voucher_id],
+            revoked_at=NOW,
+            windows_user=r"PC\operator",
+        )
+        assert recorded == (voucher_id,)
+        assert pending_security_revocation_ids(db) == ()
+        events = db.connection.execute(
+            """SELECT event_type, details_json
+               FROM voucher_events WHERE voucher_id=?""",
+            (voucher_id,),
+        ).fetchall()
+        assert [row["event_type"] for row in events] == ["SECURITY_REVOKED"]
+        assert '"remote_delete_confirmed":true' in events[0]["details_json"]
+        assert '"credential_preserved_locally":true' in events[0]["details_json"]
+    finally:
+        db.close()
+
+
+def test_live_batch_fresh_reads_before_delete_and_keeps_local_history(tmp_path):
+    db, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller)
+        _print(db, controller)
+        set_security_revoke_days(db, days=10, now=NOW)
+        candidate = security_revocation_candidates(db, now=NOW)[0]
+
+        calls = []
+        client = SimpleNamespace(
+            get_voucher=lambda remote_id: (
+                calls.append(("get", remote_id))
+                or SimpleNamespace(id=remote_id, status="VALID_MULTI", used=0)
+            ),
+            delete_vouchers=lambda ids: calls.append(("delete", tuple(ids))),
+        )
+        result = revoke_security_candidates_live(
+            db,
+            client=client,
+            candidates=[candidate],
+            revoked_at=NOW,
+            windows_user=r"PC\operator",
+        )
+
+        assert result.revoked_ids == (voucher_id,)
+        assert result.skipped_ids == ()
+        assert result.failed_ids == ()
+        assert result.local_persistence_failed_ids == ()
+        assert calls == [("get", "v1"), ("delete", ("v1",))]
+        row = db.connection.execute(
+            """SELECT code, name, present_on_controller
+               FROM vouchers WHERE id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert row["code"] == "1234567890"
+        assert row["name"] == "Guest"
+        assert row["present_on_controller"] == 0
+    finally:
+        db.close()
+
+
+def test_live_batch_skips_candidate_that_became_used(tmp_path):
+    db, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller)
+        _print(db, controller)
+        set_security_revoke_days(db, days=10, now=NOW)
+        candidate = security_revocation_candidates(db, now=NOW)[0]
+        deleted = []
+        client = SimpleNamespace(
+            get_voucher=lambda remote_id: SimpleNamespace(
+                id=remote_id,
+                status="USED_MULTIPLE",
+                used=1,
+            ),
+            delete_vouchers=lambda ids: deleted.append(tuple(ids)),
+        )
+
+        result = revoke_security_candidates_live(
+            db,
+            client=client,
+            candidates=[candidate],
+            revoked_at=NOW,
+            windows_user="operator",
+        )
+
+        assert result.revoked_ids == ()
+        assert result.skipped_ids == (voucher_id,)
+        assert deleted == []
+        assert pending_security_revocation_ids(db) == ()
+    finally:
+        db.close()
+
+
+def test_delete_failure_leaves_durable_pending_marker_for_reconciliation(tmp_path):
+    db, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller)
+        _print(db, controller)
+        set_security_revoke_days(db, days=10, now=NOW)
+        candidate = security_revocation_candidates(db, now=NOW)[0]
+
+        def fail_delete(_ids):
+            raise RuntimeError("transport failed after mutation boundary")
+
+        client = SimpleNamespace(
+            get_voucher=lambda remote_id: SimpleNamespace(
+                id=remote_id,
+                status="VALID_MULTI",
+                used=0,
+            ),
+            delete_vouchers=fail_delete,
+        )
+        result = revoke_security_candidates_live(
+            db,
+            client=client,
+            candidates=[candidate],
+            revoked_at=NOW,
+            windows_user="operator",
+        )
+
+        assert result.revoked_ids == ()
+        assert result.failed_ids == (voucher_id,)
+        assert pending_security_revocation_ids(db) == (voucher_id,)
+        row = db.connection.execute(
+            "SELECT present_on_controller FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["present_on_controller"] == 1
     finally:
         db.close()
