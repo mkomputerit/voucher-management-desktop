@@ -25,12 +25,19 @@ from .logo_validation import LogoValidationError, validate_logo_image
 from .local_data_ui import LocalDataMixin
 from .onboarding import OnboardingState, choose_shared_fresh_start
 from .onboarding_ui import schedule_first_run_onboarding, startup_onboarding_state
+from .operational_alerts import (
+    unprinted_warning_candidates,
+    unprinted_warning_days,
+)
+from .operational_alerts_ui import OperationalAlertsMixin
 from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
 from .report_ui import ReportDialog
 from .reporting import ReportKind, build_report_dataset_from_path
-from .retention import retention_days_configured
-from .retention_ui import RetentionMixin
+from .security_revocation import (
+    security_revocation_candidates,
+    security_revoke_days,
+)
 from .security_revocation_ui import SecurityRevocationMixin
 from .utils import format_fingerprint
 from .data_maintenance_ui import DataMaintenanceMixin
@@ -957,8 +964,8 @@ class MigrationRequiredDialog(tk.Toplevel):
 
 class ModernVoucherApp(
     LocalDataMixin,
+    OperationalAlertsMixin,
     SecurityRevocationMixin,
-    RetentionMixin,
     DataMaintenanceMixin,
     ControllerConnectionMixin,
     VoucherDeletionMixin,
@@ -967,18 +974,9 @@ class ModernVoucherApp(
     """Windows 11 operator shell around the stable voucher engine."""
 
     def _retention_intro_allowed_on_startup(self) -> bool:
-        """Run retention gating for existing and already-configured installs.
+        """Privacy minimization is intentionally outside the current release."""
 
-        Fresh/incomplete onboarding owns the mandatory threshold itself. Older
-        5.x installations may already have a completed installation profile but
-        no explicit threshold marker, so COMPLETE must still pass through the
-        lightweight retention gate; configured installs return immediately.
-        """
-
-        return startup_onboarding_state(self) in {
-            OnboardingState.EXISTING_INSTALLATION,
-            OnboardingState.COMPLETE,
-        }
+        return False
 
     def __init__(self):
         super().__init__()
@@ -1049,6 +1047,8 @@ class ModernVoucherApp(
         self.home_active_var = tk.StringVar(value="0")
         self.home_used_var = tk.StringVar(value="0")
         self.home_expired_var = tk.StringVar(value="0")
+        self.home_unprinted_alert_var = tk.StringVar(value="—")
+        self.home_security_alert_var = tk.StringVar(value="—")
         self.report_total_var = tk.StringVar(value="0")
         self.report_generated_var = tk.StringVar(value="0")
         self.report_used_var = tk.StringVar(value="0")
@@ -1240,7 +1240,7 @@ class ModernVoucherApp(
         """Build a portal-like dashboard around the operator's daily tasks."""
 
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(2, weight=1)
+        frame.rowconfigure(3, weight=1)
 
         # A short connection strip leaves the workspace to the voucher batch.
         connection = ttk.Frame(frame, padding=(12, 8))
@@ -1308,6 +1308,44 @@ class ModernVoucherApp(
                 style="Muted.TLabel",
             ).pack(anchor="w", pady=(2, 0))
 
+        alerts = ttk.Labelframe(
+            frame,
+            text="Avvisi operativi",
+            style="Card.TLabelframe",
+            padding=(12, 9),
+        )
+        alerts.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        alerts.columnconfigure(1, weight=1)
+        alerts.columnconfigure(4, weight=1)
+
+        ttk.Label(alerts, text="Creati ma non stampati", style="Muted.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            alerts,
+            textvariable=self.home_unprinted_alert_var,
+            style="Body.TLabel",
+        ).grid(row=0, column=1, sticky="w", padx=(8, 16))
+        ttk.Button(
+            alerts,
+            text="Rivedi…",
+            command=self.open_operational_alerts,
+        ).grid(row=0, column=2, sticky="w", padx=(0, 28))
+
+        ttk.Label(alerts, text="Stampati ma non usati", style="Muted.TLabel").grid(
+            row=0, column=3, sticky="w"
+        )
+        ttk.Label(
+            alerts,
+            textvariable=self.home_security_alert_var,
+            style="Body.TLabel",
+        ).grid(row=0, column=4, sticky="w", padx=(8, 16))
+        ttk.Button(
+            alerts,
+            text="Rivedi…",
+            command=self.open_security_revocation,
+        ).grid(row=0, column=5, sticky="e")
+
         recent = ttk.Labelframe(
             frame,
             text="Voucher recenti",
@@ -1315,7 +1353,7 @@ class ModernVoucherApp(
             padding=(12, 10),
         )
         recent.grid(
-            row=2,
+            row=3,
             column=0,
             sticky="nsew",
             pady=(0, 10),
@@ -1392,7 +1430,7 @@ class ModernVoucherApp(
         )
         self.home_activity_frame = activity
         home_footer = ttk.Frame(frame)
-        home_footer.grid(row=3, column=0, sticky="ew", pady=(2, 4))
+        home_footer.grid(row=4, column=0, sticky="ew", pady=(2, 4))
         ttk.Button(home_footer, text="Crea backup…", command=self.create_backup).pack(side="right")
         ttk.Label(home_footer, textvariable=self.home_backup_summary_var,
                   style="Muted.TLabel", wraplength=420).pack(side="right", padx=12)
@@ -1400,7 +1438,7 @@ class ModernVoucherApp(
             home_footer, text="Mostra attività recenti", command=self._toggle_home_activity,
         )
         self.home_activity_toggle.pack(side="left")
-        activity.grid(row=4, column=0, sticky="ew")
+        activity.grid(row=5, column=0, sticky="ew")
         activity.grid_remove()
         activity.columnconfigure(0, weight=1)
         activity.rowconfigure(0, weight=1)
@@ -1748,7 +1786,8 @@ class ModernVoucherApp(
         self.settings_save_status_var = tk.StringVar()
         self.settings_backup_summary_var = tk.StringVar()
         self.settings_legacy_history_summary_var = tk.StringVar()
-        self.settings_retention_summary_var = tk.StringVar()
+        self.settings_operational_threshold_var = tk.StringVar()
+        self.settings_security_threshold_var = tk.StringVar()
 
         notebook = ttk.Notebook(frame)
         notebook.grid(row=0, column=0, sticky="nsew")
@@ -1763,7 +1802,7 @@ class ModernVoucherApp(
         notebook.add(general, text="Generali")
         notebook.add(controller, text="Controller")
         notebook.add(pdf_print, text="PDF / stampa")
-        notebook.add(retention, text="Retention")
+        notebook.add(retention, text="Soglie / sicurezza")
         notebook.add(backup, text="Backup")
         notebook.add(maintenance_page, text="Manutenzione")
 
@@ -1967,31 +2006,29 @@ class ModernVoucherApp(
 
         ttk.Label(
             retention,
-            text="Conservazione dello storico",
+            text="Creati ma non stampati",
             style="SectionTitle.TLabel",
         ).pack(anchor="w")
         ttk.Label(
             retention,
-            textvariable=self.settings_retention_summary_var,
+            textvariable=self.settings_operational_threshold_var,
             style="Body.TLabel",
             wraplength=760,
-        ).pack(anchor="w", pady=(8, 12))
+        ).pack(anchor="w", pady=(8, 8))
         ttk.Label(
             retention,
             text=(
-                "Voucher utilizzati, stampati o con PDF generato restano "
-                "protetti. Le evidenze legacy importate sono anch'esse "
-                "conservate fuori dalla retention ordinaria. Gli altri voucher "
-                "possono essere riesaminati solo dopo la soglia scelta "
-                "esplicitamente. In questa release nessuna minimizzazione è attiva."
+                "La soglia parte dalla data di creazione UniFi e segnala solo "
+                "voucher ancora presenti, mai osservati utilizzati e positivamente "
+                "classificati come Non stampati. È un avviso: non elimina nulla."
             ),
             style="Muted.TLabel",
             wraplength=760,
-        ).pack(anchor="w", pady=(0, 14))
+        ).pack(anchor="w", pady=(0, 12))
         ttk.Button(
             retention,
-            text="Rivedi conservazione…",
-            command=lambda: self.open_retention_review(parent=self),
+            text="Configura e rivedi avvisi…",
+            command=lambda: self.open_operational_alerts(parent=self),
         ).pack(anchor="w")
 
         ttk.Separator(retention).pack(fill="x", pady=18)
@@ -2002,22 +2039,44 @@ class ModernVoucherApp(
         ).pack(anchor="w")
         ttk.Label(
             retention,
+            textvariable=self.settings_security_threshold_var,
+            style="Body.TLabel",
+            wraplength=760,
+        ).pack(anchor="w", pady=(8, 8))
+        ttk.Label(
+            retention,
             text=(
-                "I voucher già stampati e rimasti inutilizzati oltre una soglia "
-                "scelta dall'operatore possono essere proposti per la revoca "
-                "dalla controller. Prima della DELETE viene eseguita una nuova "
-                "lettura live del voucher. La revoca non cancella il codice né "
-                "lo storico locale."
+                "La soglia parte dall'ultima stampa. Una ristampa fa ripartire "
+                "il conteggio. Se un voucher è noto come Stampato ma la data di "
+                "stampa non è determinabile, viene proposto subito alla revisione. "
+                "Prima della DELETE viene eseguita una nuova lettura live; codice "
+                "e storico locale restano conservati."
             ),
             style="Muted.TLabel",
             wraplength=760,
-        ).pack(anchor="w", pady=(8, 12))
+        ).pack(anchor="w", pady=(0, 12))
         ttk.Button(
             retention,
-            text="Rivedi revoche di sicurezza…",
+            text="Configura e rivedi revoche…",
             command=lambda: self.open_security_revocation(parent=self),
             style="Accent.TButton",
         ).pack(anchor="w")
+
+        ttk.Separator(retention).pack(fill="x", pady=18)
+        ttk.Label(
+            retention,
+            text="Minimizzazione dello storico locale",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            retention,
+            text=(
+                "Disabilitata in questa release. Nessun codice voucher o metadato "
+                "storico viene rimosso dal database locale tramite retention."
+            ),
+            style="Muted.TLabel",
+            wraplength=760,
+        ).pack(anchor="w", pady=(8, 0))
 
         ttk.Label(
             backup,
@@ -2148,7 +2207,7 @@ class ModernVoucherApp(
         self._load_settings_workspace_values()
         self._refresh_backup_summary()
         self._refresh_legacy_history_summary()
-        self._refresh_retention_summary()
+        self._refresh_threshold_summary()
 
     def _load_settings_workspace_values(self) -> None:
         if not hasattr(self, "settings_structure_name_var"):
@@ -2366,19 +2425,20 @@ class ModernVoucherApp(
             "sincronizzato il controller."
         )
 
-    def _refresh_retention_summary(self) -> None:
-        if not hasattr(self, "settings_retention_summary_var"):
+    def _refresh_threshold_summary(self) -> None:
+        if not hasattr(self, "settings_operational_threshold_var"):
             return
-        policy = self.database.retention_policy()
-        if policy is None or not retention_days_configured(self.database):
-            self.settings_retention_summary_var.set(
-                "Soglia retention non ancora scelta. Selezionare un valore "
-                "esplicito prima di calcolare i record da riesaminare."
-            )
-            return
-        self.settings_retention_summary_var.set(
-            "I record mai usati e mai stampati vengono riesaminati dopo "
-            f"{int(policy['unused_unprinted_days'])} giorni."
+        unprinted_days = unprinted_warning_days(self.database)
+        security_days = security_revoke_days(self.database)
+        self.settings_operational_threshold_var.set(
+            "Soglia non ancora configurata."
+            if unprinted_days is None
+            else f"Avviso dopo {unprinted_days} giorni dalla creazione."
+        )
+        self.settings_security_threshold_var.set(
+            "Soglia non ancora configurata."
+            if security_days is None
+            else f"Revisione dopo {security_days} giorni dall'ultima stampa."
         )
 
     def _show_workspace(self, key: str) -> None:
@@ -2397,7 +2457,7 @@ class ModernVoucherApp(
             ),
             "settings": (
                 "Impostazioni",
-                "Generali, controller, PDF, retention, backup e manutenzione",
+                "Generali, controller, PDF, soglie, sicurezza, backup e manutenzione",
             ),
         }
         if key not in self._workspace_pages:
@@ -2417,7 +2477,7 @@ class ModernVoucherApp(
             self._load_settings_workspace_values()
             self._refresh_backup_summary()
             self._refresh_legacy_history_summary()
-            self._refresh_retention_summary()
+            self._refresh_threshold_summary()
         self._refresh_controller_workspace_status()
 
     def _build_status_dot(
