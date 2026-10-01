@@ -325,6 +325,21 @@ def test_build_print_batch_does_not_repeat_normal_multi_selection():
     assert [item.recipient for item in batch.vouchers] == ["Guest", "Guest B"]
 
 
+def test_build_print_batch_rejects_duplicate_voucher_identity():
+    current = voucher("v1", "1111122222")
+
+    with pytest.raises(ValueError, match="Selezione voucher duplicata"):
+        build_print_batch([current, current])
+
+
+def test_build_print_batch_rejects_same_code_for_distinct_vouchers():
+    first = voucher("v1", "1111122222")
+    second = voucher("v2", "1111122222")
+
+    with pytest.raises(ValueError, match="duplicato o ambiguo"):
+        build_print_batch([first, second])
+
+
 @pytest.mark.parametrize("copies", (0, 1000))
 def test_build_print_batch_rejects_invalid_unlimited_copy_count(copies):
     current = voucher("v1", "1111122222", quota=0)
