@@ -7,19 +7,18 @@ Status: released 2026-09-27; maintained as the 5.0 architecture baseline.
 ## Report credential exposure policy
 
 Voucher codes are reusable network credentials and are therefore excluded by
-default from every report. Summary and audit reports cannot expose a clear code
-even if a caller requests it. The only permitted exception remains an explicit
-operational-handoff purpose requested by the operator.
+default from every report. Summary reports can never expose a clear code.
+Complete audit history and operational handoff may expose codes only after an
+explicit operator request; this preserves the locally retained credential
+without making routine exports disclose it.
 
-Reporting is now implemented through one privacy boundary:
+Reporting is implemented through one policy boundary:
 `reporting.build_report_dataset()` reads durable SQLite facts, applies
-`report_policy.py`, and returns renderer-safe rows. Administrative summary and
-audit datasets therefore contain an empty voucher-code field even when a caller
-requests code exposure. PDF/CSV renderers accept only this sanitized dataset and
-have no database or controller access. As a second boundary they re-evaluate
-the central code-exposure policy and reject an inconsistent dataset, so a
-manually constructed summary/audit object cannot smuggle a clear voucher code
-into an export.
+`report_policy.py`, and returns renderer-safe rows. PDF/CSV renderers accept
+only this dataset and have no database or controller access. As a second
+boundary they re-evaluate the central code-exposure policy and reject an
+inconsistent dataset, so a manually constructed summary object cannot smuggle a
+clear voucher code into an export.
 
 The operator UI provides historical summary, generated-by-application,
 generated-but-never-observed-used, used, expired, printed,
@@ -131,30 +130,28 @@ still requires the existing explicit operator recovery decision.
 Retention review and controller-side security revocation are intentionally
 separate concerns.
 
-There is no user-visible default age policy. A new installation must explicitly
-choose the age threshold used to review old, unused and unprinted records.
-Existing installations without an explicit choice remain unconfigured until an
-operator selects a threshold. Internally, the database schema retains a
-placeholder value only because the historical table column is non-null; the
-configuration marker is authoritative and prevents that placeholder from
-becoming policy.
+The current release has two explicit voucher thresholds and no active privacy
+retention policy. New installations must choose both values; upgraded
+installations without them remain fail-closed and produce no threshold
+candidates until configured.
 
-The review candidate boundary remains conservative: a voucher must be absent
-from a complete controller snapshot, have no positive-use evidence, be expired
-with a post-expiry observation, have no physical-print record and have no
-verified generated-PDF/legacy-print evidence. Unverifiable HMAC history fails
-closed.
+The operational threshold flags vouchers that are still present on UniFi,
+positively aligned as `NOT_PRINTED`, never observed used, and older than the
+configured age measured from the UniFi creation timestamp. It is alert-only and
+never authorizes deletion.
 
-Privacy minimization is disabled in the current release. The retention UI is
-informational/review-only, and the backend minimization entry point fails
-closed. It does not set `archived_at`, replace voucher credentials, erase
-recipient/local fields or redact nominality. A future privacy-minimization
-feature must be designed and reviewed as a separate lifecycle operation.
+Privacy minimization is disabled in the current release. The retained backend
+entry point fails closed; it cannot set `archived_at`, replace voucher
+credentials, erase recipient/local fields or redact nominality. Historical
+`RETENTION_ARCHIVED` facts from old beta data remain irreversible evidence,
+but no new minimization is created.
 
 Security revocation covers a different risk: a voucher may have been printed
-and remain valid on UniFi without any positive-use evidence for longer than a
-separate operator-selected threshold. Candidate selection requires a controller
-observation after the latest print. Immediately before DELETE the application
+and remain valid on UniFi without any positive-use evidence for longer than the
+operator-selected security threshold. With a known print timestamp, candidate
+selection requires a controller observation after the latest print. A voucher
+positively classified as printed but lacking a reconstructable print timestamp
+is proposed for immediate review. Immediately before DELETE the application
 performs a fresh GET of that exact voucher and refuses revocation if it is
 expired, has positive use, is missing or no longer matches the candidate.
 
@@ -168,8 +165,12 @@ request becomes `SECURITY_REVOKE_NOT_APPLIED` and a later operator-reviewed
 attempt can start again.
 
 Revocation never performs privacy minimization. Voucher code, recipient, local
-assignment, notes, nominality and historical events remain available locally
-and the reporting layer exposes the lifecycle status “Revocato per sicurezza”.
+assignment, notes, nominality and historical events remain available locally.
+The reporting layer exposes “Revocato per sicurezza”; complete history can show
+the preserved clear code only after explicit operator opt-in. Ordinary
+preparation-error deletion likewise stores a mandatory reason before DELETE and
+reports the confirmed deletion timestamp and reason after snapshot
+reconciliation.
 
 ## First-run and upgrade disposition
 
@@ -480,10 +481,12 @@ remain `origin='UNKNOWN'` and `is_nominal=NULL`; no historical fact is invented.
 
 Required report dimensions include all locally retained vouchers, vouchers
 generated by Voucher Management, generated-but-never-observed-used vouchers,
-unique printed vouchers, physical copies, reprints, used vouchers, total
-last-observed controller uses, expired vouchers, printed-but-never-used
-vouchers, never-printed vouchers, nominal/non-nominal/unclassified state,
-controller and Windows operator.
+unique printed vouchers, indeterminate print state, physical copies, reprints,
+used vouchers, total last-observed controller uses, expired vouchers,
+printed-but-never-used vouchers, never-printed vouchers,
+nominal/non-nominal/unclassified state, created-but-unprinted threshold
+candidates, security-review candidates, confirmed security revocations,
+confirmed preparation deletions with reason, controller and Windows operator.
 
 Observation timestamps mean "the application observed this change at this
 time". They must not be presented as an exact guest-use timestamp unless UniFi
