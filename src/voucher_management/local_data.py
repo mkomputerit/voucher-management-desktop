@@ -67,6 +67,10 @@ def apply_local_voucher_patch(
     ids = tuple(dict.fromkeys(int(value) for value in voucher_ids))
     if not ids:
         raise ValueError("Selezionare almeno un voucher")
+    if clean.apply_notes and len(ids) != 1:
+        raise ValueError(
+            "Le note locali possono essere modificate su un solo voucher alla volta"
+        )
     stamp = str(updated_at or "").strip()
     operator = str(windows_user or "").strip()
     if not stamp:
