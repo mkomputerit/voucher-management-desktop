@@ -321,6 +321,40 @@ def test_printed_never_observed_used_uses_historical_usage_fact(tmp_path):
         db.close()
 
 
+def test_printed_report_includes_unknown_usage_without_calling_it_unused(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller, "legacy-like", "2222233333")
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="legacy-print",
+            codes=["22222-33333"],
+            output_file="legacy.pdf",
+            document_copies=1,
+            printed_at="2026-09-02T10:00:00+00:00",
+            windows_user="MIGRATION",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET usage_observed=0, ever_used=0 WHERE id=?",
+                (voucher_id,),
+            )
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.PRINTED_UNUSED,
+            generated_at=NOW,
+        )
+
+        assert [row.voucher_id for row in dataset.rows] == [voucher_id]
+        assert dataset.rows[0].usage_observed is False
+        assert dataset.rows[0].ever_used is False
+        assert dataset.totals.printed_never_used == 0
+        assert dataset.totals.printed_usage_unknown == 1
+    finally:
+        db.close()
+
+
 def test_expired_report_uses_persisted_expiration_time_offline(tmp_path):
     db, controller = _db(tmp_path)
     try:
