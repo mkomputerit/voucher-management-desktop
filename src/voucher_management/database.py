@@ -421,6 +421,7 @@ class PrintAuditSummary:
     physical_copies: int
     first_printed_at: str
     last_printed_at: str
+    known_printed_without_audit: bool = False
 
 
 class Database:
@@ -1151,7 +1152,12 @@ COMMIT;
             write(db)
 
     def print_summary(self, voucher_id: int) -> PrintAuditSummary:
-        """Return immutable print totals used before allowing a duplicate."""
+        """Return immutable print facts used before allowing a duplicate.
+
+        A legacy/aligned voucher may be positively known as PRINTED even when
+        no historical physical-print job can be reconstructed. That evidence
+        must still trigger the duplicate-print warning.
+        """
 
         row = self.connection.execute(
             """SELECT COUNT(*) AS jobs,
@@ -1161,11 +1167,23 @@ COMMIT;
                FROM voucher_prints WHERE voucher_id=?""",
             (voucher_id,),
         ).fetchone()
+        jobs = int(row["jobs"])
+        state_row = self.connection.execute(
+            "SELECT print_state FROM vouchers WHERE id=?",
+            (int(voucher_id),),
+        ).fetchone()
+        known_printed_without_audit = bool(
+            jobs == 0
+            and state_row is not None
+            and str(state_row["print_state"] or "").strip().upper()
+            == PRINT_STATE_PRINTED
+        )
         return PrintAuditSummary(
-            print_jobs=int(row["jobs"]),
+            print_jobs=jobs,
             physical_copies=int(row["copies"]),
             first_printed_at=str(row["first_at"]),
             last_printed_at=str(row["last_at"]),
+            known_printed_without_audit=known_printed_without_audit,
         )
 
     def print_summaries_for_codes(
