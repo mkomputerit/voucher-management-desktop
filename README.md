@@ -64,6 +64,9 @@ The application currently provides:
 - explicit per-voucher nominal classification at creation time. This flag is
   local to Voucher Management and is never sent to UniFi; older vouchers remain
   unclassified rather than being guessed from the recipient text;
+- source-explicit detailed reporting: the UniFi voucher ID, local recipient,
+  UniFi description and local notes are exported as distinct fields; no
+  controller description is silently reinterpreted as local recipient data;
 - review-driven voucher retention with an age threshold chosen explicitly by
   the operator: used, printed or PDF-generated vouchers remain protected and
   old/absent rows can be reviewed, but privacy minimization is disabled in this
