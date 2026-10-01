@@ -120,8 +120,11 @@ def test_home_displays_ten_recent_vouchers_and_collapses_activity(root):
         "home_unprinted_alert", "home_security_alert", "home_print_action",
     ):
         setattr(fake, name + "_var", tk.StringVar(root, value="0"))
-    for name in ("_home_sync_or_connect", "create", "create_backup", "_home_print_selected",
-                 "_on_home_recent_click", "_on_voucher_selection_key"):
+    for name in (
+        "_home_sync_or_connect", "create", "create_backup", "_home_print_selected",
+        "_on_home_recent_click", "_on_voucher_selection_key",
+        "open_operational_alerts", "open_security_revocation",
+    ):
         setattr(fake, name, lambda *args: None)
     fake._build_status_dot = lambda parent: tk.Canvas(parent, width=14, height=14)
     fake._toggle_home_activity = lambda: ModernVoucherApp._toggle_home_activity(fake)
@@ -134,6 +137,8 @@ def test_home_displays_ten_recent_vouchers_and_collapses_activity(root):
     fake.controller_snapshot_live = True
     fake._is_expired = lambda voucher: False
     fake._print_state = lambda stat: "DA STAMPARE"
+    fake._workspace_print_state = lambda voucher, stat: "DA STAMPARE"
+    fake._voucher_alignment_ready = lambda voucher: True
     fake._refresh_home_activity = lambda: None
     fake._refresh_home_threshold_alerts = lambda: None
     fake._refresh_controller_workspace_status = lambda: None
@@ -219,3 +224,36 @@ def test_controller_failure_invalidates_live_home_metrics():
     assert fake._controller_status_failed is True
     assert fake.controller_snapshot_live is False
     assert calls == ["status", "populate"]
+
+
+
+def test_workspace_state_requires_alignment_before_voucher_is_printable():
+    fake = SimpleNamespace(
+        _workspace_print_state_by_unifi_id={
+            "external": (False, "UNKNOWN"),
+            "known-unprinted": (True, "NOT_PRINTED"),
+            "known-printed": (True, "PRINTED"),
+            "known-unknown": (True, "UNKNOWN"),
+        }
+    )
+    no_history = None
+    assert ModernVoucherApp._workspace_print_state(
+        fake,
+        SimpleNamespace(id="external"),
+        no_history,
+    ) == "DA ALLINEARE"
+    assert ModernVoucherApp._workspace_print_state(
+        fake,
+        SimpleNamespace(id="known-unprinted"),
+        no_history,
+    ) == "DA STAMPARE"
+    assert ModernVoucherApp._workspace_print_state(
+        fake,
+        SimpleNamespace(id="known-printed"),
+        no_history,
+    ) == "STAMPATO"
+    assert ModernVoucherApp._workspace_print_state(
+        fake,
+        SimpleNamespace(id="known-unknown"),
+        no_history,
+    ) == "NON DETERMINABILE"
