@@ -232,10 +232,12 @@ jobs:
 
       - name: Upload portable build
         # Normal development pushes are still fully compiled/tested, but the
-        # ~28 MB portable ZIP is retained only when explicitly requested or
-        # when building a release/main branch. This prevents Actions artifact
-        # storage from growing on every review commit.
-        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
+        # ~28 MB portable ZIP is normally retained only when explicitly
+        # requested or when building a release/main branch. The current 5.1
+        # reporting-core branch is an explicit field-test exception so the
+        # reviewed portable can be exercised before release without publishing
+        # stable assets.
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || github.ref == 'refs/heads/feature/5.1-reporting-core'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: VoucherManagement-Windows-x64-${{ github.sha }}
