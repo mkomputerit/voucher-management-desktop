@@ -405,6 +405,50 @@ def reconcile_pending_security_revocations(
         for row in pending
         if str(row["unifi_id"] or "").strip() not in live_ids
     ]
+    still_present = [
+        int(row["id"])
+        for row in pending
+        if str(row["unifi_id"] or "").strip() in live_ids
+    ]
+
+    # A complete successful snapshot that still contains the voucher proves the
+    # prior uncertain DELETE did not remove it. Close the pending marker as a
+    # non-applied attempt so a future fresh-read revocation may be tried again.
+    if still_present:
+        stamp = _normalize_now(observed_at).isoformat()
+        operator = str(windows_user or "").strip()
+        if not operator:
+            raise ValueError("windows user is required")
+        placeholders = ",".join("?" for _ in still_present)
+        with database.transaction() as db:
+            rows = db.execute(
+                f"""SELECT id, voucher_id
+                    FROM voucher_events
+                    WHERE voucher_id IN ({placeholders})
+                      AND event_type='SECURITY_REVOKE_REQUESTED'""",
+                tuple(still_present),
+            ).fetchall()
+            for row in rows:
+                db.execute(
+                    """UPDATE voucher_events
+                       SET event_type='SECURITY_REVOKE_NOT_APPLIED',
+                           occurred_at=?, source='SYSTEM',
+                           windows_user=?, details_json=?
+                       WHERE id=?""",
+                    (
+                        stamp,
+                        operator,
+                        Database.encode_event_details(
+                            {
+                                "reason": "printed_unused_threshold",
+                                "remote_delete_confirmed": False,
+                                "fresh_snapshot_confirmed_present": True,
+                            }
+                        ),
+                        int(row["id"]),
+                    ),
+                )
+
     if not confirmed:
         return ()
     return record_security_revocations(
