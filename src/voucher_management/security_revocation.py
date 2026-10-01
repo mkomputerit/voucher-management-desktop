@@ -415,6 +415,30 @@ def reconcile_pending_security_revocations(
     )
 
 
+def reconcile_pending_security_revocations_to_path(
+    database_path,
+    *,
+    controller_id: int,
+    live_voucher_ids: set[str] | frozenset[str],
+    observed_at: str,
+    windows_user: str,
+) -> tuple[int, ...]:
+    """Worker-safe path wrapper for pending revocation reconciliation."""
+
+    database = Database(database_path)
+    try:
+        database.initialize()
+        return reconcile_pending_security_revocations(
+            database,
+            controller_id=controller_id,
+            live_voucher_ids=live_voucher_ids,
+            observed_at=observed_at,
+            windows_user=windows_user,
+        )
+    finally:
+        database.close()
+
+
 def record_security_revocations(
     database: Database,
     *,
