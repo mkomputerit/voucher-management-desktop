@@ -365,6 +365,49 @@ def test_confirmed_create_is_not_reported_failed_when_local_reporting_persistenc
     assert "Non ripetere la creazione" in warnings[-1][0][1]
 
 
+def test_create_task_rejection_surfaces_guard_cleanup_failure(monkeypatch):
+    warnings = []
+    logs = []
+
+    class Guard:
+        pending = False
+
+        def begin(self):
+            self.pending = True
+
+        def clear(self):
+            raise creation_ui.CreateMutationGuardError("cannot clear")
+
+    fake = SimpleNamespace(
+        client=object(),
+        create_guard=Guard(),
+        vouchers=[],
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: logs.append(args),
+        ),
+        _run_network_task=lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "CreateDialog",
+        lambda parent: SimpleNamespace(
+            result={"recipient": "Guest", "quantity": 1}
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+
+    VoucherApp.create(fake)
+
+    assert logs
+    assert warnings
+    assert warnings[-1][0][0] == "Creazione sospesa"
+    assert "non è stato possibile rimuovere il blocco" in warnings[-1][0][1]
+
+
 def test_manual_refresh_clears_pending_create_guard(monkeypatch):
     tasks = []
 
