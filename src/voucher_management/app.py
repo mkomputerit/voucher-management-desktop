@@ -51,6 +51,7 @@ from .sync_store import (
 )
 from .voucher_creation_ui import VoucherCreationMixin
 from .security.history_key import HistoryKeyStore
+from .security_revocation import reconcile_pending_security_revocations_to_path
 from .unifi_api import ApiVoucher, UniFiApiError
 from .workflows import (
     ExistingPdfResolutionError,
@@ -611,6 +612,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             if controller_id is not None
             else None
         )
+        operator = self._windows_operator_identity()
 
         def worker():
             snapshot = list(refresh_vouchers(client))
@@ -662,6 +664,17 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                         database_path,
                         marker_path,
                         controller_id=resolved_controller_id,
+                    )
+                    reconcile_pending_security_revocations_to_path(
+                        database_path,
+                        controller_id=resolved_controller_id,
+                        live_voucher_ids=frozenset(
+                            str(voucher.id)
+                            for voucher in snapshot
+                            if str(getattr(voucher, "id", "") or "").strip()
+                        ),
+                        observed_at=observed_at,
+                        windows_user=operator,
                     )
             except Exception as exc:
                 archive_error = exc
