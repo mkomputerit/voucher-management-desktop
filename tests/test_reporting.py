@@ -1500,3 +1500,58 @@ def test_print_timestamp_bounds_are_chronological_across_timezone_offsets(tmp_pa
         assert row.last_printed_at == "2026-09-29T09:00:00+00:00"
     finally:
         db.close()
+
+
+def test_printed_unused_requires_observation_after_latest_reprint(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "printed-reprinted",
+            "6767676767",
+            synced_at="2026-09-03T10:00:00+00:00",
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="first-print-before-sync",
+            codes=["67676-76767"],
+            output_file="first.pdf",
+            document_copies=1,
+            printed_at="2026-09-02T10:00:00+00:00",
+            windows_user="PC\\alice",
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="reprint-after-sync",
+            codes=["67676-76767"],
+            output_file="reprint.pdf",
+            document_copies=1,
+            printed_at="2026-09-04T10:00:00+00:00",
+            windows_user="PC\\alice",
+        )
+
+        stale = build_report_dataset(
+            db,
+            kind=ReportKind.PRINTED_UNUSED,
+            generated_at=NOW,
+        )
+        assert stale.rows == ()
+
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET last_seen_at=?, last_synced_at=?
+                   WHERE id=?""",
+                ("2026-09-05T10:00:00+00:00", "2026-09-05T10:00:00+00:00", voucher_id),
+            )
+
+        fresh = build_report_dataset(
+            db,
+            kind=ReportKind.PRINTED_UNUSED,
+            generated_at=NOW,
+        )
+        assert [row.voucher_id for row in fresh.rows] == [voucher_id]
+        assert fresh.rows[0].reprint_jobs == 1
+    finally:
+        db.close()
