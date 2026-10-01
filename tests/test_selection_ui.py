@@ -158,6 +158,7 @@ def test_home_click_toggles_one_voucher_without_dropping_hidden_selection():
         home_print_action_var=FakeVar(),
         bell=lambda: None,
         _is_expired=VoucherApp._is_expired,
+        _voucher_alignment_ready=lambda voucher: True,
     )
     fake._sync_selection_ui = (
         lambda iids=None: ModernVoucherApp._sync_home_selection_ui(fake)
@@ -205,6 +206,7 @@ def test_space_uses_print_selection_and_preserves_hidden_vouchers(workspace, sta
         by_iid={"home-1": visible},
         checked_ids={"hidden"},
         _is_expired=VoucherApp._is_expired,
+        _voucher_alignment_ready=lambda voucher: True,
         bell=lambda: calls.append("bell"),
         _sync_selection_ui=lambda: calls.append("sync"),
     )
@@ -245,6 +247,7 @@ def test_native_keyboard_navigation_cannot_change_print_highlighting():
             },
             checked_ids={"first", "hidden"},
             _is_expired=VoucherApp._is_expired,
+            _voucher_alignment_ready=lambda voucher: True,
             bell=lambda: None,
         )
         fake._sync_selection_ui = lambda: tree.selection_set(
