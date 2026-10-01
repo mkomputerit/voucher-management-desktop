@@ -419,7 +419,7 @@ def test_fresh_full_snapshot_reconciles_absent_pending_revocation(tmp_path):
         db.close()
 
 
-def test_fresh_full_snapshot_keeps_pending_when_voucher_still_exists(tmp_path):
+def test_fresh_full_snapshot_closes_pending_when_voucher_still_exists(tmp_path):
     db, controller = _database(tmp_path)
     try:
         voucher_id = _voucher(db, controller)
@@ -439,6 +439,13 @@ def test_fresh_full_snapshot_keeps_pending_when_voucher_still_exists(tmp_path):
         )
 
         assert confirmed == ()
-        assert pending_security_revocation_ids(db) == (voucher_id,)
+        assert pending_security_revocation_ids(db) == ()
+        event = db.connection.execute(
+            """SELECT event_type, details_json
+               FROM voucher_events WHERE voucher_id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert event["event_type"] == "SECURITY_REVOKE_NOT_APPLIED"
+        assert '"fresh_snapshot_confirmed_present":true' in event["details_json"]
     finally:
         db.close()
