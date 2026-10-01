@@ -797,6 +797,10 @@ def materialize_resolved_legacy_events(
                         ),
                     )
 
+                db.execute(
+                    "UPDATE vouchers SET print_state='PRINTED' WHERE id=?",
+                    (voucher_id,),
+                )
                 affected_vouchers.add(voucher_id)
                 print_rows += 1
 
