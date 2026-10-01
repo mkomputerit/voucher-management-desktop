@@ -34,14 +34,15 @@ recent-voucher list remain blank until this process has completed a successful
 controller list operation. Report is an offline-capable history workspace and
 always reads persisted SQLite facts.
 
-Schema version 3 adds application-owned `origin`, tri-state `is_nominal` and
-monotonic `ever_used` facts to each voucher. `origin` distinguishes confirmed
-Voucher Management creation from controller/external discovery and legacy
-application evidence. `is_nominal` is set only from an explicit operator choice;
-pre-existing rows migrate to NULL rather than inferring a classification from a
-recipient. `ever_used` becomes true as soon as any controller snapshot reports a
-positive use count and never returns to false, so historical "never used"
-reports cannot be invalidated by a later counter reset.
+Schema version 4 retains application-owned `origin`, tri-state `is_nominal`,
+monotonic `ever_used` and compatibility state for historical nominality
+redaction. `origin='APPLICATION'` is reserved for controller vouchers whose
+creation was confirmed by Voucher Management. Controller/external discovery
+remains distinct. A legacy PDF `generate` event proves document generation,
+not controller creation, so it cannot promote a voucher into the application
+creation set. Pre-existing rows migrate conservatively instead of receiving
+invented provenance or nominality. `ever_used` becomes true as soon as any
+controller evidence proves positive use and never returns to false.
 
 Report totals are calculated from atomic persisted facts: the durable
 `ever_used` fact, current/last-observed controller usage counters and the
@@ -127,41 +128,48 @@ still requires the existing explicit operator recovery decision.
 
 ## Retention
 
-Default policy:
+Retention review and controller-side security revocation are intentionally
+separate concerns.
 
-- used vouchers are protected;
-- physically printed vouchers are protected;
-- only never-used, never-printed vouchers are candidates for age-based cleanup;
-- the default candidate age is 180 days;
-- cleanup is review-driven, not silent deletion.
+There is no user-visible default age policy. A new installation must explicitly
+choose the age threshold used to review old, unused and unprinted records.
+Existing installations without an explicit choice remain unconfigured until an
+operator selects a threshold. Internally, the database schema retains a
+placeholder value only because the historical table column is non-null; the
+configuration marker is authoritative and prevents that placeholder from
+becoming policy.
 
-The implemented 5.0 candidate boundary is deliberately stricter than the
-minimum policy: a voucher must also be absent from the latest complete
-controller snapshot and have no generated-PDF or physical-print evidence in
-the verified HMAC history. A generated PDF is treated as credential-bearing
-material even if it was never sent to a printer. If the HMAC history cannot be
-verified, retention fails closed and no candidate can be minimized. When an
-expiry timestamp
-exists it is the age basis, so a voucher is never proposed merely because it
-was created long ago while its known validity still extends into the future.
+The review candidate boundary remains conservative: a voucher must be absent
+from a complete controller snapshot, have no positive-use evidence, be expired
+with a post-expiry observation, have no physical-print record and have no
+verified generated-PDF/legacy-print evidence. Unverifiable HMAC history fails
+closed.
 
-"Cleanup" is data minimization rather than destruction of the durable historical
-row. After explicit operator selection the application revalidates the candidate
-inside the write transaction, sets `archived_at`, replaces the reusable voucher
-code with a non-credential tombstone and removes recipient, nominal assignment
-and free-text notes. Controller identifiers, non-secret lifecycle metadata,
-observations and the retention audit event remain available for historical
-reports. Archived rows are excluded from the ordinary operator voucher list.
+Privacy minimization is disabled in the current release. The retention UI is
+informational/review-only, and the backend minimization entry point fails
+closed. It does not set `archived_at`, replace voucher credentials, erase
+recipient/local fields or redact nominality. A future privacy-minimization
+feature must be designed and reviewed as a separate lifecycle operation.
 
-If the same UniFi voucher identifier later reappears in a successful controller
-snapshot, the normal upsert clears `archived_at` and restores current
-controller-owned voucher fields rather than creating a second historical row.
+Security revocation covers a different risk: a voucher may have been printed
+and remain valid on UniFi without any positive-use evidence for longer than a
+separate operator-selected threshold. Candidate selection requires a controller
+observation after the latest print. Immediately before DELETE the application
+performs a fresh GET of that exact voucher and refuses revocation if it is
+expired, has positive use, is missing or no longer matches the candidate.
 
-The first-run wizard explains that recommended retention defaults are already
-configured and should be changed only when specifically required. Continue is
-the primary action; advanced editing is secondary. Completion is recorded in
-the shared SQLite installation settings, so the explanation is installation-
-scoped rather than repeated for every Windows profile.
+Before DELETE, Voucher Management commits a
+`SECURITY_REVOKE_REQUESTED` audit marker. A confirmed DELETE promotes that
+marker to `SECURITY_REVOKED`. If the network outcome is uncertain, automatic
+replay is forbidden; a later complete controller snapshot reconciles the
+request. Audit details distinguish direct DELETE confirmation from absence
+confirmed only by a later snapshot. If the voucher is still present, the
+request becomes `SECURITY_REVOKE_NOT_APPLIED` and a later operator-reviewed
+attempt can start again.
+
+Revocation never performs privacy minimization. Voucher code, recipient, local
+assignment, notes, nominality and historical events remain available locally
+and the reporting layer exposes the lifecycle status “Revocato per sicurezza”.
 
 ## First-run and upgrade disposition
 
@@ -429,10 +437,10 @@ seen at each synchronization.
 
 A successful create records `origin='APPLICATION'` and the operator's
 `is_nominal` choice only for voucher IDs returned by that confirmed create.
-Those fields survive later controller upserts. A successful legacy migration
-may set `origin='LEGACY_APPLICATION'` only when a resolved legacy `generate`
-event proves that provenance. Existing 5.0 rows upgraded to schema 3 become
-`origin='UNKNOWN'` and `is_nominal=NULL`; no historical fact is invented.
+Those fields survive later controller upserts. Legacy PDF-generation or print evidence is materialized as historical
+document/print evidence only; it does not prove who created the voucher on the
+controller. Historical rows for which creation provenance cannot be established
+remain `origin='UNKNOWN'` and `is_nominal=NULL`; no historical fact is invented.
 
 Required report dimensions include all locally retained vouchers, vouchers
 generated by Voucher Management, generated-but-never-observed-used vouchers,
