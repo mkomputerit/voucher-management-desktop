@@ -102,6 +102,7 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Voucher nominali", str(totals.nominal_vouchers)],
         ["Voucher non nominali", str(totals.non_nominal_vouchers)],
         ["Nominalità non classificata", str(totals.unclassified_vouchers)],
+        ["Revocati per sicurezza", str(totals.security_revoked_vouchers)],
         ["Nominalità rimossa per privacy", str(totals.redacted_nominality_vouchers)],
         ["Job di stampa", str(totals.print_jobs)],
         ["Copie fisiche", str(totals.physical_copies)],
