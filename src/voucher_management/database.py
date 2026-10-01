@@ -950,30 +950,68 @@ COMMIT;
         controller_id: int,
         unifi_ids: list[str] | tuple[str, ...],
         is_nominal: bool,
+        assigned_to: str | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> None:
-        """Attach application-only reporting facts to a confirmed create result.
+        """Attach application-owned facts to a confirmed create result.
 
-        UniFi does not know whether a voucher is nominal and does not distinguish
-        vouchers created by this application from vouchers created elsewhere.
-        These fields are therefore local administrative facts and must survive
-        later controller synchronizations unchanged.
+        UniFi owns its voucher name field. The recipient entered by the
+        operator is stored separately in assigned_to when available, so
+        reporting never infers local ownership from controller data.
+        Recovery may omit assigned_to and preserve the current local value.
         """
 
-        ids = tuple(dict.fromkeys(str(value).strip() for value in unifi_ids if str(value).strip()))
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
         if not ids:
             return
 
+        local_recipient = (
+            None
+            if assigned_to is None
+            else str(assigned_to or "").strip()
+        )
+        if local_recipient is not None and len(local_recipient) > 200:
+            raise ValueError("assigned_to exceeds supported length")
+
         placeholders = ",".join("?" for _ in ids)
-        params = ("APPLICATION", int(bool(is_nominal)), int(controller_id), *ids)
 
         def write(db: sqlite3.Connection) -> None:
-            cursor = db.execute(
-                f"""UPDATE vouchers
-                    SET origin=?, is_nominal=?
-                    WHERE controller_id=? AND unifi_id IN ({placeholders})""",
-                params,
-            )
+            if local_recipient is None:
+                params = (
+                    "APPLICATION",
+                    int(bool(is_nominal)),
+                    int(controller_id),
+                    *ids,
+                )
+                cursor = db.execute(
+                    f"""UPDATE vouchers
+                        SET origin=?, is_nominal=?, nominality_redacted=0
+                        WHERE controller_id=?
+                          AND unifi_id IN ({placeholders})""",
+                    params,
+                )
+            else:
+                params = (
+                    "APPLICATION",
+                    int(bool(is_nominal)),
+                    local_recipient,
+                    int(controller_id),
+                    *ids,
+                )
+                cursor = db.execute(
+                    f"""UPDATE vouchers
+                        SET origin=?, is_nominal=?, assigned_to=?,
+                            nominality_redacted=0
+                        WHERE controller_id=?
+                          AND unifi_id IN ({placeholders})""",
+                    params,
+                )
             if cursor.rowcount != len(ids):
                 raise RuntimeError(
                     "confirmed created vouchers are missing from the local snapshot"
