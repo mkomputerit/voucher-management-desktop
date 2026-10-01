@@ -231,3 +231,21 @@ def test_summary_csv_includes_security_revocation_total(tmp_path: Path):
 
     payload = output.read_text(encoding="utf-8-sig")
     assert "Revocati per sicurezza;3" in payload
+
+
+
+def test_pdf_report_handles_maximum_local_note_length(tmp_path: Path):
+    output = tmp_path / "report-long-note.pdf"
+    base = _dataset()
+    long_note = ("Nota amministrativa " * 55)[:1000]
+    row = replace(base.rows[0], local_notes=long_note)
+    dataset = replace(base, rows=(row,))
+
+    render_report_pdf(
+        dataset,
+        output,
+        installation_name="Test export note lunghe",
+    )
+
+    assert output.read_bytes().startswith(b"%PDF-")
+    assert output.stat().st_size > 1000
