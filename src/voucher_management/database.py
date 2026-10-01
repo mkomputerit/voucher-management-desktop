@@ -351,12 +351,19 @@ SET assigned_to=CASE
         WHEN TRIM(COALESCE(assigned_to, ''))='' THEN name
         ELSE assigned_to
     END,
-    name=''
+    name='',
+    origin='UNKNOWN'
 WHERE controller_id IN (
     SELECT id FROM controllers
     WHERE api_root LIKE 'legacy-backup://%'
-)
-  AND TRIM(COALESCE(name, '')) <> '';
+);
+
+UPDATE vouchers
+SET origin='UNKNOWN'
+WHERE controller_id IN (
+    SELECT id FROM controllers
+    WHERE api_root LIKE 'legacy-backup://%'
+);
 """
 
 @dataclass(frozen=True)
