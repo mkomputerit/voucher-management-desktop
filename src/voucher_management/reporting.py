@@ -327,6 +327,7 @@ def build_report_dataset(
     controllers: set[str] = set()
     code_exposed = False
     seen_voucher_ids: set[int] = set()
+    seen_remote_ids: set[tuple[int, str]] = set()
     for raw in raw_rows:
         voucher_id = int(raw["voucher_id"])
         if voucher_id in seen_voucher_ids:
@@ -334,6 +335,15 @@ def build_report_dataset(
                 "report source returned a duplicate voucher identity"
             )
         seen_voucher_ids.add(voucher_id)
+        unifi_id = str(raw["unifi_id"] or "").strip()
+        if not unifi_id:
+            raise RuntimeError("report source contains voucher without UniFi identity")
+        remote_identity = (int(raw["controller_id"]), unifi_id)
+        if remote_identity in seen_remote_ids:
+            raise RuntimeError(
+                "report source returned a duplicate UniFi voucher identity"
+            )
+        seen_remote_ids.add(remote_identity)
         controller_name = str(raw["controller_name"] or "").strip() or "Controller"
         controllers.add(controller_name)
         clear_code = report_code_value(
@@ -398,7 +408,7 @@ def build_report_dataset(
             last_synced_at=str(raw["last_synced_at"] or ""),
             nominality_redacted=nominality_redacted,
             security_revoked_at=str(raw["security_revoked_at"] or ""),
-            unifi_id=str(raw["unifi_id"] or ""),
+            unifi_id=unifi_id,
         )
         if _matches(kind, row):
             rows.append(row)
