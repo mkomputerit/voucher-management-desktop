@@ -3112,6 +3112,7 @@ class ModernVoucherApp(
                 "Dati non determinabili: "
                 f"uso {totals.usage_unknown_vouchers} • "
                 f"origine {totals.unknown_origin_vouchers} • "
+                f"stampa {totals.print_unknown_vouchers} • "
                 f"nominalità {totals.unclassified_vouchers} • "
                 f"rimossa per privacy {totals.redacted_nominality_vouchers} • "
                 f"dati controller fino a {audit_time_label(dataset.data_as_of)}"
