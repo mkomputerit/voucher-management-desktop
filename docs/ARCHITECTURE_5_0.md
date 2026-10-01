@@ -34,7 +34,7 @@ recent-voucher list remain blank until this process has completed a successful
 controller list operation. Report is an offline-capable history workspace and
 always reads persisted SQLite facts.
 
-Schema version 4 retains application-owned `origin`, tri-state `is_nominal`,
+Schema version 5 retains application-owned `origin`, tri-state `is_nominal`,
 monotonic `ever_used` and compatibility state for historical nominality
 redaction. `origin='APPLICATION'` is reserved for controller vouchers whose
 creation was confirmed by Voucher Management. Controller/external discovery
@@ -428,6 +428,12 @@ a successful restore it writes the verified source-backup facts into the
 resulting shared database instead.
 
 ## Export identity and uniqueness
+Schema 5 also repairs provenance for synthetic pre-SQLite backup controllers:
+a recovered legacy recipient historically stored in `vouchers.name` is moved
+to `assigned_to` only when the local assignment is empty, and the synthetic
+controller-name field is cleared. Real UniFi controller rows are not modified.
+New legacy imports follow the same rule directly.
+
 
 Exported administrative data is keyed by the durable SQLite voucher row, whose
 controller identity is `(controller_id, unifi_id)`. A voucher code is not an
