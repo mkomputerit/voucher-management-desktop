@@ -147,6 +147,45 @@ def test_request_fails_closed_without_positive_preparation_state(
         db.close()
 
 
+def test_verified_print_evidence_blocks_delete_even_if_state_is_corrupted(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _row(
+            db,
+            controller,
+            "v1",
+            print_state=PRINT_STATE_NOT_PRINTED,
+            aligned=True,
+            ever_used=False,
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="verified-print-before-delete",
+            codes=["CODE-v1"],
+            output_file="voucher.pdf",
+            document_copies=1,
+            printed_at="2026-09-20T08:00:00+00:00",
+            windows_user="operator",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET print_state=? WHERE id=?",
+                (PRINT_STATE_NOT_PRINTED, voucher_id),
+            )
+
+        with pytest.raises(RuntimeError, match="stampa verificata"):
+            record_preparation_delete_requests(
+                db,
+                controller_id=controller,
+                unifi_ids=["v1"],
+                reason="Errore preparazione",
+                requested_at=NOW,
+                windows_user="operator",
+            )
+    finally:
+        db.close()
+
+
 def test_reason_is_mandatory_before_request_is_recorded(tmp_path):
     db, controller = _db(tmp_path)
     try:
