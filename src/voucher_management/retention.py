@@ -17,6 +17,7 @@ from .database import Database
 
 DEFAULT_UNUSED_UNPRINTED_DAYS = 180
 RETENTION_INTRO_KEY = "retention_intro_seen"
+RETENTION_THRESHOLD_CONFIGURED_KEY = "retention_unused_unprinted_days_configured"
 
 # Privacy minimization is deliberately out of scope for the current release.
 # Revocation and historical retention must preserve the complete local voucher
@@ -120,7 +121,24 @@ def update_retention_days(
                WHERE id=1""",
             (days, stamp),
         )
+        db.execute(
+            """INSERT INTO settings(key, value, updated_at)
+               VALUES (?, '1', ?)
+               ON CONFLICT(key) DO UPDATE
+               SET value='1', updated_at=excluded.updated_at""",
+            (RETENTION_THRESHOLD_CONFIGURED_KEY, stamp),
+        )
     return load_retention_policy(database)
+
+
+def retention_days_configured(database: Database) -> bool:
+    """Return whether the operator explicitly chose the retention threshold."""
+
+    row = database.connection.execute(
+        "SELECT value FROM settings WHERE key=?",
+        (RETENTION_THRESHOLD_CONFIGURED_KEY,),
+    ).fetchone()
+    return row is not None and str(row["value"]) == "1"
 
 
 def retention_intro_seen(database: Database) -> bool:
@@ -201,6 +219,8 @@ def retention_candidates(
     """Return candidates without changing any voucher or audit record."""
 
     ensure_retention_policy(database, now=now)
+    if not retention_days_configured(database):
+        return ()
     return tuple(
         RetentionCandidate(
             voucher_id=int(row["voucher_id"]),
