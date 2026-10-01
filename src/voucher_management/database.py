@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 BACKUP_AUDIT_DESTINATIONS = frozenset(
     {
@@ -344,6 +344,21 @@ SET origin='UNKNOWN'
 WHERE origin='LEGACY_APPLICATION';
 """
 
+
+MIGRATION_4_TO_5_SQL = """
+UPDATE vouchers
+SET assigned_to=CASE
+        WHEN TRIM(COALESCE(assigned_to, ''))='' THEN name
+        ELSE assigned_to
+    END,
+    name=''
+WHERE controller_id IN (
+    SELECT id FROM controllers
+    WHERE api_root LIKE 'legacy-backup://%'
+)
+  AND TRIM(COALESCE(name, '')) <> '';
+"""
+
 @dataclass(frozen=True)
 class PrintAuditSummary:
     """Aggregated local print facts used by the duplicate-print warning."""
@@ -461,6 +476,23 @@ COMMIT;
 """
                 )
                 current = 4
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 4:
+            try:
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + MIGRATION_4_TO_5_SQL
+                    + """
+PRAGMA user_version = 5;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '5');
+COMMIT;
+"""
+                )
+                current = 5
             except Exception:
                 self.connection.rollback()
                 raise
