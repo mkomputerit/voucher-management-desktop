@@ -2471,6 +2471,7 @@ class ModernVoucherApp(
             )
         if key == "home":
             self._refresh_backup_summary()
+            self._refresh_home_threshold_alerts()
         elif key == "report":
             self._refresh_report_summary()
         elif key == "settings":
@@ -3138,6 +3139,8 @@ class ModernVoucherApp(
                 self.home_active_var,
                 self.home_used_var,
                 self.home_expired_var,
+                self.home_unprinted_alert_var,
+                self.home_security_alert_var,
             ):
                 variable.set("—")
             if hasattr(self, "home_recent_tree"):
@@ -3214,7 +3217,56 @@ class ModernVoucherApp(
             # Selection is synchronized after the table rebuild by
             # _sync_selection_ui(), with Home events temporarily suppressed.
         self._refresh_home_activity()
+        self._refresh_home_threshold_alerts()
         self._refresh_controller_workspace_status()
+
+    def _refresh_home_threshold_alerts(self) -> None:
+        """Show threshold candidates only when Home has a live controller snapshot."""
+
+        if not hasattr(self, "home_unprinted_alert_var"):
+            return
+        if (
+            not bool(getattr(self, "controller_snapshot_live", False))
+            or self.active_controller_id is None
+        ):
+            self.home_unprinted_alert_var.set("—")
+            self.home_security_alert_var.set("—")
+            return
+
+        now = datetime.now().astimezone().isoformat()
+        try:
+            unprinted_days = unprinted_warning_days(self.database)
+            if unprinted_days is None:
+                self.home_unprinted_alert_var.set("Soglia da configurare")
+            else:
+                unprinted = unprinted_warning_candidates(
+                    self.database,
+                    now=now,
+                    controller_id=self.active_controller_id,
+                )
+                self.home_unprinted_alert_var.set(
+                    f"{len(unprinted)} oltre {unprinted_days} gg"
+                )
+
+            security_days = security_revoke_days(self.database)
+            if security_days is None:
+                self.home_security_alert_var.set("Soglia da configurare")
+            else:
+                security = security_revocation_candidates(
+                    self.database,
+                    now=now,
+                    controller_id=self.active_controller_id,
+                )
+                self.home_security_alert_var.set(
+                    f"{len(security)} da rivedere"
+                )
+        except Exception as exc:
+            self.logger.warning(
+                "home_threshold_alerts_failed type=%s",
+                type(exc).__name__,
+            )
+            self.home_unprinted_alert_var.set("Non disponibile")
+            self.home_security_alert_var.set("Non disponibile")
 
     def _on_home_recent_click(self, event):
         """Toggle one Home voucher only for a real operator row click.
