@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 PRINT_STATE_UNKNOWN = "UNKNOWN"
 PRINT_STATE_NOT_PRINTED = "NOT_PRINTED"
@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS vouchers (
     is_nominal INTEGER CHECK (is_nominal IS NULL OR is_nominal IN (0, 1)),
     print_state TEXT NOT NULL DEFAULT 'UNKNOWN'
         CHECK (print_state IN ('UNKNOWN', 'NOT_PRINTED', 'PRINTED')),
+    alignment_completed_at TEXT,
     nominality_redacted INTEGER NOT NULL DEFAULT 0
         CHECK (nominality_redacted IN (0, 1)),
     archived_at TEXT,
@@ -402,6 +403,16 @@ WHERE controller_id IN (
   AND TRIM(COALESCE(assigned_to, ''))<>'';
 """
 
+
+MIGRATION_6_TO_7_SQL = """
+ALTER TABLE vouchers ADD COLUMN alignment_completed_at TEXT;
+
+UPDATE vouchers
+SET alignment_completed_at=COALESCE(last_synced_at, imported_at)
+WHERE is_nominal IS NOT NULL
+  AND print_state <> 'UNKNOWN';
+"""
+
 @dataclass(frozen=True)
 class PrintAuditSummary:
     """Aggregated local print facts used by the duplicate-print warning."""
@@ -563,6 +574,34 @@ COMMIT;
 """
                 )
                 current = 6
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 6:
+            try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                migration_sql = (
+                    MIGRATION_6_TO_7_SQL
+                    if "alignment_completed_at" not in columns
+                    else ""
+                )
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + migration_sql
+                    + """
+PRAGMA user_version = 7;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '7');
+COMMIT;
+"""
+                )
+                current = 7
             except Exception:
                 self.connection.rollback()
                 raise
@@ -1056,6 +1095,7 @@ COMMIT;
         controller_id: int,
         unifi_ids: list[str] | tuple[str, ...],
         is_nominal: bool,
+        aligned_at: str,
         connection: sqlite3.Connection | None = None,
     ) -> None:
         """Attach application-owned facts to a confirmed create result.
@@ -1076,6 +1116,10 @@ COMMIT;
         if not ids:
             return
 
+        aligned_stamp = str(aligned_at or "").strip()
+        if not aligned_stamp:
+            raise ValueError("aligned_at is required")
+
         placeholders = ",".join("?" for _ in ids)
 
         def write(db: sqlite3.Connection) -> None:
@@ -1083,13 +1127,14 @@ COMMIT;
                 "APPLICATION",
                 int(bool(is_nominal)),
                 PRINT_STATE_NOT_PRINTED,
+                aligned_stamp,
                 int(controller_id),
                 *ids,
             )
             cursor = db.execute(
                 f"""UPDATE vouchers
                     SET origin=?, is_nominal=?, print_state=?,
-                        nominality_redacted=0
+                        alignment_completed_at=?, nominality_redacted=0
                     WHERE controller_id=?
                       AND unifi_id IN ({placeholders})""",
                 params,
