@@ -120,18 +120,37 @@ def align_vouchers(
     placeholders = ",".join("?" for _ in ids)
     with database.transaction() as db:
         rows = db.execute(
-            f"""SELECT id, is_nominal, print_state, alignment_completed_at
-                FROM vouchers
-                WHERE controller_id=?
-                  AND id IN ({placeholders})
-                  AND archived_at IS NULL
-                ORDER BY id""",
+            f"""SELECT
+                    v.id,
+                    v.is_nominal,
+                    v.print_state,
+                    v.alignment_completed_at,
+                    EXISTS(
+                        SELECT 1
+                        FROM voucher_prints AS vp
+                        WHERE vp.voucher_id=v.id
+                    ) AS has_verified_print
+                FROM vouchers AS v
+                WHERE v.controller_id=?
+                  AND v.id IN ({placeholders})
+                  AND v.archived_at IS NULL
+                ORDER BY v.id""",
             (int(controller_id), *ids),
         ).fetchall()
         if len(rows) != len(ids):
             raise RuntimeError(
                 "Uno o più voucher selezionati non appartengono alla controller attiva"
             )
+
+        if normalized_print_state != PRINT_STATE_PRINTED:
+            verified_print_ids = [
+                int(row["id"]) for row in rows if bool(row["has_verified_print"])
+            ]
+            if verified_print_ids:
+                raise ValueError(
+                    "Lo stato stampa richiesto contraddice una stampa verificata "
+                    "già presente nello storico."
+                )
 
         updated: list[int] = []
         unchanged: list[int] = []
