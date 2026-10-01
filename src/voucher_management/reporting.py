@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -41,6 +42,7 @@ class ReportKind(str, Enum):
     ORIGIN_UNKNOWN = "origin_unknown"
     NOMINALITY_REDACTED = "nominality_redacted"
     SECURITY_REVOKED = "security_revoked"
+    PREPARATION_DELETED = "preparation_deleted"
     FULL_HISTORY = "full_history"
 
 
@@ -63,6 +65,7 @@ REPORT_TITLES = {
     ReportKind.ORIGIN_UNKNOWN: "Voucher con origine creazione non determinabile",
     ReportKind.NOMINALITY_REDACTED: "Nominalità rimossa per privacy",
     ReportKind.SECURITY_REVOKED: "Voucher revocati per sicurezza",
+    ReportKind.PREPARATION_DELETED: "Voucher eliminati dalla controller",
     ReportKind.FULL_HISTORY: "Storico completo voucher",
 }
 
@@ -96,6 +99,7 @@ class ReportTotals:
     security_revoked_vouchers: int = 0
     printed_usage_unknown: int = 0
     print_unknown_vouchers: int = 0
+    preparation_deleted_vouchers: int = 0
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,8 @@ class ReportRow:
     unifi_name: str = ""
     local_notes: str = ""
     print_state: str = "UNKNOWN"
+    preparation_deleted_at: str = ""
+    preparation_delete_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -203,9 +209,12 @@ def _status(
     print_state: str,
     print_jobs: int,
     security_revoked: bool = False,
+    preparation_deleted: bool = False,
 ) -> str:
     if security_revoked:
         return "Revocato per sicurezza"
+    if preparation_deleted:
+        return "Eliminato dalla controller"
     if archived:
         return "Archiviato"
     if expired:
@@ -298,6 +307,8 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
         return row.nominality_redacted
     if kind is ReportKind.SECURITY_REVOKED:
         return bool(row.security_revoked_at)
+    if kind is ReportKind.PREPARATION_DELETED:
+        return bool(row.preparation_deleted_at)
     raise ValueError(f"Unsupported report kind: {kind}")
 
 
@@ -346,6 +357,9 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
         ),
         print_unknown_vouchers=sum(
             _is_print_unknown(row) for row in materialized
+        ),
+        preparation_deleted_vouchers=sum(
+            bool(row.preparation_deleted_at) for row in materialized
         ),
     )
 
@@ -480,6 +494,18 @@ def build_report_dataset(
         ever_used = bool(raw["ever_used"])
         usage_observed = bool(raw["usage_observed"])
         nominality_redacted = bool(raw["nominality_redacted"])
+        preparation_deleted_at = str(raw["preparation_deleted_at"] or "")
+        preparation_delete_reason = ""
+        raw_delete_details = str(raw["preparation_delete_details"] or "").strip()
+        if raw_delete_details:
+            try:
+                parsed_delete_details = json.loads(raw_delete_details)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_delete_details = {}
+            if isinstance(parsed_delete_details, dict):
+                preparation_delete_reason = str(
+                    parsed_delete_details.get("reason") or ""
+                ).strip()
         if ever_used and not usage_observed:
             raise RuntimeError(
                 "report source contains used voucher without usage evidence"
@@ -516,6 +542,7 @@ def build_report_dataset(
                 print_state=str(raw["print_state"] or "UNKNOWN"),
                 print_jobs=print_jobs,
                 security_revoked=bool(raw["security_revoked_at"]),
+                preparation_deleted=bool(preparation_deleted_at),
             ),
             origin=str(raw["origin"] or "UNKNOWN"),
             is_nominal=is_nominal,
@@ -526,6 +553,8 @@ def build_report_dataset(
             unifi_name=unifi_name,
             local_notes=local_notes,
             print_state=str(raw["print_state"] or "UNKNOWN").strip().upper(),
+            preparation_deleted_at=preparation_deleted_at,
+            preparation_delete_reason=preparation_delete_reason,
         )
         if threshold_candidate_ids is not None:
             if voucher_id in threshold_candidate_ids:
