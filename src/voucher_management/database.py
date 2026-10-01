@@ -1653,12 +1653,44 @@ COMMIT;
         """Return immutable print totals used before allowing a duplicate."""
 
         row = self.connection.execute(
-            """SELECT COUNT(*) AS jobs,
-                      COALESCE(SUM(physical_copies), 0) AS copies,
-                      COALESCE(MIN(printed_at), '') AS first_at,
-                      COALESCE(MAX(printed_at), '') AS last_at
-               FROM voucher_prints WHERE voucher_id=?""",
-            (voucher_id,),
+            """SELECT
+                   COUNT(*) AS jobs,
+                   COALESCE(SUM(vp.physical_copies), 0) AS copies,
+                   COALESCE(
+                       (
+                           SELECT first_vp.printed_at
+                           FROM voucher_prints AS first_vp
+                           JOIN print_jobs AS first_pj
+                             ON first_pj.id=first_vp.print_job_id
+                           WHERE first_vp.voucher_id=?
+                           ORDER BY
+                               (julianday(first_vp.printed_at) IS NULL),
+                               julianday(first_vp.printed_at) ASC,
+                               first_pj.print_job_uuid,
+                               first_vp.id
+                           LIMIT 1
+                       ),
+                       ''
+                   ) AS first_at,
+                   COALESCE(
+                       (
+                           SELECT last_vp.printed_at
+                           FROM voucher_prints AS last_vp
+                           JOIN print_jobs AS last_pj
+                             ON last_pj.id=last_vp.print_job_id
+                           WHERE last_vp.voucher_id=?
+                           ORDER BY
+                               (julianday(last_vp.printed_at) IS NULL),
+                               julianday(last_vp.printed_at) DESC,
+                               last_pj.print_job_uuid DESC,
+                               last_vp.id DESC
+                           LIMIT 1
+                       ),
+                       ''
+                   ) AS last_at
+               FROM voucher_prints AS vp
+               WHERE vp.voucher_id=?""",
+            (voucher_id, voucher_id, voucher_id),
         ).fetchone()
         return PrintAuditSummary(
             print_jobs=int(row["jobs"]),
