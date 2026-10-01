@@ -225,6 +225,10 @@ class ReportDialog(tk.Toplevel):
                 return
 
         generated_at = datetime.now(timezone.utc).isoformat()
+        include_codes = bool(
+            kind is ReportKind.FULL_HISTORY
+            and self.include_codes_var.get()
+        )
         extension = ".pdf" if self.format_var.get() == "PDF" else ".csv"
         timestamp = datetime.now().strftime("%Y%m%d-%H%M")
         safe_kind = kind.value.replace("_", "-")
@@ -258,10 +262,7 @@ class ReportDialog(tk.Toplevel):
                 kind=kind,
                 generated_at=generated_at,
                 controller_id=controller_id,
-                include_code_requested=bool(
-                    kind is ReportKind.FULL_HISTORY
-                    and self.include_codes_var.get()
-                ),
+                include_code_requested=include_codes,
             )
             if extension == ".pdf":
                 render_report_pdf(
