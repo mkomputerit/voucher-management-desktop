@@ -751,24 +751,27 @@ def test_schema_four_upgrade_moves_only_legacy_recipient_to_local_metadata(tmp_p
     try:
         migrated.initialize()
         legacy = migrated.connection.execute(
-            "SELECT name, assigned_to FROM vouchers WHERE id=?",
+            "SELECT name, assigned_to, origin FROM vouchers WHERE id=?",
             (legacy_id,),
         ).fetchone()
         preserved = migrated.connection.execute(
-            "SELECT name, assigned_to FROM vouchers WHERE id=?",
+            "SELECT name, assigned_to, origin FROM vouchers WHERE id=?",
             (preserved_id,),
         ).fetchone()
         live = migrated.connection.execute(
-            "SELECT name, assigned_to FROM vouchers WHERE id=?",
+            "SELECT name, assigned_to, origin FROM vouchers WHERE id=?",
             (live_id,),
         ).fetchone()
 
         assert legacy["name"] == ""
         assert legacy["assigned_to"] == "Ospite legacy"
+        assert legacy["origin"] == "UNKNOWN"
         assert preserved["name"] == ""
         assert preserved["assigned_to"] == "Destinatario locale già corretto"
+        assert preserved["origin"] == "UNKNOWN"
         assert live["name"] == "Descrizione UniFi"
         assert live["assigned_to"] == "Destinatario live"
+        assert live["origin"] == "CONTROLLER"
         assert migrated.connection.execute(
             "PRAGMA user_version"
         ).fetchone()[0] == SCHEMA_VERSION
