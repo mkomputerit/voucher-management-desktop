@@ -169,6 +169,7 @@ def record_preparation_delete_requests(
                     Database.encode_event_details(
                         {
                             "reason": normalized_reason,
+                            "requested_at": stamp,
                             "workflow": "preparation_error",
                         }
                     ),
@@ -242,6 +243,7 @@ def reconcile_preparation_delete_requests(
                     stamp,
                     _merge_details(
                         row["details_json"],
+                        confirmed_at=stamp,
                         confirmation_source=source,
                     ),
                     int(row["event_id"]),
