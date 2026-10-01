@@ -16,6 +16,9 @@ from uuid import uuid4
 from .database import Database, PRINT_STATE_NOT_PRINTED
 
 
+MAX_PREPARATION_DELETE_REASON = 1000
+
+
 @dataclass(frozen=True)
 class PreparationDeleteFact:
     voucher_id: int
@@ -67,6 +70,11 @@ def _normalized_reason(reason: str) -> str:
     value = str(reason or "").strip()
     if not value:
         raise ValueError("La motivazione della cancellazione è obbligatoria.")
+    if len(value) > MAX_PREPARATION_DELETE_REASON:
+        raise ValueError(
+            "La motivazione della cancellazione non può superare "
+            f"{MAX_PREPARATION_DELETE_REASON} caratteri."
+        )
     return value
 
 
@@ -272,6 +280,7 @@ def reconcile_preparation_delete_requests(
 
 
 __all__ = [
+    "MAX_PREPARATION_DELETE_REASON",
     "PreparationDeleteFact",
     "preparation_delete_facts",
     "record_preparation_delete_requests",
