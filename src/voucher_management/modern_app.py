@@ -1224,7 +1224,9 @@ class ModernVoucherApp(
             self.home_sync_button,
             self.sidebar_action_button,
             self.refresh_button,
-            self.local_data_button,
+            self.nominality_button,
+            self.notes_button,
+            self.alignment_button,
             self.delete_button,
             self.print_button,
             self.open_pdf_button,
@@ -1464,12 +1466,18 @@ class ModernVoucherApp(
             text="Seleziona tutti da stampare",
             command=self.select_unprinted,
         ).pack(side="left", padx=(8, 0))
-        self.local_data_button = ttk.Button(
+        self.nominality_button = ttk.Button(
             primary_actions,
-            text="Dati locali…",
-            command=self.edit_selected_local_data,
+            text="Nominalità…",
+            command=self.edit_selected_nominality,
         )
-        self.local_data_button.pack(side="left", padx=(8, 0))
+        self.nominality_button.pack(side="left", padx=(8, 0))
+        self.notes_button = ttk.Button(
+            primary_actions,
+            text="Note…",
+            command=self.edit_selected_notes,
+        )
+        self.notes_button.pack(side="left", padx=(8, 0))
 
         secondary_actions = ttk.Frame(toolbar)
         secondary_actions.grid(row=0, column=1, sticky="e")
@@ -1479,6 +1487,12 @@ class ModernVoucherApp(
             command=self.refresh,
         )
         self.refresh_button.pack(side="left")
+        self.alignment_button = ttk.Button(
+            secondary_actions,
+            text="Allinea…",
+            command=self.align_pending_vouchers,
+        )
+        self.alignment_button.pack(side="left", padx=(8, 0))
         self.open_pdf_button = ttk.Button(
             secondary_actions,
             text="Apri PDF",
