@@ -887,6 +887,10 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         def completed(outcome) -> None:
             self.last_pdf = outcome.output
+            # A successful print completes the current operational action.
+            # Clear the selection before rebuilding the table so the operator
+            # cannot accidentally repeat the same batch on the next click.
+            self.checked_ids.clear()
             self.populate()
             self._preview(
                 outcome.output,
