@@ -16,6 +16,7 @@ class ReprintWarning:
     previous_physical_copies: int = 0
     first_printed_at: str = ""
     last_printed_at: str = ""
+    print_history_incomplete: bool = False
 
 
 def evaluate_reprint(summary: PrintAuditSummary) -> ReprintWarning:
@@ -26,7 +27,12 @@ def evaluate_reprint(summary: PrintAuditSummary) -> ReprintWarning:
     """
 
     if summary.print_jobs <= 0:
-        return ReprintWarning(required=False)
+        if not summary.known_printed_without_audit:
+            return ReprintWarning(required=False)
+        return ReprintWarning(
+            required=True,
+            print_history_incomplete=True,
+        )
     return ReprintWarning(
         required=True,
         previous_print_jobs=summary.print_jobs,
