@@ -99,11 +99,12 @@ def security_revocation_candidates(
         return ()
 
     cutoff = (_normalize_now(now) - timedelta(days=days)).isoformat()
-    params: list[object] = [cutoff]
+    params: list[object] = []
     controller_clause = ""
     if controller_id is not None:
         controller_clause = "AND v.controller_id=?"
         params.append(int(controller_id))
+    params.append(cutoff)
 
     rows = database.connection.execute(
         f"""SELECT
