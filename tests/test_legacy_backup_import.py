@@ -264,10 +264,11 @@ def test_legacy_prints_appear_in_printed_without_positive_use_report(tmp_path):
 
         assert len(dataset.rows) == 2
         assert all(row.print_jobs > 0 for row in dataset.rows)
-        assert [row.recipient for row in dataset.rows] == [
+        assert {row.recipient for row in dataset.rows} == {
             "Ospite 1",
             "Ospite 2",
-        ]
+        }
+        assert len({row.unifi_id for row in dataset.rows}) == 2
         assert all(row.unifi_name == "" for row in dataset.rows)
         assert all(row.usage_observed is False for row in dataset.rows)
         assert dataset.totals.printed_never_used == 0
