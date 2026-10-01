@@ -7,9 +7,13 @@ import sqlite3
 import pytest
 
 from voucher_management.database import Database
+from voucher_management.operational_alerts import set_unprinted_warning_days
 from voucher_management.report_policy import ReportPurpose
 from voucher_management.reporting import ReportKind, build_report_dataset
-from voucher_management.security_revocation import record_security_revocations
+from voucher_management.security_revocation import (
+    record_security_revocations,
+    set_security_revoke_days,
+)
 from voucher_management.sync_store import persist_successful_snapshot
 from voucher_management.unifi_api import ApiVoucher
 
@@ -829,5 +833,97 @@ def test_report_preserves_controller_recipient_without_local_duplicate(tmp_path)
         row = next(item for item in dataset.rows if item.voucher_id == voucher_id)
         assert row.recipient == "Solo descrizione UniFi"
         assert row.unifi_name == "Solo descrizione UniFi"
+    finally:
+        db.close()
+
+
+
+def test_unprinted_warning_report_uses_configured_creation_threshold(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        eligible = _voucher(
+            db,
+            controller,
+            "old-unprinted",
+            "1010101010",
+            created_at="2026-09-01T09:00:00+00:00",
+        )
+        _voucher(
+            db,
+            controller,
+            "recent-unprinted",
+            "2020202020",
+            created_at="2026-09-25T09:00:00+00:00",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET alignment_completed_at=?,
+                       print_state='NOT_PRINTED',
+                       usage_observed=1,
+                       ever_used=0,
+                       authorized_guest_count=0,
+                       present_on_controller=1,
+                       expired=0
+                   WHERE controller_id=?""",
+                (NOW, controller),
+            )
+        set_unprinted_warning_days(db, days=10, now=NOW)
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.UNPRINTED_WARNING,
+            generated_at=NOW,
+            controller_id=controller,
+        )
+
+        assert [row.voucher_id for row in dataset.rows] == [eligible]
+        assert dataset.title.endswith("(10 giorni dalla creazione)")
+    finally:
+        db.close()
+
+
+def test_security_review_report_uses_last_print_threshold(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "printed-unused",
+            "3030303030",
+            created_at="2026-08-01T09:00:00+00:00",
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="security-report-print",
+            codes=["30303-03030"],
+            output_file="voucher.pdf",
+            document_copies=1,
+            printed_at="2026-09-01T09:00:00+00:00",
+            windows_user="operator",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET usage_observed=1,
+                       ever_used=0,
+                       authorized_guest_count=0,
+                       present_on_controller=1,
+                       expired=0,
+                       last_seen_at=?
+                   WHERE id=?""",
+                (NOW, voucher_id),
+            )
+        set_security_revoke_days(db, days=10, now=NOW)
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.SECURITY_REVIEW,
+            generated_at=NOW,
+            controller_id=controller,
+        )
+
+        assert [row.voucher_id for row in dataset.rows] == [voucher_id]
+        assert dataset.title.endswith("(10 giorni dall'ultima stampa)")
     finally:
         db.close()
