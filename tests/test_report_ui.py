@@ -162,4 +162,6 @@ def test_report_choices_cover_historical_core_and_data_quality_views():
     assert "Uso non determinabile" in labels
     assert "Origine creazione non determinabile" in labels
     assert "Nominalità rimossa per privacy" in labels
+    assert "Creati ma non stampati oltre soglia" in labels
+    assert "Da revocare per sicurezza" in labels
     assert "Revocati per sicurezza" in labels
