@@ -309,5 +309,16 @@ class VoucherCreationMixin:
         if not started:
             try:
                 self.create_guard.clear()
-            except CreateMutationGuardError:
-                pass
+            except CreateMutationGuardError as exc:
+                self.logger.warning(
+                    "create_guard_clear_after_task_reject_failed type=%s",
+                    type(exc).__name__,
+                )
+                messagebox.showwarning(
+                    "Creazione sospesa",
+                    "La richiesta di creazione non è partita, ma non è stato "
+                    "possibile rimuovere il blocco di sicurezza locale. "
+                    "Chiudere e riaprire l'applicazione o usare la procedura "
+                    "di recupero prima di tentare una nuova creazione.",
+                    parent=self,
+                )
