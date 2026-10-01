@@ -132,6 +132,7 @@ def persist_successful_snapshot(
                 controller_id=controller_id,
                 unifi_ids=application_created_ids,
                 is_nominal=application_created_is_nominal,
+                aligned_at=observed_at,
                 connection=tx,
             )
 
@@ -308,6 +309,7 @@ def persist_create_result_to_path(
                     controller_id=int(controller_id),
                     unifi_ids=created_ids,
                     is_nominal=bool(is_nominal),
+                    aligned_at=observed_at,
                     connection=tx,
                 )
     finally:
