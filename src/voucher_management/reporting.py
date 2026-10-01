@@ -415,8 +415,11 @@ def build_report_dataset(
                 controller_id=controller_id,
             )
         }
-        if days is not None:
-            report_title = f"{report_title} ({days} giorni dalla creazione)"
+        report_title = (
+            f"{report_title} ({days} giorni dalla creazione)"
+            if days is not None
+            else f"{report_title} (soglia non configurata)"
+        )
     elif kind is ReportKind.SECURITY_REVIEW:
         days = security_revoke_days(database)
         threshold_candidate_ids = {
@@ -427,8 +430,11 @@ def build_report_dataset(
                 controller_id=controller_id,
             )
         }
-        if days is not None:
-            report_title = f"{report_title} ({days} giorni dall'ultima stampa)"
+        report_title = (
+            f"{report_title} (soglia {days} giorni; data stampa ignota: revisione immediata)"
+            if days is not None
+            else f"{report_title} (soglia non configurata)"
+        )
 
     rows: list[ReportRow] = []
     controllers: set[str] = set()
