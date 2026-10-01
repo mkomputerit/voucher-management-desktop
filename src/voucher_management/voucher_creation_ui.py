@@ -131,6 +131,7 @@ class VoucherCreationMixin:
                     snapshot_complete=outcome.snapshot_complete,
                     snapshot_observed=outcome.refresh_error is None,
                     is_nominal=bool(params.get("is_nominal", False)),
+                    assigned_to=str(params.get("recipient", "") or "").strip(),
                     observed_at=observed_at,
                 )
             except Exception as exc:
