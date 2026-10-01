@@ -91,19 +91,29 @@ def test_summary_report_never_exposes_codes_even_when_requested(tmp_path):
         db.close()
 
 
-def test_full_history_is_audit_and_also_hides_codes(tmp_path):
+def test_full_history_is_audit_hides_codes_by_default_and_allows_explicit_export(
+    tmp_path,
+):
     db, controller = _db(tmp_path)
     try:
         _voucher(db, controller, "v1", "1234567890")
-        dataset = build_report_dataset(
+        default_dataset = build_report_dataset(
+            db,
+            kind=ReportKind.FULL_HISTORY,
+            generated_at=NOW,
+        )
+        explicit_dataset = build_report_dataset(
             db,
             kind=ReportKind.FULL_HISTORY,
             generated_at=NOW,
             include_code_requested=True,
         )
-        assert dataset.purpose is ReportPurpose.AUDIT
-        assert dataset.code_exposed is False
-        assert dataset.rows[0].code == ""
+        assert default_dataset.purpose is ReportPurpose.AUDIT
+        assert default_dataset.code_exposed is False
+        assert default_dataset.rows[0].code == ""
+        assert explicit_dataset.purpose is ReportPurpose.AUDIT
+        assert explicit_dataset.code_exposed is True
+        assert explicit_dataset.rows[0].code == "1234567890"
     finally:
         db.close()
 
