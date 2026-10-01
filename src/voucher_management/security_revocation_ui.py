@@ -6,6 +6,7 @@ import tkinter as tk
 from datetime import datetime, timezone
 from tkinter import messagebox, ttk
 
+from .database import Database
 from .security_revocation import (
     pending_security_revocation_ids,
     revoke_security_candidates_live,
@@ -247,16 +248,22 @@ class SecurityRevocationDialog(tk.Toplevel):
 
         client = self.app.client
         operator = self.app._windows_operator_identity()
-        database = self.app.database
+        database_path = self.app.paths.database
+        revoked_at = self._now()
 
         def worker():
-            return revoke_security_candidates_live(
-                database,
-                client=client,
-                candidates=selected,
-                revoked_at=self._now(),
-                windows_user=operator,
-            )
+            database = Database(database_path)
+            try:
+                database.initialize()
+                return revoke_security_candidates_live(
+                    database,
+                    client=client,
+                    candidates=selected,
+                    revoked_at=revoked_at,
+                    windows_user=operator,
+                )
+            finally:
+                database.close()
 
         def completed(result) -> None:
             self.app.checked_ids.clear()
