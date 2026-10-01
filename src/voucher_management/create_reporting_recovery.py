@@ -150,6 +150,7 @@ def reconcile_pending_create_reporting(
         controller_id=pending.controller_id,
         unifi_ids=pending.voucher_ids,
         is_nominal=pending.is_nominal,
+        aligned_at=pending.confirmed_at,
     )
     clear_pending_create_reporting(path)
     return True
