@@ -571,25 +571,32 @@ class SettingsDialog(tk.Toplevel):
         ttk.Separator(frame).pack(fill="x", pady=22)
         ttk.Label(
             frame,
-            text="Conservazione voucher",
+            text="Soglie voucher",
             style="SectionTitle.TLabel",
         ).pack(anchor="w")
         ttk.Label(
             frame,
             text=(
-                "I voucher usati o stampati sono sempre protetti. I voucher "
-                "mai usati e mai stampati vengono proposti per la minimizzazione "
-                "solo quando non sono più presenti sul controller e superano "
-                "la soglia configurata. Nessuna pulizia è automatica."
+                "Le soglie operative segnalano voucher creati ma non stampati "
+                "e voucher stampati ma mai utilizzati. Nessuna cancellazione è "
+                "automatica; la minimizzazione dello storico locale è disabilitata "
+                "in questa release."
             ),
             style="Muted.TLabel",
             wraplength=560,
         ).pack(anchor="w", pady=(3, 10))
+        threshold_actions = ttk.Frame(frame)
+        threshold_actions.pack(anchor="w")
         ttk.Button(
-            frame,
-            text="Rivedi conservazione…",
-            command=lambda: self.app.open_retention_review(parent=self),
-        ).pack(anchor="w")
+            threshold_actions,
+            text="Creati ma non stampati…",
+            command=lambda: self.app.open_operational_alerts(parent=self),
+        ).pack(side="left")
+        ttk.Button(
+            threshold_actions,
+            text="Revoca di sicurezza…",
+            command=lambda: self.app.open_security_revocation(parent=self),
+        ).pack(side="left", padx=(8, 0))
 
         ttk.Separator(frame).pack(fill="x", pady=22)
         ttk.Label(frame, text="Backup e ripristino", style="SectionTitle.TLabel").pack(anchor="w")
