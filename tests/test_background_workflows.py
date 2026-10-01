@@ -433,6 +433,7 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
             error=lambda *args: None,
         ),
         last_pdf=None,
+        checked_ids={"v1"},
         populate=lambda: calls.append(("populate", None)),
         _preview=lambda path, codes: calls.append(
             ("preview", path, list(codes))
@@ -478,6 +479,7 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
 
     tasks[0]["success"](result)
     assert fake.last_pdf == job.output
+    assert fake.checked_ids == set()
     assert calls[-2][0] == "populate"
     assert calls[-1] == (
         "preview",
