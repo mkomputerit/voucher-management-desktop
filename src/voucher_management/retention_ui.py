@@ -276,16 +276,25 @@ class RetentionMixin:
     def show_retention_intro_if_needed(self) -> None:
         now = datetime.now(timezone.utc).isoformat()
         ensure_retention_policy(self.database, now=now)
-        if retention_intro_seen(self.database):
+
+        configured = retention_days_configured(self.database)
+        intro_seen = retention_intro_seen(self.database)
+        if configured and intro_seen:
             return
 
-        dialog = RetentionIntroDialog(self)
-        if dialog.result is None:
-            return
+        if not intro_seen:
+            dialog = RetentionIntroDialog(self)
+            if dialog.result is None:
+                return
+            mark_retention_intro_seen(self.database, now=now)
 
-        mark_retention_intro_seen(self.database, now=now)
-        if dialog.result == "review":
+        # Existing/upgraded installations may already have seen the old
+        # retention explanation while never having explicitly selected the
+        # newly mandatory threshold. Keep prompting the review dialog on
+        # startup until a real operator choice is persisted.
+        if not retention_days_configured(self.database):
             self.open_retention_review()
+            return
 
     def open_retention_review(self, *, parent=None) -> None:
         ensure_retention_policy(
