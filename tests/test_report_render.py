@@ -45,6 +45,7 @@ def _dataset(*, code="", kind=ReportKind.FULL_HISTORY, purpose=ReportPurpose.AUD
         last_synced_at="2026-09-26T11:30:00+00:00",
         unifi_id="unifi-voucher-001",
         unifi_name="Descrizione UniFi originale",
+        local_notes="Nota locale amministrativa",
     )
     totals = ReportTotals(
         vouchers=1,
@@ -93,6 +94,8 @@ def test_detail_csv_hides_codes_but_keeps_sanitized_administrative_detail(tmp_pa
     assert "Descrizione UniFi" in payload
     assert "Mario & Lucia <ospiti>" in payload
     assert "Descrizione UniFi originale" in payload
+    assert "Note locali" in payload
+    assert "Nota locale amministrativa" in payload
     assert "ID UniFi" in payload
     assert "unifi-voucher-001" in payload
     assert "Guest autorizzati (somma ultimo conteggio);2" in payload
