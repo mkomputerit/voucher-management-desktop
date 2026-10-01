@@ -206,25 +206,26 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
         ).fetchone()[0] == 2
         rows = database.connection.execute(
             """SELECT code, name, assigned_to, created_at,
-                      present_on_controller, expired, archived_at,
-                      origin, is_nominal, usage_observed
+                       present_on_controller, expired, archived_at,
+                       origin, is_nominal, print_state, usage_observed
                FROM vouchers ORDER BY code"""
         ).fetchall()
         assert [row["code"] for row in rows] == [
             "12345-67890",
             "98765-43210",
         ]
-        assert [row["assigned_to"] for row in rows] == [
+        assert [row["name"] for row in rows] == [
             "Ospite 1",
             "Ospite 2",
         ]
-        assert all(row["name"] == "" for row in rows)
+        assert all(row["assigned_to"] == "" for row in rows)
         assert all(row["created_at"] is None for row in rows)
         assert all(row["present_on_controller"] == 0 for row in rows)
         assert all(row["expired"] == 1 for row in rows)
         assert all(row["archived_at"] is None for row in rows)
         assert all(row["origin"] == "UNKNOWN" for row in rows)
         assert all(row["is_nominal"] is None for row in rows)
+        assert all(row["print_state"] == "PRINTED" for row in rows)
         assert all(row["usage_observed"] == 0 for row in rows)
         # Legacy "generate" rows prove PDF generation, not who created the
         # voucher on UniFi; creation provenance must therefore not be invented.
@@ -269,7 +270,10 @@ def test_legacy_prints_appear_in_printed_without_positive_use_report(tmp_path):
             "Ospite 2",
         }
         assert len({row.unifi_id for row in dataset.rows}) == 2
-        assert all(row.unifi_name == "" for row in dataset.rows)
+        assert {row.unifi_name for row in dataset.rows} == {
+            "Ospite 1",
+            "Ospite 2",
+        }
         assert all(row.usage_observed is False for row in dataset.rows)
         assert dataset.totals.printed_never_used == 0
         assert dataset.totals.printed_usage_unknown == 2
@@ -344,19 +348,20 @@ def test_import_reuses_unique_current_voucher_when_available(tmp_path):
 
         assert result.reused_vouchers == 1
         current = database.connection.execute(
-            """SELECT id, name, assigned_to FROM vouchers
+            """SELECT id, name, assigned_to, print_state FROM vouchers
                WHERE controller_id=? AND unifi_id='current-voucher'""",
             (controller,),
         ).fetchone()
         current_id = int(current["id"])
         assert current["name"] == "Current"
-        assert current["assigned_to"] == "Ospite 1"
+        assert current["assigned_to"] == ""
+        assert current["print_state"] == "PRINTED"
         assert database.print_summary(current_id).print_jobs == 1
     finally:
         database.close()
 
 
-def test_legacy_import_never_overwrites_existing_local_recipient(tmp_path):
+def test_legacy_import_never_overwrites_existing_controller_recipient(tmp_path):
     source = _legacy_backup(tmp_path)
     paths, database = _live(tmp_path)
     try:
