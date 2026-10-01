@@ -28,6 +28,7 @@ class ReportKind(str, Enum):
     USAGE_UNKNOWN = "usage_unknown"
     ORIGIN_UNKNOWN = "origin_unknown"
     NOMINALITY_REDACTED = "nominality_redacted"
+    SECURITY_REVOKED = "security_revoked"
     FULL_HISTORY = "full_history"
 
 
@@ -45,6 +46,7 @@ REPORT_TITLES = {
     ReportKind.USAGE_UNKNOWN: "Voucher con utilizzo non determinabile",
     ReportKind.ORIGIN_UNKNOWN: "Voucher con origine creazione non determinabile",
     ReportKind.NOMINALITY_REDACTED: "Nominalità rimossa per privacy",
+    ReportKind.SECURITY_REVOKED: "Voucher revocati per sicurezza",
     ReportKind.FULL_HISTORY: "Storico completo voucher",
 }
 
@@ -75,6 +77,7 @@ class ReportTotals:
     unclassified_vouchers: int
     unknown_origin_vouchers: int = 0
     redacted_nominality_vouchers: int = 0
+    security_revoked_vouchers: int = 0
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,7 @@ class ReportRow:
     is_nominal: bool | None
     last_synced_at: str = ""
     nominality_redacted: bool = False
+    security_revoked_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -175,7 +179,10 @@ def _status(
     expired: bool,
     ever_used: bool,
     print_jobs: int,
+    security_revoked: bool = False,
 ) -> str:
+    if security_revoked:
+        return "Revocato per sicurezza"
     if archived:
         return "Archiviato"
     if expired:
@@ -237,6 +244,8 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
         return row.origin != "APPLICATION"
     if kind is ReportKind.NOMINALITY_REDACTED:
         return row.nominality_redacted
+    if kind is ReportKind.SECURITY_REVOKED:
+        return bool(row.security_revoked_at)
     raise ValueError(f"Unsupported report kind: {kind}")
 
 
@@ -275,6 +284,9 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
         ),
         redacted_nominality_vouchers=sum(
             row.nominality_redacted for row in materialized
+        ),
+        security_revoked_vouchers=sum(
+            bool(row.security_revoked_at) for row in materialized
         ),
     )
 
@@ -353,11 +365,13 @@ def build_report_dataset(
                 expired=expired,
                 ever_used=ever_used,
                 print_jobs=print_jobs,
+                security_revoked=bool(raw["security_revoked_at"]),
             ),
             origin=str(raw["origin"] or "UNKNOWN"),
             is_nominal=is_nominal,
             last_synced_at=str(raw["last_synced_at"] or ""),
             nominality_redacted=bool(raw["nominality_redacted"]),
+            security_revoked_at=str(raw["security_revoked_at"] or ""),
         )
         if _matches(kind, row):
             rows.append(row)
