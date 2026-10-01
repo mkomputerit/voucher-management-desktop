@@ -627,8 +627,8 @@ def _ensure_import_candidates(
                             created_at, imported_at, duration_minutes,
                             authorized_guest_count, ever_used, usage_observed,
                             expired, present_on_controller, last_seen_at,
-                            last_synced_at, archived_at)
-                           VALUES (?, ?, ?, '', ?, ?, ?, ?, 0, 0, 0, 1, 0, NULL, ?, NULL)""",
+                            last_synced_at, archived_at, origin)
+                           VALUES (?, ?, ?, '', ?, ?, ?, ?, 0, 0, 0, 1, 0, NULL, ?, NULL, 'UNKNOWN')""",
                         (
                             archive_controller_id,
                             unifi_id,
@@ -664,6 +664,7 @@ def _ensure_import_candidates(
                                    ELSE assigned_to
                                END,
                                name='',
+                               origin='UNKNOWN',
                                duration_minutes=COALESCE(duration_minutes, ?),
                                expired=1, present_on_controller=0,
                                archived_at=NULL
