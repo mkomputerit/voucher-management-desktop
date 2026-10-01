@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from voucher_management.security_revocation import (
     live_security_revocation_allowed,
     pending_security_revocation_ids,
+    reconcile_pending_security_revocations,
     record_security_revocation_request,
     record_security_revocations,
     revoke_security_candidates_live,
@@ -358,5 +359,86 @@ def test_delete_failure_leaves_durable_pending_marker_for_reconciliation(tmp_pat
             (voucher_id,),
         ).fetchone()
         assert row["present_on_controller"] == 1
+    finally:
+        db.close()
+
+
+
+def test_pending_request_is_not_offered_again_until_reconciled(tmp_path):
+    db, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller)
+        _print(db, controller)
+        set_security_revoke_days(db, days=10, now=NOW)
+        assert [item.voucher_id for item in security_revocation_candidates(
+            db,
+            now=NOW,
+        )] == [voucher_id]
+
+        record_security_revocation_request(
+            db,
+            voucher_id=voucher_id,
+            requested_at=NOW,
+            windows_user="operator",
+        )
+
+        assert security_revocation_candidates(db, now=NOW) == ()
+        assert pending_security_revocation_ids(db) == (voucher_id,)
+    finally:
+        db.close()
+
+
+def test_fresh_full_snapshot_reconciles_absent_pending_revocation(tmp_path):
+    db, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller)
+        record_security_revocation_request(
+            db,
+            voucher_id=voucher_id,
+            requested_at=NOW,
+            windows_user="operator",
+        )
+
+        confirmed = reconcile_pending_security_revocations(
+            db,
+            controller_id=controller,
+            live_voucher_ids=frozenset(),
+            observed_at=NOW,
+            windows_user="operator",
+        )
+
+        assert confirmed == (voucher_id,)
+        assert pending_security_revocation_ids(db) == ()
+        row = db.connection.execute(
+            "SELECT code, present_on_controller FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["code"] == "1234567890"
+        assert row["present_on_controller"] == 0
+    finally:
+        db.close()
+
+
+def test_fresh_full_snapshot_keeps_pending_when_voucher_still_exists(tmp_path):
+    db, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller)
+        record_security_revocation_request(
+            db,
+            voucher_id=voucher_id,
+            requested_at=NOW,
+            windows_user="operator",
+        )
+
+        confirmed = reconcile_pending_security_revocations(
+            db,
+            controller_id=controller,
+            live_voucher_ids=frozenset({"v1"}),
+            observed_at=NOW,
+            windows_user="operator",
+        )
+
+        assert confirmed == ()
+        assert pending_security_revocation_ids(db) == (voucher_id,)
     finally:
         db.close()
