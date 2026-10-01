@@ -17,6 +17,7 @@ from voucher_management.backup import (
 )
 from voucher_management.backup_crypto import PROTECTED_BACKUP_MAGIC
 from voucher_management.database import Database, SCHEMA_VERSION
+from voucher_management.security_revocation import record_security_revocation_request
 from voucher_management.security.history_key import HistoryKeyStore
 from voucher_management.single_instance import SingleInstanceGuard
 
@@ -655,6 +656,79 @@ class BackupServiceTests(unittest.TestCase):
 
         self.assertFalse(backup.exists())
 
+
+    def test_restore_is_blocked_while_security_delete_is_unresolved(self):
+        backup = Path(self.temp.name) / "before-security-pending.zip"
+        self.service.create(backup)
+
+        database = Database(self.paths.data / "voucher_management.db")
+        database.initialize()
+        try:
+            controller = database.create_controller(
+                name="A",
+                api_root="https://a.example",
+                created_at="2026-10-01T08:00:00+00:00",
+            )
+            voucher_id = database.upsert_voucher(
+                controller_id=controller,
+                unifi_id="pending-security",
+                code="1234567890",
+                name="Guest",
+                created_at="2026-09-01T08:00:00+00:00",
+                imported_at="2026-10-01T08:00:00+00:00",
+                last_synced_at="2026-10-01T08:00:00+00:00",
+            )
+            record_security_revocation_request(
+                database,
+                voucher_id=voucher_id,
+                requested_at="2026-10-01T09:00:00+00:00",
+                windows_user=r"PC\operator",
+            )
+        finally:
+            database.close()
+
+        with self.assertRaisesRegex(BackupError, "riconciliare"):
+            self.service.restore(backup)
+
+    def test_restore_is_blocked_while_preparation_delete_is_unresolved(self):
+        backup = Path(self.temp.name) / "before-preparation-pending.zip"
+        self.service.create(backup)
+
+        database = Database(self.paths.data / "voucher_management.db")
+        database.initialize()
+        try:
+            controller = database.create_controller(
+                name="A",
+                api_root="https://a.example",
+                created_at="2026-10-01T08:00:00+00:00",
+            )
+            voucher_id = database.upsert_voucher(
+                controller_id=controller,
+                unifi_id="pending-preparation",
+                code="0987654321",
+                name="Guest",
+                created_at="2026-09-01T08:00:00+00:00",
+                imported_at="2026-10-01T08:00:00+00:00",
+                last_synced_at="2026-10-01T08:00:00+00:00",
+            )
+            database.connection.execute(
+                """INSERT INTO voucher_events(
+                       event_uuid, voucher_id, event_type, occurred_at,
+                       source, windows_user, details_json
+                   ) VALUES (
+                       'pending-preparation-event', ?,
+                       'PREPARATION_DELETE_REQUESTED',
+                       '2026-10-01T09:00:00+00:00',
+                       'OPERATOR', 'PC\\operator', '{}'
+                   )""",
+                (voucher_id,),
+            )
+            database.connection.commit()
+        finally:
+            database.close()
+
+        with self.assertRaisesRegex(BackupError, "riconciliare"):
+            self.service.restore(backup)
 
     def test_restore_is_blocked_while_create_outcome_is_unresolved(self):
         backup = Path(self.temp.name) / "backup.zip"
