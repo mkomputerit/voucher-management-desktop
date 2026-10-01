@@ -621,6 +621,10 @@ def test_same_code_different_unifi_ids_are_distinct_and_print_audit_fails_closed
         assert ids.count(first) == 1
         assert ids.count(second) == 1
         assert dataset.totals.vouchers == 2
+        assert {row.unifi_id for row in dataset.rows} == {
+            "uuid-first",
+            "uuid-second",
+        }
 
         with pytest.raises(RuntimeError, match="missing or ambiguous"):
             db.record_print_audit(
@@ -739,6 +743,27 @@ def test_reporting_fails_closed_on_inconsistent_nominality_state(tmp_path):
             build_report_dataset(
                 db,
                 kind=ReportKind.SUMMARY,
+                generated_at=NOW,
+            )
+    finally:
+        db.close()
+
+
+
+def test_reporting_rejects_missing_unifi_identity(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller, "valid-id", "9090909090")
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET unifi_id='' WHERE id=?",
+                (voucher_id,),
+            )
+
+        with pytest.raises(RuntimeError, match="without UniFi identity"):
+            build_report_dataset(
+                db,
+                kind=ReportKind.FULL_HISTORY,
                 generated_at=NOW,
             )
     finally:
