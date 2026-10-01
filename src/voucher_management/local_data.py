@@ -16,8 +16,6 @@ from .database import Database
 
 @dataclass(frozen=True)
 class LocalVoucherPatch:
-    apply_assigned_to: bool = False
-    assigned_to: str = ""
     apply_notes: bool = False
     notes: str = ""
     apply_is_nominal: bool = False
@@ -25,24 +23,18 @@ class LocalVoucherPatch:
 
     def validated(self) -> "LocalVoucherPatch":
         if not (
-            self.apply_assigned_to
-            or self.apply_notes
+            self.apply_notes
             or self.apply_is_nominal
         ):
             raise ValueError("Selezionare almeno un dato locale da aggiornare")
 
-        assigned_to = str(self.assigned_to or "").strip()
         notes = str(self.notes or "").strip()
-        if len(assigned_to) > 200:
-            raise ValueError("Il destinatario locale non può superare 200 caratteri")
         if len(notes) > 1000:
             raise ValueError("Le note locali non possono superare 1000 caratteri")
-        if self.apply_is_nominal and self.is_nominal not in (True, False, None):
-            raise ValueError("Classificazione nominale non valida")
+        if self.apply_is_nominal and type(self.is_nominal) is not bool:
+            raise ValueError("La nominalità deve essere Nominale o Non nominale")
 
         return LocalVoucherPatch(
-            apply_assigned_to=bool(self.apply_assigned_to),
-            assigned_to=assigned_to,
             apply_notes=bool(self.apply_notes),
             notes=notes,
             apply_is_nominal=bool(self.apply_is_nominal),
@@ -85,7 +77,7 @@ def apply_local_voucher_patch(
     placeholders = ",".join("?" for _ in ids)
     with database.transaction() as db:
         rows = db.execute(
-            f"""SELECT id, assigned_to, notes, is_nominal, nominality_redacted
+            f"""SELECT id, notes, is_nominal, nominality_redacted
                 FROM vouchers
                 WHERE controller_id=?
                   AND id IN ({placeholders})
@@ -106,13 +98,6 @@ def apply_local_voucher_patch(
             assignments: list[str] = []
             params: list[object] = []
 
-            if clean.apply_assigned_to:
-                current = str(row["assigned_to"] or "")
-                if current != clean.assigned_to:
-                    assignments.append("assigned_to=?")
-                    params.append(clean.assigned_to)
-                    changes.append("assigned_to")
-
             if clean.apply_notes:
                 current = str(row["notes"] or "")
                 if current != clean.notes:
@@ -126,10 +111,7 @@ def apply_local_voucher_patch(
                 redacted = bool(row["nominality_redacted"])
                 if current != clean.is_nominal or redacted:
                     assignments.append("is_nominal=?")
-                    params.append(
-                        None if clean.is_nominal is None
-                        else int(clean.is_nominal)
-                    )
+                    params.append(int(clean.is_nominal))
                     assignments.append("nominality_redacted=0")
                     changes.append("is_nominal")
 
