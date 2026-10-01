@@ -113,12 +113,22 @@ def record_preparation_delete_requests(
     placeholders = ",".join("?" for _ in ids)
     with database.transaction() as db:
         rows = db.execute(
-            f"""SELECT id, unifi_id, print_state, alignment_completed_at, ever_used
-                FROM vouchers
-                WHERE controller_id=?
-                  AND unifi_id IN ({placeholders})
-                  AND archived_at IS NULL
-                ORDER BY id""",
+            f"""SELECT
+                    v.id,
+                    v.unifi_id,
+                    v.print_state,
+                    v.alignment_completed_at,
+                    v.ever_used,
+                    EXISTS(
+                        SELECT 1
+                        FROM voucher_prints AS vp
+                        WHERE vp.voucher_id=v.id
+                    ) AS has_verified_print
+                FROM vouchers AS v
+                WHERE v.controller_id=?
+                  AND v.unifi_id IN ({placeholders})
+                  AND v.archived_at IS NULL
+                ORDER BY v.id""",
             (int(controller_id), *ids),
         ).fetchall()
         if len(rows) != len(ids):
@@ -137,6 +147,10 @@ def record_preparation_delete_requests(
             if not str(row["alignment_completed_at"] or "").strip():
                 raise RuntimeError(
                     "Un voucher non ancora allineato non può essere cancellato ordinariamente."
+                )
+            if bool(row["has_verified_print"]):
+                raise RuntimeError(
+                    "Una stampa verificata nello storico blocca la cancellazione ordinaria."
                 )
             if str(row["print_state"] or "UNKNOWN") != PRINT_STATE_NOT_PRINTED:
                 raise RuntimeError(
