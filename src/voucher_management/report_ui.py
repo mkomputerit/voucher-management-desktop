@@ -25,6 +25,7 @@ REPORT_CHOICES = (
     ("Uso non determinabile", ReportKind.USAGE_UNKNOWN),
     ("Origine creazione non determinabile", ReportKind.ORIGIN_UNKNOWN),
     ("Nominalità rimossa per privacy", ReportKind.NOMINALITY_REDACTED),
+    ("Revocati per sicurezza", ReportKind.SECURITY_REVOKED),
     ("Storico completo", ReportKind.FULL_HISTORY),
 )
 REPORT_KIND_BY_LABEL = dict(REPORT_CHOICES)
