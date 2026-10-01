@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from .database import PRINT_STATE_NOT_PRINTED, PRINT_STATE_PRINTED, PRINT_STATE_UNKNOWN
 from .history import PrintStats
 from .models import VoucherBatch, VoucherRecord
 from .policy import DeletePolicyResult, evaluate_delete_policy
@@ -409,19 +410,38 @@ def evaluate_delete_candidates(
     vouchers: Sequence[ApiVoucher],
     stats_by_code: Mapping[str, PrintStats],
     *,
-    historically_used_ids: frozenset[str] = frozenset(),
+    historically_used_ids: frozenset[str],
+    local_print_states: Mapping[str, str],
+    aligned_ids: frozenset[str],
 ) -> list[DeleteBlock]:
-    """Return every voucher blocked by controller or durable local lifecycle facts."""
+    """Return every voucher blocked by controller or durable local lifecycle facts.
+
+    Ordinary deletion is a preparation-error correction.  It is available only
+    when the local database positively proves that the voucher is aligned and
+    has print_state=NOT_PRINTED.  Missing/unknown local evidence fails closed.
+    """
 
     blocked: list[DeleteBlock] = []
     for voucher in vouchers:
-        if voucher.id in historically_used_ids:
+        remote_id = str(voucher.id)
+        if remote_id in historically_used_ids:
             result = DeletePolicyResult(False, "in_use")
+        elif remote_id not in aligned_ids:
+            result = DeletePolicyResult(False, "not_aligned")
         else:
-            result = evaluate_delete_policy(
-                voucher,
-                stats_by_code.get(voucher.code_formatted),
+            print_state = str(
+                local_print_states.get(remote_id, PRINT_STATE_UNKNOWN)
+                or PRINT_STATE_UNKNOWN
             )
+            if print_state == PRINT_STATE_PRINTED:
+                result = DeletePolicyResult(False, "printed")
+            elif print_state != PRINT_STATE_NOT_PRINTED:
+                result = DeletePolicyResult(False, "print_unknown")
+            else:
+                result = evaluate_delete_policy(
+                    voucher,
+                    stats_by_code.get(voucher.code_formatted),
+                )
         if not result.allowed:
             blocked.append(DeleteBlock(voucher=voucher, policy=result))
     return blocked
