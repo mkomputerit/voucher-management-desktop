@@ -111,12 +111,12 @@ if (-not (Test-Path -LiteralPath (Join-Path $source "VoucherManagement.exe") -Pa
 $sourceWithSeparator = $source.TrimEnd("\") + "\"
 $destinationWithSeparator = $destination.TrimEnd("\") + "\"
 if (
-    $destination -ieq $source
-    -or $destinationWithSeparator.StartsWith(
+    $destination -ieq $source -or
+    $destinationWithSeparator.StartsWith(
         $sourceWithSeparator,
         [StringComparison]::OrdinalIgnoreCase
-    )
-    -or $sourceWithSeparator.StartsWith(
+    ) -or
+    $sourceWithSeparator.StartsWith(
         $destinationWithSeparator,
         [StringComparison]::OrdinalIgnoreCase
     )
@@ -167,9 +167,9 @@ try {
     }
     catch {
         if (
-            $previousMoved
-            -and (Test-Path -LiteralPath $previous)
-            -and -not (Test-Path -LiteralPath $destination)
+            $previousMoved -and
+            (Test-Path -LiteralPath $previous) -and
+            -not (Test-Path -LiteralPath $destination)
         ) {
             Move-Item -LiteralPath $previous -Destination $destination
             $previousMoved = $false
@@ -187,9 +187,9 @@ finally {
         Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
     }
     if (
-        $previousMoved
-        -and (Test-Path -LiteralPath $previous)
-        -and -not (Test-Path -LiteralPath $destination)
+        $previousMoved -and
+        (Test-Path -LiteralPath $previous) -and
+        -not (Test-Path -LiteralPath $destination)
     ) {
         Move-Item -LiteralPath $previous -Destination $destination -ErrorAction SilentlyContinue
     }
