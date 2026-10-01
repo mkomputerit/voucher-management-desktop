@@ -2327,14 +2327,23 @@ class ModernVoucherApp(
         if not hasattr(self, "settings_retention_summary_var"):
             return
         policy = self.database.retention_policy()
-        if policy is None:
+        if (
+            policy is None
+            or "configured" not in policy.keys()
+            or not bool(policy["configured"])
+            or policy["unused_unprinted_days"] is None
+            or policy["printed_unused_revoke_days"] is None
+        ):
             self.settings_retention_summary_var.set(
-                "Conservazione voucher non ancora configurata."
+                "Policy lifecycle da configurare: impostare retention locale "
+                "e revoca dei voucher stampati e inutilizzati."
             )
             return
         self.settings_retention_summary_var.set(
-            "I voucher senza utilizzi rilevati e senza stampe registrate diventano candidati dopo "
-            f"{int(policy['unused_unprinted_days'])} giorni."
+            "Retention locale: "
+            f"{int(policy['unused_unprinted_days'])} giorni · "
+            "Revoca voucher stampati e inutilizzati: "
+            f"{int(policy['printed_unused_revoke_days'])} giorni."
         )
 
     def _show_workspace(self, key: str) -> None:
