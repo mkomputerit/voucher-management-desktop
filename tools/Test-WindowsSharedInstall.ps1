@@ -58,6 +58,10 @@ try {
     New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
     $legacyFile = Join-Path $dataRoot "legacy-permissive.txt"
     Set-Content -LiteralPath $legacyFile -Value "legacy" -Encoding ascii
+    $legacyDataDir = Join-Path $dataRoot "data"
+    New-Item -ItemType Directory -Force -Path $legacyDataDir | Out-Null
+    $legacyManagedFile = Join-Path $legacyDataDir "legacy-managed.txt"
+    Set-Content -LiteralPath $legacyManagedFile -Value "legacy-managed" -Encoding ascii
 
     # Seed the exact upgrade hazard under review: explicit third-party grants
     # on an already-existing ProgramData tree. The installer must remove them.
@@ -104,6 +108,11 @@ try {
     $legacyAcl = Get-AllowRightsBySid -Path $legacyFile
     if ($legacyAcl.Rights.ContainsKey("S-1-1-0")) {
         throw "ACE esplicita Everyone sopravvissuta su un file preesistente."
+    }
+    $managedLegacyAcl = Get-AllowRightsBySid -Path $legacyManagedFile
+    Assert-Rights -Rights $managedLegacyAcl.Rights -Sid $group.SID.Value -Expected ([Security.AccessControl.FileSystemRights]::Modify)
+    if ($managedLegacyAcl.Rights.ContainsKey("S-1-1-0")) {
+        throw "ACE esplicita Everyone sopravvissuta su un file gestito preesistente."
     }
 
     # Exercise backup/restore with a real non-admin process whose only
