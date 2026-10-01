@@ -301,6 +301,32 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
     )
 
 
+def _validated_totals(rows: Iterable[ReportRow]) -> ReportTotals:
+    """Calculate totals and reject overlapping/incomplete classifications."""
+
+    totals = _totals(rows)
+    if (
+        totals.used_vouchers
+        + totals.never_used_vouchers
+        + totals.usage_unknown_vouchers
+        != totals.vouchers
+    ):
+        raise RuntimeError("report usage totals are internally inconsistent")
+    if totals.printed_vouchers + totals.never_printed != totals.vouchers:
+        raise RuntimeError("report print totals are internally inconsistent")
+    if (
+        totals.nominal_vouchers
+        + totals.non_nominal_vouchers
+        + totals.unclassified_vouchers
+        + totals.redacted_nominality_vouchers
+        != totals.vouchers
+    ):
+        raise RuntimeError("report nominality totals are internally inconsistent")
+    if totals.generated_vouchers + totals.unknown_origin_vouchers != totals.vouchers:
+        raise RuntimeError("report origin totals are internally inconsistent")
+    return totals
+
+
 def build_report_dataset(
     database: Database,
     *,
@@ -432,7 +458,7 @@ def build_report_dataset(
         generated_at=str(generated_at),
         controller_label=controller_label,
         rows=materialized,
-        totals=_totals(materialized),
+        totals=_validated_totals(materialized),
         code_exposed=code_exposed,
         data_from=sync_times[0] if sync_times else "",
         data_as_of=sync_times[-1] if sync_times else "",
