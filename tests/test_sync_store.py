@@ -358,6 +358,7 @@ def test_partial_create_result_does_not_mark_unseen_local_rows_absent(tmp_path):
         snapshot_complete=False,
         snapshot_observed=True,
         is_nominal=False,
+        assigned_to="Local created guest",
         observed_at="2026-09-29T08:05:00+00:00",
     )
 
@@ -367,12 +368,15 @@ def test_partial_create_result_does_not_mark_unseen_local_rows_absent(tmp_path):
         rows = {
             row["unifi_id"]: row
             for row in check.connection.execute(
-                "SELECT unifi_id, present_on_controller, origin, is_nominal FROM vouchers"
+                """SELECT unifi_id, present_on_controller, origin, is_nominal,
+                          assigned_to, name
+                   FROM vouchers"""
             )
         }
         assert rows["existing"]["present_on_controller"] == 1
         assert rows["created"]["origin"] == "APPLICATION"
         assert rows["created"]["is_nominal"] == 0
+        assert rows["created"]["assigned_to"] == "Local created guest"
     finally:
         check.close()
 
