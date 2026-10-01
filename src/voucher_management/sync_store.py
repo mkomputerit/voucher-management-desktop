@@ -179,24 +179,20 @@ def persist_successful_snapshot(
             observed_at=observed_at,
             connection=tx,
         )
+        reconcile_pending_security_revocations(
+            database,
+            controller_id=controller_id,
+            live_voucher_ids=seen_remote_ids,
+            observed_at=observed_at,
+            windows_user="SYSTEM",
+            connection=tx,
+        )
 
         tx.execute(
             """UPDATE controllers
                SET last_successful_sync_at=? WHERE id=?""",
             (observed_at, controller_id),
         )
-
-    # Security revocation reconciliation deliberately runs only after the full
-    # snapshot transaction has committed. If this audit step fails, the pending
-    # marker remains and the next successful complete snapshot can retry it;
-    # the remote DELETE is never replayed automatically.
-    reconcile_pending_security_revocations(
-        database,
-        controller_id=controller_id,
-        live_voucher_ids=seen_remote_ids,
-        observed_at=observed_at,
-        windows_user="SYSTEM",
-    )
 
     return run_uuid
 
