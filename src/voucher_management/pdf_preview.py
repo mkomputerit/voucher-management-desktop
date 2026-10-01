@@ -15,9 +15,10 @@ from datetime import datetime, timezone
 import logging
 from pathlib import Path
 from queue import Empty
+import shutil
 import tkinter as tk
 from uuid import uuid4
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import pypdfium2 as pdfium
 from PIL import Image, ImageTk, ImageWin
@@ -48,6 +49,11 @@ class PdfPreview(tk.Toplevel):
         on_audit=None,
         on_submitted=None,
         confirm_print=None,
+        audit_print: bool = True,
+        allow_save_as: bool = False,
+        delete_on_close: bool = False,
+        window_title: str | None = None,
+        footer_text: str | None = None,
     ):
         super().__init__(parent)
         self.app = parent
@@ -65,6 +71,10 @@ class PdfPreview(tk.Toplevel):
         # recovery and ambiguous prepared jobs.
         self.on_submitted = on_submitted
         self.confirm_print = confirm_print
+        self.audit_print = bool(audit_print)
+        self.allow_save_as = bool(allow_save_as)
+        self.delete_on_close = bool(delete_on_close)
+        self.footer_text = footer_text
         self.document = None
         self.page_index = 0
         self.photo = None
@@ -80,10 +90,20 @@ class PdfPreview(tk.Toplevel):
         except Exception as exc:
             # The Toplevel already exists at this point. Destroy it immediately
             # so a PDF load failure cannot leave an empty orphan window.
-            super().destroy()
+            if self.delete_on_close:
+            try:
+                self.pdf_path.unlink(missing_ok=True)
+            except Exception as cleanup_exc:
+                LOGGER.warning(
+                    "preview_temp_cleanup_failed type=%s",
+                    type(cleanup_exc).__name__,
+                )
+        super().destroy()
             raise RuntimeError("Impossibile caricare il documento PDF") from exc
 
-        self.title(f"Anteprima di stampa - {self.pdf_path.name}")
+        self.title(
+            window_title or f"Anteprima di stampa - {self.pdf_path.name}"
+        )
         # A sensible fallback is kept for environments where Windows refuses
         # the zoomed state. On normal Windows desktops the window is maximised
         # after widgets exist, giving the A4 viewport the largest safe area.
@@ -136,6 +156,19 @@ class PdfPreview(tk.Toplevel):
             command=self.print_document,
         )
         self.print_button.grid(row=0, column=4, padx=(14, 5))
+        self.save_button = ttk.Button(
+            bottom,
+            text="SALVA PDF",
+            command=self.save_as,
+        )
+        self.save_button.grid(
+            row=0,
+            column=5,
+            padx=(8, 0),
+        )
+        if not self.allow_save_as:
+            self.save_button.grid_remove()
+
         self.register_print_button = ttk.Button(
             bottom,
             text="REGISTRA STAMPA",
@@ -143,18 +176,22 @@ class PdfPreview(tk.Toplevel):
         )
         self.register_print_button.grid(
             row=0,
-            column=5,
+            column=6,
             padx=(8, 0),
         )
         self.register_print_button.grid_remove()
         ttk.Label(
             bottom,
             text=(
-                "Nei nuovi PDF, il destinatario resta sul voucher dopo il ritaglio "
-                "ed è visibile all'ospite. Controlla l'anteprima prima di stampare."
+                self.footer_text
+                or (
+                    "Nei nuovi PDF, il destinatario resta sul voucher dopo il "
+                    "ritaglio ed è visibile all'ospite. Controlla l'anteprima "
+                    "prima di stampare."
+                )
             ),
             wraplength=680,
-        ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        ).grid(row=1, column=0, columnspan=7, sticky="w", pady=(8, 0))
 
     def _maximize_window(self):
         """Maximise on Windows without entering borderless/full-screen mode."""
@@ -344,6 +381,55 @@ class PdfPreview(tk.Toplevel):
         self._printing = True
         self.print_button.state(["disabled"])
         self.register_print_button.state(["disabled"])
+        if self.allow_save_as:
+            self.save_button.state(["disabled"])
+
+        if not self.audit_print:
+            def worker():
+                self._print_windows(printer, copies)
+
+            def finish_controls() -> bool:
+                self._printing = False
+                try:
+                    alive = bool(self.winfo_exists())
+                except tk.TclError:
+                    alive = False
+                if alive:
+                    self.print_button.state(["!disabled"])
+                    if self.allow_save_as:
+                        self.save_button.state(["!disabled"])
+                return alive
+
+            def completed(_result) -> None:
+                if not finish_controls():
+                    return
+                if self.on_print:
+                    self.on_print()
+                messagebox.showinfo(
+                    "Stampa",
+                    f"Documento inviato a {printer}.",
+                    parent=self,
+                )
+
+            def failed(exc: Exception) -> None:
+                if not finish_controls():
+                    return
+                messagebox.showerror(
+                    "Stampa",
+                    "Impossibile inviare il documento alla stampante.\n\n"
+                    f"{exc}",
+                    parent=self,
+                )
+
+            started = self.app._run_background_task(
+                "Rasterizzazione e invio alla stampante…",
+                worker,
+                completed,
+                failed,
+            )
+            if not started:
+                finish_controls()
+            return
 
         pdf_path = self.pdf_path
         codes = list(self.codes)
@@ -408,6 +494,8 @@ class PdfPreview(tk.Toplevel):
             if alive:
                 self.print_button.state(["!disabled"])
                 self.register_print_button.state(["!disabled"])
+                if self.allow_save_as:
+                    self.save_button.state(["!disabled"])
             return alive
 
         def completed(result) -> None:
@@ -501,6 +589,41 @@ class PdfPreview(tk.Toplevel):
         )
         if not started:
             finish_controls()
+
+    def save_as(self) -> None:
+        """Save a copy of the already-rendered PDF without rebuilding it."""
+
+        if not self.allow_save_as or self._printing:
+            return
+        target = filedialog.asksaveasfilename(
+            parent=self,
+            title="Salva PDF",
+            defaultextension=".pdf",
+            initialfile=self.pdf_path.name,
+            filetypes=(("Documento PDF", "*.pdf"),),
+        )
+        if not target:
+            return
+        destination = Path(target)
+        try:
+            if destination.resolve() != self.pdf_path.resolve():
+                shutil.copy2(self.pdf_path, destination)
+        except Exception as exc:
+            LOGGER.warning(
+                "preview_save_copy_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Salva PDF",
+                "Impossibile salvare una copia del PDF.",
+                parent=self,
+            )
+            return
+        messagebox.showinfo(
+            "Salva PDF",
+            f"PDF salvato:\n{destination}",
+            parent=self,
+        )
 
     def register_print_audit(self) -> None:
         """Retry only the audit write for an already-submitted print job."""
