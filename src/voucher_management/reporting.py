@@ -390,7 +390,6 @@ def build_report_dataset(
         )
         nominal_raw = raw["is_nominal"]
         is_nominal = None if nominal_raw is None else bool(nominal_raw)
-        assigned_to = str(raw["assigned_to"] or "").strip()
         unifi_name = str(raw["name"] or "").strip()
         local_notes = str(raw["notes"] or "").strip()
         ever_used = bool(raw["ever_used"])
@@ -408,7 +407,7 @@ def build_report_dataset(
             voucher_id=voucher_id,
             controller_name=controller_name,
             code=clear_code,
-            recipient=assigned_to,
+            recipient=unifi_name,
             created_at=str(raw["created_at"] or ""),
             imported_at=str(raw["imported_at"] or ""),
             expires_at=str(raw["expires_at"] or ""),
