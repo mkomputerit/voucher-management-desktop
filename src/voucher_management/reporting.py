@@ -353,13 +353,13 @@ def nominal_label(value: bool | None, *, redacted: bool = False) -> str:
 
 
 def _is_printed_unused(row: ReportRow) -> bool:
-    """Require zero observed use plus controller evidence after first issuance."""
+    """Require zero observed use plus controller evidence after latest issuance."""
 
     return (
         row.print_jobs > 0
         and row.usage_observed
         and not row.ever_used
-        and _time_at_or_after(row.last_seen_at, row.first_printed_at)
+        and _time_at_or_after(row.last_seen_at, row.last_printed_at)
     )
 
 
