@@ -20,6 +20,124 @@ _NOMINAL_VALUES = {
 }
 
 
+def local_data_selection_candidates(vouchers) -> tuple:
+    """Return controller rows eligible for local-only metadata editing.
+
+    Local metadata is independent from print/delete lifecycle policy, therefore
+    expired vouchers remain selectable here even though the operational table
+    deliberately blocks them from destructive/printing selection.
+    """
+
+    return tuple(vouchers)
+
+
+class LocalDataSelectionDialog(tk.Toplevel):
+    """Independent selector for local metadata, including expired vouchers."""
+
+    def __init__(self, app, vouchers, parent=None):
+        super().__init__(parent or app)
+        self.app = app
+        self.vouchers = local_data_selection_candidates(vouchers)
+        self.result = None
+        self.title("Seleziona voucher per Dati locali")
+        self.transient(parent or app)
+        self.grab_set()
+        self.geometry("820x500")
+        self.minsize(700, 420)
+
+        shell = ttk.Frame(self, padding=18)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(
+            shell,
+            text="Seleziona voucher per Dati locali",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            shell,
+            text=(
+                "Questa selezione è separata da stampa ed eliminazione. "
+                "Sono inclusi anche i voucher scaduti perché nominalità, "
+                "destinatario e note locali servono alla reportistica storica."
+            ),
+            style="Muted.TLabel",
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", pady=(5, 12))
+
+        columns = ("voucher", "description", "status")
+        self.tree = ttk.Treeview(
+            shell,
+            columns=columns,
+            show="headings",
+            selectmode="extended",
+        )
+        self.tree.heading("voucher", text="Voucher")
+        self.tree.heading("description", text="Descrizione UniFi")
+        self.tree.heading("status", text="Stato")
+        self.tree.column("voucher", width=180)
+        self.tree.column("description", width=380)
+        self.tree.column("status", width=140, anchor="center")
+        self.tree.pack(fill="both", expand=True)
+
+        preselected = set(getattr(app, "checked_ids", set()))
+        selected_iids = []
+        for voucher in self.vouchers:
+            iid = str(voucher.id)
+            status = (
+                "Scaduto"
+                if str(getattr(voucher, "status", "") or "") == "EXPIRED"
+                else "Attivo"
+            )
+            self.tree.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(
+                    str(getattr(voucher, "code_formatted", "") or ""),
+                    str(getattr(voucher, "recipient", "") or "") or "—",
+                    status,
+                ),
+            )
+            if voucher.id in preselected:
+                selected_iids.append(iid)
+        if selected_iids:
+            self.tree.selection_set(selected_iids)
+
+        actions = ttk.Frame(shell)
+        actions.pack(fill="x", pady=(12, 0))
+        ttk.Button(
+            actions,
+            text="Annulla",
+            command=self.destroy,
+        ).pack(side="right")
+        ttk.Button(
+            actions,
+            text="Continua",
+            style="Accent.TButton",
+            command=self._accept,
+        ).pack(side="right", padx=(0, 8))
+
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.wait_window(self)
+
+    def _accept(self) -> None:
+        selected = set(self.tree.selection())
+        if not selected:
+            messagebox.showinfo(
+                "Dati locali",
+                "Selezionare almeno un voucher.",
+                parent=self,
+            )
+            return
+        self.result = tuple(
+            voucher
+            for voucher in self.vouchers
+            if str(voucher.id) in selected
+        )
+        self.destroy()
+
+
 class LocalDataDialog(tk.Toplevel):
     """Batch editor that never writes controller-owned voucher fields."""
 
@@ -296,12 +414,22 @@ class LocalDataMixin:
     """Expose local metadata batch editing from the voucher workspace."""
 
     def edit_selected_local_data(self) -> None:
-        selected = self.selected()
-        if not selected:
+        candidates = local_data_selection_candidates(
+            getattr(self, "vouchers", ())
+        )
+        if not candidates:
             messagebox.showinfo(
                 "Dati locali",
-                "Selezionare almeno un voucher attivo.",
+                "Non ci sono voucher disponibili per la controller corrente.",
                 parent=self,
             )
             return
-        LocalDataDialog(self, selected, parent=self)
+
+        selector = LocalDataSelectionDialog(
+            self,
+            candidates,
+            parent=self,
+        )
+        if not selector.result:
+            return
+        LocalDataDialog(self, selector.result, parent=self)
