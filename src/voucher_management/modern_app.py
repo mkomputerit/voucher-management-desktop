@@ -3166,12 +3166,12 @@ class ModernVoucherApp(
         for voucher in self.vouchers:
             expired = self._is_expired(voucher)
             stat = stats.get(voucher.code_formatted)
-            state = "SCADUTO" if expired else self._print_state(stat)
+            state = "SCADUTO" if expired else self._workspace_print_state(voucher, stat)
             if expired:
                 expired_count += 1
             else:
                 active += 1
-                if state != "STAMPATO":
+                if state in {"DA STAMPARE", "PDF CREATO"}:
                     to_print += 1
             if voucher.used > 0:
                 used += 1
@@ -3293,7 +3293,7 @@ class ModernVoucherApp(
             return "break"
         tree.focus_set()
         tree.focus(iid)
-        if self._is_expired(voucher):
+        if self._is_expired(voucher) or not self._voucher_alignment_ready(voucher):
             self.bell()
             return "break"
 
@@ -3320,7 +3320,7 @@ class ModernVoucherApp(
         voucher = mapping.get(tree.focus())
         if voucher is None:
             return "break"
-        if self._is_expired(voucher):
+        if self._is_expired(voucher) or not self._voucher_alignment_ready(voucher):
             self.bell()
             return "break"
         if voucher.id in self.checked_ids:
@@ -3411,7 +3411,7 @@ class ModernVoucherApp(
         self.tree.focus_set()
         self.tree.focus(iid)
         voucher = self.by_iid[iid]
-        if self._is_expired(voucher):
+        if self._is_expired(voucher) or not self._voucher_alignment_ready(voucher):
             self.bell()
             return "break"
         if voucher.id in self.checked_ids:
@@ -3464,25 +3464,87 @@ class ModernVoucherApp(
         self._search_after = None
         self.populate()
 
+    def _refresh_workspace_print_state_cache(self) -> None:
+        """Load the local alignment/print facts for the active UniFi snapshot."""
+
+        if self.active_controller_id is None:
+            self._workspace_print_state_by_unifi_id = {}
+            return
+        rows = self.database.connection.execute(
+            """SELECT unifi_id, alignment_completed_at, print_state
+               FROM vouchers
+               WHERE controller_id=? AND archived_at IS NULL""",
+            (int(self.active_controller_id),),
+        ).fetchall()
+        self._workspace_print_state_by_unifi_id = {
+            str(row["unifi_id"]): (
+                bool(str(row["alignment_completed_at"] or "").strip()),
+                str(row["print_state"] or "UNKNOWN").strip().upper(),
+            )
+            for row in rows
+        }
+
+    def _workspace_print_state(self, voucher, stat) -> str:
+        """Resolve operator state from durable alignment facts, never by guess."""
+
+        local = getattr(
+            self,
+            "_workspace_print_state_by_unifi_id",
+            {},
+        ).get(str(voucher.id))
+        if local is None or not local[0]:
+            return "DA ALLINEARE"
+
+        print_state = local[1]
+        if print_state == "PRINTED":
+            return "STAMPATO"
+        if print_state == "UNKNOWN":
+            return "NON DETERMINABILE"
+        if print_state != "NOT_PRINTED":
+            return "NON DETERMINABILE"
+
+        # Once the local lifecycle positively says NOT_PRINTED, the HMAC/PDF
+        # history can refine the preparation state without inventing a print.
+        if stat and stat.print_jobs:
+            return "STAMPATO"
+        if stat and stat.generated_documents:
+            return "PDF CREATO"
+        return "DA STAMPARE"
+
+    def _voucher_alignment_ready(self, voucher) -> bool:
+        local = getattr(
+            self,
+            "_workspace_print_state_by_unifi_id",
+            {},
+        ).get(str(voucher.id))
+        return bool(local is not None and local[0])
+
     def populate(self) -> None:
         """Render vouchers newest-first using UniFi creation time as reference."""
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.by_iid = {}
         filt, query = self.filter_var.get(), self.search_var.get().strip().lower()
+        self._refresh_workspace_print_state_cache()
         stats = self._history_stats_for(self.vouchers)
         if stats is None:
             self.count_var.set("Cronologia non disponibile  •  0 selezionati")
             self._refresh_controller_workspace_status()
             return
-        valid_ids = {v.id for v in self.vouchers if not self._is_expired(v)}
+        valid_ids = {
+            v.id
+            for v in self.vouchers
+            if not self._is_expired(v) and self._voucher_alignment_ready(v)
+        }
         self.checked_ids.intersection_update(valid_ids)
         candidates = []
         for voucher in self.vouchers:
             expired = self._is_expired(voucher)
             stat = stats.get(voucher.code_formatted)
-            state = "SCADUTO" if expired else self._print_state(stat)
-            if filt == "Da stampare" and (expired or state == "STAMPATO"):
+            state = "SCADUTO" if expired else self._workspace_print_state(voucher, stat)
+            if filt == "Da stampare" and (
+                expired or state not in {"DA STAMPARE", "PDF CREATO"}
+            ):
                 continue
             if filt == "Attivi" and expired:
                 continue
@@ -3511,7 +3573,16 @@ class ModernVoucherApp(
         stats = self._history_stats_for(self.vouchers)
         if stats is None:
             return
-        self.checked_ids = {v.id for v in self.vouchers if not self._is_expired(v) and self._print_state(stats.get(v.code_formatted)) in {"DA STAMPARE", "PDF CREATO"}}
+        self._refresh_workspace_print_state_cache()
+        self.checked_ids = {
+            v.id
+            for v in self.vouchers
+            if not self._is_expired(v)
+            and self._workspace_print_state(
+                v,
+                stats.get(v.code_formatted),
+            ) in {"DA STAMPARE", "PDF CREATO"}
+        }
         self.filter_var.set("Da stampare")
         self.populate()
 
