@@ -719,3 +719,89 @@ def test_legacy_and_live_prints_are_renumbered_chronologically_after_merge(tmp_p
         ]
     finally:
         db.close()
+
+
+def test_legacy_identity_is_not_merged_when_live_creation_is_later_than_legacy_evidence(
+    tmp_path,
+):
+    db = Database(tmp_path / "legacy-temporal-guard.sqlite")
+    db.initialize()
+    legacy_controller = db.create_controller(
+        name="Archivio",
+        api_root="legacy-backup://temporal-guard",
+        created_at="2026-06-01T08:00:00+00:00",
+    )
+    live_controller = db.create_controller(
+        name="Reception",
+        api_root="https://controller.example",
+        created_at="2027-01-01T08:00:00+00:00",
+    )
+    try:
+        legacy_id = db.upsert_voucher(
+            controller_id=legacy_controller,
+            unifi_id="legacy-old",
+            code="12345-67890",
+            created_at="2026-06-01T08:00:00+00:00",
+            imported_at="2026-06-02T08:00:00+00:00",
+            last_synced_at="2026-06-02T08:00:00+00:00",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET usage_observed=0, present_on_controller=0 WHERE id=?",
+                (legacy_id,),
+            )
+        db.record_print_audit(
+            controller_id=legacy_controller,
+            audit_id="legacy-temporal-print",
+            codes=["12345-67890"],
+            output_file="legacy.pdf",
+            document_copies=1,
+            printed_at="2026-06-01T09:00:00+00:00",
+            windows_user="MIGRATION",
+        )
+
+        later_live = ApiVoucher(
+            id="live-reused-code",
+            code="1234567890",
+            recipient="Nuovo voucher",
+            duration_minutes=60,
+            create_time=1_798_761_600,  # 2027-01-01 UTC
+            quota=1,
+            used=0,
+            status="VALID_MULTI",
+            start_time=0,
+            end_time=0,
+        )
+        persist_successful_snapshot(
+            db,
+            controller_id=live_controller,
+            vouchers=[later_live],
+            observed_at="2027-01-02T08:00:00+00:00",
+            sync_uuid="sync-temporal-guard",
+        )
+
+        rows = db.connection.execute(
+            """SELECT id, controller_id
+               FROM vouchers
+               WHERE REPLACE(code, '-', '')='1234567890'
+               ORDER BY id"""
+        ).fetchall()
+        assert len(rows) == 2
+        live_id = next(
+            int(row["id"])
+            for row in rows
+            if int(row["controller_id"]) == live_controller
+        )
+        review = db.connection.execute(
+            """SELECT details_json
+               FROM voucher_events
+               WHERE voucher_id=?
+                 AND event_type='LEGACY_IDENTITY_REVIEW_REQUIRED'""",
+            (live_id,),
+        ).fetchone()
+        assert review is not None
+        assert "live_created_after_legacy_evidence" in review["details_json"]
+        assert db.print_summary(live_id).print_jobs == 0
+        assert db.print_summary(legacy_id).print_jobs == 1
+    finally:
+        db.close()
