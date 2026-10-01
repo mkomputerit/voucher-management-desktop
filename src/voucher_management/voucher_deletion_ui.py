@@ -9,6 +9,7 @@ from tkinter import messagebox, simpledialog
 
 from .create_reporting_recovery import reconcile_pending_create_reporting_to_path
 from .preparation_deletion import (
+    MAX_PREPARATION_DELETE_REASON,
     preparation_delete_facts,
     record_preparation_delete_requests_to_path,
 )
@@ -180,6 +181,14 @@ class VoucherDeletionMixin:
             messagebox.showwarning(
                 "Motivazione obbligatoria",
                 "Inserire una motivazione prima di cancellare il voucher.",
+                parent=self,
+            )
+            return
+        if len(reason) > MAX_PREPARATION_DELETE_REASON:
+            messagebox.showwarning(
+                "Motivazione troppo lunga",
+                "La motivazione non può superare "
+                f"{MAX_PREPARATION_DELETE_REASON} caratteri.",
                 parent=self,
             )
             return
