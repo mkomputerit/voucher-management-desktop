@@ -390,6 +390,7 @@ def reconcile_pending_security_revocations(
     live_voucher_ids: set[str] | frozenset[str],
     observed_at: str,
     windows_user: str,
+    connection=None,
 ) -> tuple[int, ...]:
     """Confirm pending revocations that are absent from a fresh full snapshot.
 
@@ -401,7 +402,8 @@ def reconcile_pending_security_revocations(
     """
 
     live_ids = {str(value).strip() for value in live_voucher_ids if str(value).strip()}
-    pending = database.connection.execute(
+    query_db = connection if connection is not None else database.connection
+    pending = query_db.execute(
         """SELECT DISTINCT v.id, v.unifi_id
            FROM vouchers AS v
            JOIN voucher_events AS req
@@ -436,7 +438,8 @@ def reconcile_pending_security_revocations(
         if not operator:
             raise ValueError("windows user is required")
         placeholders = ",".join("?" for _ in still_present)
-        with database.transaction() as db:
+
+        def close_present(db) -> None:
             rows = db.execute(
                 f"""SELECT id, voucher_id
                     FROM voucher_events
@@ -465,6 +468,12 @@ def reconcile_pending_security_revocations(
                     ),
                 )
 
+        if connection is not None:
+            close_present(connection)
+        else:
+            with database.transaction() as db:
+                close_present(db)
+
     if not confirmed:
         return ()
     return record_security_revocations(
@@ -473,6 +482,7 @@ def reconcile_pending_security_revocations(
         revoked_at=observed_at,
         windows_user=windows_user,
         confirmation_source="fresh_snapshot_absent",
+        connection=connection,
     )
 
 
@@ -507,6 +517,7 @@ def record_security_revocations(
     revoked_at: str,
     windows_user: str,
     confirmation_source: str = "delete_response",
+    connection=None,
 ) -> tuple[int, ...]:
     """Record a security revocation outcome without minimizing local data.
 
@@ -526,8 +537,8 @@ def record_security_revocations(
     if not requested:
         return ()
 
-    recorded: list[int] = []
-    with database.transaction() as db:
+    def write(db) -> tuple[int, ...]:
+        recorded: list[int] = []
         for voucher_id in requested:
             row = db.execute(
                 """SELECT id FROM vouchers
@@ -597,5 +608,9 @@ def record_security_revocations(
                     ),
                 )
             recorded.append(voucher_id)
+        return tuple(recorded)
 
-    return tuple(recorded)
+    if connection is not None:
+        return write(connection)
+    with database.transaction() as db:
+        return write(db)
