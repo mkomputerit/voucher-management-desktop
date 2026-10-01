@@ -28,7 +28,13 @@ from .pdf_fonts import (
     validate_pdf_text_support,
 )
 from .report_policy import voucher_code_policy
-from .reporting import ReportDataset, ReportKind, nominal_label, origin_label
+from .reporting import (
+    ReportDataset,
+    ReportKind,
+    nominal_label,
+    origin_label,
+    print_state_label,
+)
 
 
 def _validate_dataset_policy(dataset: ReportDataset) -> None:
@@ -97,6 +103,7 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Voucher scaduti", str(totals.expired_vouchers)],
         ["Voucher stampati", str(totals.printed_vouchers)],
         ["Mai stampati", str(totals.never_printed)],
+        ["Stato stampa non determinabile", str(totals.print_unknown_vouchers)],
         ["Stampati mai osservati utilizzati", str(totals.printed_never_used)],
         ["Stampati con utilizzo non determinabile", str(totals.printed_usage_unknown)],
         ["Voucher nominali", str(totals.nominal_vouchers)],
@@ -128,6 +135,7 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
             "Dato uso",
             "Utilizzato",
             "Guest autorizzati",
+            "Stato stampa",
             "Stampe",
             "Copie",
             "Ristampe",
@@ -162,6 +170,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
                 else ("No" if row.usage_observed else "—")
             ),
             str(row.authorized_guest_count) if row.usage_observed else "—",
+            print_state_label(row),
             str(row.print_jobs),
             str(row.physical_copies),
             str(row.reprint_jobs),
