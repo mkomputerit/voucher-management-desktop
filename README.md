@@ -64,16 +64,18 @@ The application currently provides:
 - explicit per-voucher nominal classification at creation time. This flag is
   local to Voucher Management and is never sent to UniFi; older vouchers remain
   unclassified rather than being guessed from the recipient text;
-- review-driven voucher retention with a conservative 180-day default:
-  used, printed or PDF-generated vouchers are protected, while approved
-  old/absent unused rows with no generated PDF are minimized without deleting
-  their historical audit record; unverifiable HMAC history blocks retention
-  rather than guessing whether a credential-bearing document exists;
+- review-driven voucher retention with an age threshold chosen explicitly by
+  the operator: used, printed or PDF-generated vouchers remain protected and
+  old/absent rows can be reviewed, but privacy minimization is disabled in this
+  release and no voucher code or local historical metadata is removed;
+- explicit security revocation for printed vouchers left without positive-use
+  evidence beyond an operator-selected threshold. Each candidate is re-read
+  live from UniFi immediately before deletion; confirmed/reconciled outcomes
+  remain in the local audit with the voucher code and local metadata preserved;
 - explicit pre-SQLite ZIP history import whose verified generated/printed legacy
-  evidence is retained outside ordinary minimization; the confirmation warns
-  that deliberately importing an old archive can restore clear data that had
-  previously been minimized when no durable identity remains to prove it is the
-  same historical voucher;
+  evidence is retained as historical print/PDF evidence. A legacy PDF
+  generation event never proves that Voucher Management originally created the
+  voucher on the controller;
 - persistent custom logo library;
 - installation-scoped first-run onboarding for genuinely new 5.0 deployments,
   including explicit UniFi/TLS verification and migration precedence;
