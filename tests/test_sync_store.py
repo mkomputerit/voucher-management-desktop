@@ -118,6 +118,47 @@ def test_new_controller_voucher_keeps_unifi_facts_and_does_not_invent_local_clas
         db.close()
 
 
+def test_reobserved_unknown_voucher_is_classified_as_controller_import(tmp_path):
+    db = Database(tmp_path / "reobserved-origin.sqlite")
+    db.initialize()
+    controller = db.create_controller(
+        name="Reception",
+        api_root="https://controller.example",
+        created_at="t",
+    )
+    try:
+        voucher_id = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="legacy-live",
+            code="CODE-legacy-live",
+            name="Ospite storico",
+            created_at="2023-11-14T22:13:20+00:00",
+            imported_at="2026-09-30T08:00:00+00:00",
+            last_synced_at="2026-09-30T08:00:00+00:00",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET origin='UNKNOWN' WHERE id=?",
+                (voucher_id,),
+            )
+
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("legacy-live", recipient="Ospite storico")],
+            observed_at="2026-10-01T08:00:00+00:00",
+            sync_uuid="reobserve-unknown",
+        )
+
+        row = db.connection.execute(
+            "SELECT origin FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["origin"] == "CONTROLLER"
+    finally:
+        db.close()
+
+
 def test_controller_absence_preserves_local_alignment_and_history(tmp_path):
     db = Database(tmp_path / "absence-history.sqlite")
     db.initialize()
