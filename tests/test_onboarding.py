@@ -152,8 +152,7 @@ def test_complete_onboarding_persists_profile_thresholds_and_nonsecret_settings(
 
         assert unprinted_warning_days(database) == 14
         assert security_revoke_days(database) == 30
-        assert unprinted_warning_days(database) is None
-        assert security_revoke_days(database) is None
+        assert database.retention_policy() is None
 
         assert settings["structure_name"] == "Sala Assemblee"
         assert settings["wifi_title"] == "Wi-Fi ospiti"
@@ -221,6 +220,8 @@ def test_sqlite_failure_never_writes_completion_marker(tmp_path, monkeypatch):
             )
 
         assert database.installation_profile() is None
+        assert unprinted_warning_days(database) is None
+        assert security_revoke_days(database) is None
         assert database.retention_policy() is None
         assert onboarding_state(database) is OnboardingState.REQUIRED
 
