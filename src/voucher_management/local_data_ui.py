@@ -39,6 +39,7 @@ class LocalDataDialog(tk.Toplevel):
         self.apply_notes = tk.BooleanVar(value=False)
         self.notes = tk.StringVar()
         self.status = tk.StringVar()
+        self._prefill_common_values()
 
         shell = ttk.Frame(self, padding=20)
         shell.pack(fill="both", expand=True)
@@ -143,6 +144,46 @@ class LocalDataDialog(tk.Toplevel):
         width = min(max(720, self.winfo_reqwidth() + 24), self.winfo_screenwidth() - 80)
         height = min(max(360, self.winfo_reqheight() + 24), self.winfo_screenheight() - 100)
         self.geometry(f"{width}x{height}")
+
+    def _prefill_common_values(self) -> None:
+        """Show common local values without implicitly applying them."""
+
+        controller_id = getattr(self.app, "active_controller_id", None)
+        if controller_id is None or not self.vouchers:
+            return
+        remote_ids = tuple(
+            dict.fromkeys(str(voucher.id).strip() for voucher in self.vouchers)
+        )
+        if not remote_ids:
+            return
+        placeholders = ",".join("?" for _ in remote_ids)
+        rows = self.app.database.connection.execute(
+            f"""SELECT assigned_to, notes, is_nominal
+                FROM vouchers
+                WHERE controller_id=?
+                  AND unifi_id IN ({placeholders})
+                  AND archived_at IS NULL""",
+            (int(controller_id), *remote_ids),
+        ).fetchall()
+        if len(rows) != len(remote_ids):
+            return
+
+        assigned_values = {str(row["assigned_to"] or "") for row in rows}
+        notes_values = {str(row["notes"] or "") for row in rows}
+        nominal_values = {
+            None if row["is_nominal"] is None else bool(row["is_nominal"])
+            for row in rows
+        }
+        if len(assigned_values) == 1:
+            self.assigned_to.set(next(iter(assigned_values)))
+        if len(notes_values) == 1:
+            self.notes.set(next(iter(notes_values)))
+        if len(nominal_values) == 1:
+            common = next(iter(nominal_values))
+            for label, value in _NOMINAL_VALUES.items():
+                if value is common:
+                    self.nominal.set(label)
+                    break
 
     def _sync_state(self) -> None:
         self.assigned_entry.state(
