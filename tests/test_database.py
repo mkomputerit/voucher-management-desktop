@@ -216,6 +216,39 @@ def test_print_summary_counts_jobs_and_physical_copies(tmp_path):
         db.close()
 
 
+def test_print_summary_preserves_known_legacy_print_without_audit(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="legacy-printed",
+            code="LEGACY",
+            imported_at="t",
+            last_synced_at="t",
+        )
+        db.connection.execute(
+            """UPDATE vouchers
+               SET print_state='PRINTED',
+                   alignment_completed_at='2026-09-25T09:00:00Z'
+               WHERE id=?""",
+            (voucher,),
+        )
+        db.connection.commit()
+
+        summary = db.print_summary(voucher)
+
+        assert summary.print_jobs == 0
+        assert summary.known_printed_without_audit is True
+        assert summary.last_printed_at == ""
+    finally:
+        db.close()
+
+
 def test_get_or_create_controller_reuses_api_root_without_credentials(tmp_path):
     db = _db(tmp_path)
     try:
