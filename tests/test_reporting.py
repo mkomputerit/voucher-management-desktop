@@ -789,8 +789,8 @@ def test_report_keeps_local_recipient_distinct_from_unifi_description(tmp_path):
         )
         with db.transaction() as tx:
             tx.execute(
-                "UPDATE vouchers SET assigned_to=? WHERE id=?",
-                ("Destinatario locale", voucher_id),
+                "UPDATE vouchers SET assigned_to=?, notes=? WHERE id=?",
+                ("Destinatario locale", "Nota amministrativa", voucher_id),
             )
 
         dataset = build_report_dataset(
@@ -801,6 +801,7 @@ def test_report_keeps_local_recipient_distinct_from_unifi_description(tmp_path):
         row = next(item for item in dataset.rows if item.voucher_id == voucher_id)
         assert row.recipient == "Destinatario locale"
         assert row.unifi_name == "Descrizione controller"
+        assert row.local_notes == "Nota amministrativa"
     finally:
         db.close()
 
