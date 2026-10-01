@@ -114,6 +114,7 @@ class ReportRow:
     nominality_redacted: bool = False
     security_revoked_at: str = ""
     unifi_id: str = ""
+    unifi_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -389,7 +390,7 @@ def build_report_dataset(
         nominal_raw = raw["is_nominal"]
         is_nominal = None if nominal_raw is None else bool(nominal_raw)
         assigned_to = str(raw["assigned_to"] or "").strip()
-        recipient = assigned_to or str(raw["name"] or "").strip()
+        unifi_name = str(raw["name"] or "").strip()
         ever_used = bool(raw["ever_used"])
         usage_observed = bool(raw["usage_observed"])
         nominality_redacted = bool(raw["nominality_redacted"])
@@ -405,7 +406,7 @@ def build_report_dataset(
             voucher_id=voucher_id,
             controller_name=controller_name,
             code=clear_code,
-            recipient=recipient,
+            recipient=assigned_to,
             created_at=str(raw["created_at"] or ""),
             imported_at=str(raw["imported_at"] or ""),
             expires_at=str(raw["expires_at"] or ""),
@@ -435,6 +436,7 @@ def build_report_dataset(
             nominality_redacted=nominality_redacted,
             security_revoked_at=str(raw["security_revoked_at"] or ""),
             unifi_id=unifi_id,
+            unifi_name=unifi_name,
         )
         if _matches(kind, row):
             rows.append(row)
