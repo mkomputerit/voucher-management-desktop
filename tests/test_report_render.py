@@ -202,6 +202,7 @@ def test_csv_neutralizes_formula_like_operator_text(tmp_path: Path):
         dataset.rows[0],
         controller_name='=HYPERLINK("https://example.invalid")',
         recipient="+SUM(1,1)",
+        preparation_delete_reason="=DELETE_REASON",
         print_operators=("@operator",),
     )
     dangerous = replace(
@@ -215,6 +216,7 @@ def test_csv_neutralizes_formula_like_operator_text(tmp_path: Path):
     payload = output.read_text(encoding="utf-8-sig")
     assert "'=HYPERLINK" in payload
     assert "'+SUM" in payload
+    assert "'=DELETE_REASON" in payload
     assert "'@operator" in payload
     assert "'-controller" in payload
 
