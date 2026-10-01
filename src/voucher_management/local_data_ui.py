@@ -294,8 +294,8 @@ class AlignmentDialog(tk.Toplevel):
     def __init__(self, app):
         super().__init__(app)
         self.app = app
-        self.nominal = tk.StringVar(value="Non nominale")
-        self.print_state = tk.StringVar(value="Non determinabile")
+        self.nominal = tk.StringVar(value="")
+        self.print_state = tk.StringVar(value="")
         self.status = tk.StringVar()
         self._candidates = {}
         self.title("Allinea voucher")
@@ -412,6 +412,21 @@ class AlignmentDialog(tk.Toplevel):
             messagebox.showinfo(
                 "Allinea voucher",
                 "Selezionare almeno un voucher.",
+                parent=self,
+            )
+            return
+
+        if self.nominal.get() not in _NOMINAL_VALUES:
+            messagebox.showinfo(
+                "Allinea voucher",
+                "Selezionare Nominale oppure Non nominale.",
+                parent=self,
+            )
+            return
+        if self.print_state.get() not in _PRINT_VALUES:
+            messagebox.showinfo(
+                "Allinea voucher",
+                "Selezionare lo stato stampa.",
                 parent=self,
             )
             return
