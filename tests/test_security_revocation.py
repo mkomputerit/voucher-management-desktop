@@ -98,7 +98,7 @@ def test_printed_unused_candidate_requires_observation_after_print(tmp_path):
         db.close()
 
 
-def test_candidate_prefers_local_recipient_without_changing_unifi_name(tmp_path):
+def test_candidate_uses_unifi_name_even_if_deprecated_local_recipient_exists(tmp_path):
     db, controller = _database(tmp_path)
     try:
         voucher_id = _voucher(db, controller)
@@ -106,13 +106,13 @@ def test_candidate_prefers_local_recipient_without_changing_unifi_name(tmp_path)
         set_security_revoke_days(db, days=10, now=NOW)
         with db.transaction() as tx:
             tx.execute(
-                "UPDATE vouchers SET assigned_to='Mario Rossi' WHERE id=?",
+                "UPDATE vouchers SET assigned_to='Valore locale obsoleto' WHERE id=?",
                 (voucher_id,),
             )
 
         candidate = security_revocation_candidates(db, now=NOW)[0]
 
-        assert candidate.recipient == "Mario Rossi"
+        assert candidate.recipient == "Guest"
         assert db.connection.execute(
             "SELECT name FROM vouchers WHERE id=?",
             (voucher_id,),
