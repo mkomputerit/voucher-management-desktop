@@ -9,6 +9,7 @@ from voucher_management import report_ui
 from voucher_management.report_policy import ReportPurpose
 from voucher_management.report_ui import ReportDialog
 from voucher_management.reporting import ReportDataset, ReportKind, ReportTotals
+from voucher_management.report_temp import REPORT_TEMP_MARKER, REPORT_TEMP_PREFIX
 
 
 def _empty_dataset() -> ReportDataset:
@@ -108,17 +109,20 @@ def test_report_query_and_renderer_both_run_inside_background_worker(
     assert tasks[0]["label"] == "Generazione report…"
     assert tasks[0]["busy_scope"] is dialog._set_busy
 
-    result = tasks[0]["worker"]()
+    result_path, result_dataset = tasks[0]["worker"]()
 
-    assert result.suffix == ".pdf"
-    assert result != output  # PDF preview does not prompt for a save location.
+    assert result_path.suffix == ".pdf"
+    assert result_path != output  # PDF preview does not prompt for a save location.
+    assert result_path.parent.name.startswith(REPORT_TEMP_PREFIX)
+    assert (result_path.parent / REPORT_TEMP_MARKER).is_file()
+    assert result_dataset is dataset
     assert events[0][0] == "build"
     assert events[0][1] == database_path
     assert events[0][2]["controller_id"] == 7
     assert events[1] == (
         "render",
         dataset,
-        result,
+        result_path,
         "Sala Assemblee",
     )
 
@@ -158,6 +162,7 @@ def test_report_choices_cover_historical_core_and_data_quality_views():
     assert "Creati con questo software - nessun utilizzo rilevato" in labels
     assert "Stampati" in labels
     assert "Nominali" in labels
+    assert "Non nominali" in labels
     assert "Non classificati" in labels
     assert "Uso non determinabile" in labels
     assert "Origine creazione non determinabile" in labels

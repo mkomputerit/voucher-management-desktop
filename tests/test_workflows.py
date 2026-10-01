@@ -701,3 +701,25 @@ def test_resolve_existing_pdf_reports_no_recorded_document(tmp_path):
         )
 
     assert captured.value.reason == "not_recorded"
+
+
+def test_delete_policy_blocks_usage_unknown_even_when_live_counter_is_zero():
+    current = voucher("v-unknown", "4545454545", used=0, status="VALID_MULTI")
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        usage_unknown_ids=frozenset({"v-unknown"}),
+    )
+    assert len(blocked) == 1
+    assert blocked[0].policy.reason == "usage_unknown"
+
+
+def test_delete_policy_blocks_durable_legacy_generation_evidence():
+    current = voucher("v-generated", "5656565656", used=0, status="VALID_MULTI")
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        durable_generated_ids=frozenset({"v-generated"}),
+    )
+    assert len(blocked) == 1
+    assert blocked[0].policy.reason == "generated"

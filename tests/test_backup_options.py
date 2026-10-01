@@ -79,8 +79,14 @@ def test_wizard_persists_backup_options_and_export_drops_machine_specific_folder
     database.initialize()
     store = SettingsStore(tmp_path / "settings.json")
     try:
-        draft = OnboardingDraft(installation_name="Reception", structure_name="Example Venue",
-                                backup_directory=str(tmp_path / "copies"), backup_on_close=False)
+        draft = OnboardingDraft(
+            installation_name="Reception",
+            structure_name="Example Venue",
+            backup_directory=str(tmp_path / "copies"),
+            backup_on_close=False,
+            unused_unprinted_days=180,
+            printed_unused_revoke_days=60,
+        )
         complete_onboarding(database, store, draft, observed_at="2026-09-29T06:00:00+00:00")
         settings = store.load()
         assert settings["backup_directory"] == str(tmp_path / "copies")
@@ -170,6 +176,8 @@ def test_real_wizard_reaches_backup_step_and_saves_it_at_completion(tmp_path, mo
         wizard._controller_result = SimpleNamespace(client=object(), info={}, vouchers=[], observed_at="2026-09-29T06:00:00+00:00")
         wizard._next()
         assert wizard.page == wizard.PAGE_RETENTION
+        wizard.retention_days_var.set("180")
+        wizard.security_revoke_days_var.set("60")
         wizard._next()
         assert wizard.page == wizard.PAGE_BACKUP
         wizard.backup_directory_var.set(str(tmp_path / "chosen"))

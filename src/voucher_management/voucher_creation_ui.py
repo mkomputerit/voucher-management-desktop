@@ -110,13 +110,27 @@ class VoucherCreationMixin:
                 "pending_create_reporting",
                 database_path.with_name("pending_create_reporting.json"),
             )
+            recovery_ids = [voucher.id for voucher in outcome.created]
+            nominal = bool(params.get("is_nominal", False))
+
+            guard_recovery_error = None
+            try:
+                self.create_guard.store_reporting_recovery(
+                    controller_id=controller_id,
+                    voucher_ids=recovery_ids,
+                    is_nominal=nominal,
+                    confirmed_at=observed_at,
+                )
+            except Exception as exc:
+                guard_recovery_error = exc
+
             marker_error = None
             try:
                 write_pending_create_reporting(
                     marker_path,
                     controller_id=controller_id,
-                    voucher_ids=[voucher.id for voucher in outcome.created],
-                    is_nominal=bool(params.get("is_nominal", False)),
+                    voucher_ids=recovery_ids,
+                    is_nominal=nominal,
                     confirmed_at=observed_at,
                 )
             except Exception as exc:
@@ -130,17 +144,23 @@ class VoucherCreationMixin:
                     created=list(outcome.created),
                     snapshot_complete=outcome.snapshot_complete,
                     snapshot_observed=outcome.refresh_error is None,
-                    is_nominal=bool(params.get("is_nominal", False)),
+                    is_nominal=nominal,
                     observed_at=observed_at,
                 )
             except Exception as exc:
                 # The controller result is already confirmed. Preserve the
                 # durable reconciliation marker when available and never
                 # recast this as a failed/uncertain POST.
+                recovery_error = (
+                    marker_error
+                    if marker_error is not None
+                    and guard_recovery_error is not None
+                    else None
+                )
                 return replace(
                     outcome,
                     local_persistence_error=exc,
-                    recovery_marker_error=marker_error,
+                    recovery_marker_error=recovery_error,
                 )
 
             # SQLite now contains the same confirmed UUID/classification facts
@@ -203,20 +223,29 @@ class VoucherCreationMixin:
                 )
                 return
 
-            try:
-                self.create_guard.clear()
-            except CreateMutationGuardError as exc:
-                self.logger.warning(
-                    "create_guard_clear_failed type=%s",
-                    type(exc).__name__,
-                )
-                messagebox.showwarning(
-                    "Voucher creati",
-                    "La creazione è stata completata, ma il blocco "
-                    "anti-ripetizione non può essere rimosso automaticamente. "
-                    "Eseguire Aggiorna prima di una nuova creazione.",
-                    parent=self,
-                )
+            # A reporting marker represents exactly one pending create.
+            # Any SQLite persistence failure must therefore keep the mutation
+            # guard active until a successful refresh reconciles that marker.
+            # Allowing another create here could collide with/erase the single
+            # pending reconciliation record.
+            keep_create_guard = (
+                getattr(outcome, "local_persistence_error", None) is not None
+            )
+            if not keep_create_guard:
+                try:
+                    self.create_guard.clear()
+                except CreateMutationGuardError as exc:
+                    self.logger.warning(
+                        "create_guard_clear_failed type=%s",
+                        type(exc).__name__,
+                    )
+                    messagebox.showwarning(
+                        "Voucher creati",
+                        "La creazione è stata completata, ma il blocco "
+                        "anti-ripetizione non può essere rimosso automaticamente. "
+                        "Eseguire Aggiorna prima di una nuova creazione.",
+                        parent=self,
+                    )
 
             self.checked_ids = {
                 voucher.id

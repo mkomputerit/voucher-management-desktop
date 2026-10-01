@@ -16,6 +16,7 @@ from voucher_management.backup import (
     BackupService,
 )
 from voucher_management.backup_crypto import PROTECTED_BACKUP_MAGIC
+from voucher_management.database import SCHEMA_VERSION
 from voucher_management.security.history_key import HistoryKeyStore
 from voucher_management.single_instance import SingleInstanceGuard
 
@@ -99,6 +100,7 @@ class BackupServiceTests(unittest.TestCase):
             "0123456789abcdef0123456789abcdef",
         )
         self.assertTrue(rollback.exists())
+        self.assertEqual(rollback.parent, self.paths.user_root / ".maintenance")
 
         with zipfile.ZipFile(backup, "r") as archive:
             manifest = json.loads(
@@ -452,7 +454,11 @@ class BackupServiceTests(unittest.TestCase):
 
         self.assertEqual(settings_path.read_bytes(), before)
         self.assertEqual(
-            list(self.paths.user_root.parent.glob("VoucherManagement-rollback-*")),
+            list(
+                (self.paths.user_root / ".maintenance").glob(
+                    "VoucherManagement-rollback-*"
+                )
+            ),
             [],
         )
 
@@ -654,7 +660,11 @@ class BackupServiceTests(unittest.TestCase):
         real_copytree = shutil.copytree
 
         def failing_copytree(src, dst, *args, **kwargs):
-            if Path(src) == self.paths.user_root:
+            src_path = Path(src)
+            if (
+                src_path == self.paths.user_root / "config"
+                and "voucher-management-rollback-build-" in str(Path(dst))
+            ):
                 Path(dst).mkdir(parents=True, exist_ok=True)
                 (Path(dst) / "partial.txt").write_text(
                     "partial",
@@ -706,7 +716,9 @@ class BackupServiceTests(unittest.TestCase):
 
         self.assertEqual(settings_path.read_bytes(), before)
         rollbacks = list(
-            self.paths.user_root.parent.glob("VoucherManagement-rollback-*")
+            (self.paths.user_root / ".maintenance").glob(
+                "VoucherManagement-rollback-*"
+            )
         )
         self.assertEqual(rollbacks, [])
 
@@ -1082,3 +1094,71 @@ class BackupServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    def test_restore_rejects_newer_sqlite_schema_before_live_data_changes(self):
+        database = self.paths.user_root / "data" / "voucher_management.db"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+            connection.commit()
+        finally:
+            connection.close()
+
+        backup = Path(self.temp.name) / "future-schema.zip"
+        self.service.create(backup)
+
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.commit()
+        finally:
+            connection.close()
+        sentinel = self.paths.user_root / "config" / "live-sentinel.txt"
+        sentinel.write_text("keep-live-state", encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "schema dati più recente",
+        ):
+            self.service.restore(backup)
+
+        self.assertEqual(
+            sentinel.read_text(encoding="utf-8"),
+            "keep-live-state",
+        )
+        connection = sqlite3.connect(database)
+        try:
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                SCHEMA_VERSION,
+            )
+        finally:
+            connection.close()
+
+
+def test_restore_rollback_ignores_unmanaged_root_files(tmp_path):
+    root = tmp_path / "managed-root"
+    for name in ("config", "data", "Print", "Loghi"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    (root / "config" / "settings.json").write_text("{}", encoding="utf-8")
+    (root / "data" / "history.jsonl").write_text("", encoding="utf-8")
+    unmanaged = root / "unmanaged-root-file.txt"
+    unmanaged.write_text("leave-me-alone", encoding="utf-8")
+
+    paths = SimpleNamespace(user_root=root, data=root / "data")
+    service = BackupService(paths)
+    backup = tmp_path / "managed-only-rollback.zip"
+    service.create(backup)
+
+    with patch(
+        "voucher_management.backup.shutil.copytree",
+        wraps=__import__("shutil").copytree,
+    ) as copied:
+        rollback = service.restore(backup)
+
+    copied_sources = {Path(call.args[0]) for call in copied.call_args_list}
+    assert root not in copied_sources
+    assert unmanaged not in copied_sources
+    assert unmanaged.read_text(encoding="utf-8") == "leave-me-alone"
+    assert not (rollback / unmanaged.name).exists()

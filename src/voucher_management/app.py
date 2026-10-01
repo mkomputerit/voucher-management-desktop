@@ -23,6 +23,7 @@ from tkinter import messagebox
 from . import __version__
 from .background_tasks import BackgroundResult, start_background_task
 from .create_reporting_recovery import (
+    clear_pending_create_reporting,
     reconcile_pending_create_reporting,
     reconcile_pending_create_reporting_to_path,
 )
@@ -37,6 +38,7 @@ from .pdf_fonts import UnsupportedPdfTextError
 from .pdf_preview import PdfPreview
 from .pdf_render import render_batch_pdf
 from .reprint_policy import evaluate_reprint
+from .report_temp import cleanup_orphan_report_temps
 from .print_archive import (
     DEFAULT_PRINT_RETENTION_DAYS,
     cleanup_orphan_pdf_temps,
@@ -184,17 +186,49 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             int(self.settings.get("log_retention_days", 30)),
         )
         try:
-            if reconcile_pending_create_reporting(
-                self.database,
-                self.paths.pending_create_reporting,
-            ):
-                self.logger.info("create_reporting_reconciled_on_startup")
+            guard_recovery = self.create_guard.has_reporting_recovery
         except Exception as exc:
+            guard_recovery = False
             self.logger.error(
-                "create_reporting_startup_reconcile_failed type=%s",
+                "create_guard_recovery_probe_failed type=%s",
                 type(exc).__name__,
             )
+
+        if guard_recovery:
+            try:
+                if reconcile_pending_create_reporting(
+                    self.database,
+                    self.create_guard.path,
+                ):
+                    clear_pending_create_reporting(
+                        self.paths.pending_create_reporting
+                    )
+                    self.logger.info(
+                        "create_reporting_guard_reconciled_on_startup"
+                    )
+            except Exception as exc:
+                self.logger.error(
+                    "create_reporting_guard_reconcile_failed type=%s",
+                    type(exc).__name__,
+                )
+        else:
+            try:
+                if reconcile_pending_create_reporting(
+                    self.database,
+                    self.paths.pending_create_reporting,
+                ):
+                    if self.create_guard.pending:
+                        self.create_guard.clear()
+                    self.logger.info(
+                        "create_reporting_reconciled_on_startup"
+                    )
+            except Exception as exc:
+                self.logger.error(
+                    "create_reporting_startup_reconcile_failed type=%s",
+                    type(exc).__name__,
+                )
         self._cleanup_orphan_pdf_temps()
+        self._cleanup_orphan_report_temps()
         self.history = HistoryService(
             self.paths.history,
             self.paths.history_lock,
@@ -380,6 +414,24 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         if removed:
             self.logger.info(
                 "pdf_temp_cleanup removed=%d",
+                len(removed),
+            )
+
+    def _cleanup_orphan_report_temps(self) -> None:
+        """Remove marked administrative report previews left by hard crashes."""
+
+        try:
+            removed = cleanup_orphan_report_temps()
+        except Exception as exc:
+            self.logger.warning(
+                "report_temp_cleanup_skipped type=%s",
+                type(exc).__name__,
+            )
+            return
+
+        if removed:
+            self.logger.info(
+                "report_temp_cleanup removed=%d",
                 len(removed),
             )
 
@@ -658,11 +710,40 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                             "pending_create_reporting.json"
                         ),
                     )
-                    reconcile_pending_create_reporting_to_path(
-                        database_path,
-                        marker_path,
-                        controller_id=resolved_controller_id,
-                    )
+                    marker_was_pending = Path(marker_path).exists()
+                    guard_probe_error = None
+                    try:
+                        guard_recovery_pending = (
+                            self.create_guard.has_reporting_recovery
+                        )
+                    except CreateMutationGuardError as exc:
+                        guard_recovery_pending = False
+                        guard_probe_error = exc
+
+                    reconciled = False
+                    if guard_recovery_pending:
+                        reconciled = reconcile_pending_create_reporting_to_path(
+                            database_path,
+                            self.create_guard.path,
+                            controller_id=resolved_controller_id,
+                        )
+                        if reconciled and marker_was_pending:
+                            clear_pending_create_reporting(marker_path)
+                    elif marker_was_pending:
+                        reconciled = reconcile_pending_create_reporting_to_path(
+                            database_path,
+                            marker_path,
+                            controller_id=resolved_controller_id,
+                        )
+                    elif guard_probe_error is not None:
+                        raise guard_probe_error
+
+                    if (
+                        marker_was_pending or guard_recovery_pending
+                    ) and not reconciled:
+                        raise RuntimeError(
+                            "Pending create reporting marker is not reconciled"
+                        )
             except Exception as exc:
                 archive_error = exc
             return snapshot, archive_error, resolved_controller_id
@@ -719,20 +800,21 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     "incompleti finché un aggiornamento non riesce.",
                     parent=self,
                 )
-            try:
-                self.create_guard.clear()
-            except CreateMutationGuardError as exc:
-                self.logger.warning(
-                    "create_guard_clear_failed type=%s",
-                    type(exc).__name__,
-                )
-                messagebox.showwarning(
-                    "Creazione ancora sospesa",
-                    "L'elenco è stato aggiornato, ma non è stato possibile "
-                    "rimuovere il blocco anti-ripetizione. La creazione resta "
-                    "sospesa per sicurezza.",
-                    parent=self,
-                )
+            if archive_error is None:
+                try:
+                    self.create_guard.clear()
+                except CreateMutationGuardError as exc:
+                    self.logger.warning(
+                        "create_guard_clear_failed type=%s",
+                        type(exc).__name__,
+                    )
+                    messagebox.showwarning(
+                        "Creazione ancora sospesa",
+                        "L'elenco è stato aggiornato, ma non è stato possibile "
+                        "rimuovere il blocco anti-ripetizione. La creazione resta "
+                        "sospesa per sicurezza.",
+                        parent=self,
+                    )
             self.populate()
 
         def failed(exc: Exception) -> None:
@@ -996,6 +1078,30 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             windows_user=self._windows_operator_identity(),
         )
 
+    def _historical_voucher_candidates(self) -> list[ApiVoucher]:
+        """Merge live vouchers with durable non-minimized controller history.
+
+        Historical PDF linkage and crash recovery must use the same candidate
+        population. A voucher that disappeared from the current controller list
+        can still be physically present inside an archived PDF and therefore
+        must remain auditable.
+        """
+
+        candidates_by_id = {
+            str(item.id): item for item in self.vouchers
+        }
+        controller_id = getattr(self, "active_controller_id", None)
+        if controller_id is None:
+            return list(candidates_by_id.values())
+
+        durable = load_local_vouchers(
+            self.database,
+            controller_id=int(controller_id),
+        )
+        for item in durable:
+            candidates_by_id.setdefault(str(item.id), item)
+        return list(candidates_by_id.values())
+
     def _record_pending_print_sqlite_and_finalize(self) -> bool:
         """Complete SQLite audit for a submitted crash-recovery marker.
 
@@ -1004,8 +1110,9 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         resolved only against voucher codes already present in SQLite.
         """
 
+        candidates = VoucherApp._historical_voucher_candidates(self)
         details = self.history.resolve_pending_print(
-            [voucher.code_formatted for voucher in self.vouchers],
+            [voucher.code_formatted for voucher in candidates],
             self.settings,
         )
         if details is None:
@@ -1066,9 +1173,25 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         voucher = selected[0]
         try:
+            historical_candidates = VoucherApp._historical_voucher_candidates(self)
+        except Exception as exc:
+            self.logger.warning(
+                "historical_pdf_candidates_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Apri PDF",
+                "Impossibile verificare tutti i voucher storicamente "
+                "collegabili al PDF. L'anteprima viene sospesa per evitare "
+                "una ristampa con audit incompleto.",
+                parent=self,
+            )
+            return
+
+        try:
             resolved = resolve_existing_pdf(
                 voucher,
-                self.vouchers,
+                historical_candidates,
                 history=self.history,
                 settings=self.settings,
                 prints_root=self.paths.prints,

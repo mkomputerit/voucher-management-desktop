@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from voucher_management.report_policy import ReportPurpose
-from voucher_management.report_render import render_report_csv, render_report_pdf
+from voucher_management.report_render import (
+    _detail_column_weights,
+    _detail_headers,
+    render_report_csv,
+    render_report_pdf,
+)
 from voucher_management.reporting import (
     ReportDataset,
     ReportKind,
@@ -23,6 +28,7 @@ def _dataset(*, code="", kind=ReportKind.FULL_HISTORY, purpose=ReportPurpose.AUD
         controller_name="Sala & Test <Nord>",
         code=code,
         recipient="Mario & Lucia <ospiti>",
+        controller_description="EMI06 & Sala <Nord>",
         created_at="2026-09-01T09:00:00+00:00",
         imported_at="2026-09-01T09:05:00+00:00",
         expires_at="2026-10-01T09:00:00+00:00",
@@ -88,9 +94,13 @@ def test_detail_csv_hides_codes_but_keeps_sanitized_administrative_detail(tmp_pa
     assert "Voucher;" not in payload
     assert "12345-67890" not in payload
     assert "Mario & Lucia <ospiti>" in payload
-    assert "Guest autorizzati (somma ultimo conteggio);2" in payload
+    assert "Guest autorizzati (somma ultimo conteggio osservato);2" in payload
+    assert "Descrizione UniFi;Destinatario locale;Origine" in payload
+    assert "EMI06 & Sala <Nord>" in payload
     assert "Dato uso;Utilizzato;Guest autorizzati" in payload
-    assert "Dati controller aggiornati fino a;" in payload
+    assert "Operatore stampa" in payload
+    assert "Operatori" not in payload
+    assert "Ultima presenza osservata per voucher - più recente;" in payload
     assert "26/09/2026" in payload
 
 
@@ -204,3 +214,38 @@ def test_csv_neutralizes_formula_like_operator_text(tmp_path: Path):
     assert "'+SUM" in payload
     assert "'@operator" in payload
     assert "'-controller" in payload
+
+
+def test_pdf_column_weights_follow_detail_headers():
+    dataset = _dataset()
+    assert len(_detail_column_weights(dataset)) == len(_detail_headers(dataset))
+
+    handoff = replace(
+        dataset,
+        purpose=ReportPurpose.OPERATIONAL_HANDOFF,
+        code_exposed=True,
+        rows=(replace(dataset.rows[0], code="12345-67890"),),
+    )
+    assert len(_detail_column_weights(handoff)) == len(_detail_headers(handoff))
+
+
+def test_authorized_empty_handoff_keeps_code_column_without_failing(tmp_path: Path):
+    base = _dataset()
+    empty = replace(
+        base,
+        purpose=ReportPurpose.OPERATIONAL_HANDOFF,
+        code_exposed=True,
+        rows=(),
+        totals=replace(base.totals, vouchers=0),
+    )
+    output = tmp_path / "empty-handoff.csv"
+    render_report_csv(empty, output)
+    payload = output.read_text(encoding="utf-8-sig")
+    assert output.exists()
+    assert "Voucher" in payload
+
+
+def test_report_operator_column_is_explicitly_print_operator():
+    headers = _detail_headers(_dataset())
+    assert "Operatore stampa" in headers
+    assert "Operatori" not in headers

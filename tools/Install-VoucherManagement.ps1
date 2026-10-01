@@ -61,14 +61,40 @@ function Set-SharedDataAcl {
         throw "Reset ACL ProgramData non riuscito."
     }
 
-    $rules = @(
+    # Apply inheritable rights to the root first. Files require direct
+    # effective rights (OI/CI are inheritance flags and do not grant access to
+    # the file object itself), so descendants are normalized explicitly below.
+    $rootRules = @(
         "*S-1-5-18:(OI)(CI)F",
         "*S-1-5-32-544:(OI)(CI)F",
         "*$($OperatorGroupSid.Value):(OI)(CI)M"
     )
-    & icacls.exe $Path /inheritance:r /grant:r $rules /T /C | Out-Null
+    & icacls.exe $Path /inheritance:r /grant:r $rootRules | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw "Configurazione ACL ProgramData non riuscita."
+        throw "Configurazione ACL root ProgramData non riuscita."
+    }
+
+    $children = @(
+        Get-ChildItem -LiteralPath $Path -Force -Recurse
+    )
+    foreach ($child in $children) {
+        if ($child.PSIsContainer) {
+            $childRules = @(
+                "*S-1-5-18:(OI)(CI)F",
+                "*S-1-5-32-544:(OI)(CI)F",
+                "*$($OperatorGroupSid.Value):(OI)(CI)M"
+            )
+        } else {
+            $childRules = @(
+                "*S-1-5-18:F",
+                "*S-1-5-32-544:F",
+                "*$($OperatorGroupSid.Value):M"
+            )
+        }
+        & icacls.exe $child.FullName /inheritance:r /grant:r $childRules | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Configurazione ACL ProgramData non riuscita: $($child.FullName)"
+        }
     }
 
     $allowedSids = @(

@@ -20,12 +20,12 @@ def evaluate_delete_policy(
     voucher: ApiVoucher,
     stats: PrintStats | None,
 ) -> DeletePolicyResult:
-    """Allow cleanup only before issue/use of the voucher.
+    """Allow generic cleanup only before issue/use of the voucher.
 
-    Voucher Management deliberately does not implement revocation. A voucher
-    that has been used, is reported as in-use by the controller, or has a local
-    physical print event is outside the cleanup workflow and must be handled by
-    the network administrator.
+    Issued, printed or used vouchers are deliberately excluded from this
+    generic delete action. Printed-unused credentials may instead enter the
+    separate reviewed security-revocation workflow when its evidence and
+    operator-configured policy requirements are satisfied.
     """
     if voucher.status == "EXPIRED":
         return DeletePolicyResult(False, "expired")
@@ -35,5 +35,11 @@ def evaluate_delete_policy(
 
     if stats and stats.print_jobs > 0:
         return DeletePolicyResult(False, "printed")
+
+    if stats and (
+        stats.generated_documents > 0
+        or stats.generated_copies > 0
+    ):
+        return DeletePolicyResult(False, "generated")
 
     return DeletePolicyResult(True)

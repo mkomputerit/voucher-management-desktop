@@ -937,6 +937,63 @@ def test_two_legacy_print_rows_without_job_id_become_distinct_jobs(tmp_path):
         db.close()
 
 
+def test_legacy_print_sequence_orders_timezone_offsets_chronologically(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "print",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:30:00+02:00",
+                "output_file": "Legacy.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+                "print_job_id": "legacy-offset-job",
+            },
+        ],
+    )
+    db, controller_id, voucher_id = _database_with_voucher(tmp_path)
+    try:
+        db.record_print_audit(
+            controller_id=controller_id,
+            audit_id="current-utc-job",
+            codes=["12345-67890"],
+            output_file="Current.pdf",
+            document_copies=1,
+            printed_at="2026-09-20T09:00:00+00:00",
+            windows_user="operator",
+        )
+        _plan_and_apply(
+            db=db,
+            history=history,
+            controller_id=controller_id,
+        )
+
+        materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:32:00+00:00",
+        )
+
+        rows = db.connection.execute(
+            """SELECT pj.print_job_uuid, vp.print_sequence, vp.is_reprint
+               FROM voucher_prints AS vp
+               JOIN print_jobs AS pj ON pj.id=vp.print_job_id
+               WHERE vp.voucher_id=?
+               ORDER BY vp.print_sequence""",
+            (voucher_id,),
+        ).fetchall()
+        assert [
+            (row["print_job_uuid"], row["print_sequence"], row["is_reprint"])
+            for row in rows
+        ] == [
+            ("legacy-offset-job", 1, 0),
+            ("current-utc-job", 2, 1),
+        ]
+    finally:
+        db.close()
+
+
 def test_generate_without_event_id_materializes_end_to_end(tmp_path):
     history = tmp_path / "history.jsonl"
     _write_history(

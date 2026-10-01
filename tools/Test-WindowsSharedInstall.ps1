@@ -10,6 +10,9 @@ $installRoot = Join-Path $root "Program Files\Voucher Management"
 $dataRoot = Join-Path $root "ProgramData\VoucherManagement"
 $groupName = "VMTest-" + [Guid]::NewGuid().ToString("N").Substring(0, 12)
 $operatorUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$limitedUser = "VMOp-" + [Guid]::NewGuid().ToString("N").Substring(0, 10)
+$limitedPasswordPlain = "VmT3st!" + [Guid]::NewGuid().ToString("N") + "aA9"
+$limitedUserCreated = $false
 $installer = Join-Path $PSScriptRoot "Install-VoucherManagement.ps1"
 $uninstaller = Join-Path $PSScriptRoot "Uninstall-VoucherManagement.ps1"
 
@@ -55,6 +58,10 @@ try {
     New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
     $legacyFile = Join-Path $dataRoot "legacy-permissive.txt"
     Set-Content -LiteralPath $legacyFile -Value "legacy" -Encoding ascii
+    $legacyDataDir = Join-Path $dataRoot "data"
+    New-Item -ItemType Directory -Force -Path $legacyDataDir | Out-Null
+    $legacyManagedFile = Join-Path $legacyDataDir "legacy-managed.txt"
+    Set-Content -LiteralPath $legacyManagedFile -Value "legacy-managed" -Encoding ascii
 
     # Seed the exact upgrade hazard under review: explicit third-party grants
     # on an already-existing ProgramData tree. The installer must remove them.
@@ -102,6 +109,61 @@ try {
     if ($legacyAcl.Rights.ContainsKey("S-1-1-0")) {
         throw "ACE esplicita Everyone sopravvissuta su un file preesistente."
     }
+    $managedLegacyAcl = Get-AllowRightsBySid -Path $legacyManagedFile
+    Assert-Rights -Rights $managedLegacyAcl.Rights -Sid $group.SID.Value -Expected ([Security.AccessControl.FileSystemRights]::Modify)
+    if ($managedLegacyAcl.Rights.ContainsKey("S-1-1-0")) {
+        throw "ACE esplicita Everyone sopravvissuta su un file gestito preesistente."
+    }
+
+    # Exercise backup/restore with a real non-admin process whose only
+    # application privilege comes from the operator group created above.
+    $securePassword = ConvertTo-SecureString $limitedPasswordPlain -AsPlainText -Force
+    New-LocalUser -Name $limitedUser -Password $securePassword -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
+    $limitedUserCreated = $true
+    Add-LocalGroupMember -Group $groupName -Member $limitedUser
+
+    $operatorWork = Join-Path $root "operator-work"
+    New-Item -ItemType Directory -Force -Path $operatorWork | Out-Null
+    $groupSid = $group.SID.Value
+    & icacls.exe $operatorWork /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*${groupSid}:(OI)(CI)M" /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Impossibile predisporre la cartella di lavoro del test operatore."
+    }
+
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $python = Join-Path $repoRoot ".venv\Scripts\python.exe"
+    $restoreProbe = Join-Path $PSScriptRoot "test_shared_restore_operator.py"
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        throw "Python venv non disponibile per il test restore operatore."
+    }
+
+    # The test account needs only read/execute access to the checked-out code
+    # and venv. Product-data write access still comes exclusively from the
+    # installed operator-group ACL on DataRoot.
+    & icacls.exe $repoRoot /grant "*${groupSid}:(OI)(CI)RX" /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Impossibile concedere accesso di sola lettura alla sonda operatore."
+    }
+
+    $credential = [PSCredential]::new("$env:COMPUTERNAME\$limitedUser", $securePassword)
+    $argumentLine = ('"' + $restoreProbe + '" "' + $repoRoot + '" "' + $dataRoot + '" "' + $operatorWork + '"')
+    $stdoutPath = Join-Path $operatorWork "restore-probe.stdout.txt"
+    $stderrPath = Join-Path $operatorWork "restore-probe.stderr.txt"
+    $limitedProcess = Start-Process -FilePath $python -ArgumentList $argumentLine -Credential $credential -WorkingDirectory $repoRoot -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -Wait -PassThru
+    if ($limitedProcess.ExitCode -ne 0) {
+        $probeOut = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
+        $probeErr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { "" }
+        Write-Host "Limited operator probe stdout:"
+        Write-Host $probeOut
+        Write-Host "Limited operator probe stderr:"
+        Write-Host $probeErr
+        throw "Il restore come operatore limitato è fallito con exit code $($limitedProcess.ExitCode)."
+    }
+
+    $maintenance = Join-Path $dataRoot ".maintenance"
+    if (-not (Test-Path -LiteralPath $maintenance -PathType Container)) {
+        throw "Il restore operatore non ha creato la workspace .maintenance."
+    }
 
     $sentinel = Join-Path $dataRoot "upgrade-preserves-data.txt"
     Set-Content -LiteralPath $sentinel -Value "preserve" -Encoding ascii
@@ -146,6 +208,9 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    if ($limitedUserCreated -and (Get-LocalUser -Name $limitedUser -ErrorAction SilentlyContinue)) {
+        Remove-LocalUser -Name $limitedUser -ErrorAction SilentlyContinue
+    }
     if (Get-LocalGroup -Name $groupName -ErrorAction SilentlyContinue) {
         Remove-LocalGroup -Name $groupName -ErrorAction SilentlyContinue
     }

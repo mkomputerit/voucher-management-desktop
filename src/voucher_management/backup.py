@@ -27,6 +27,7 @@ from .backup_crypto import (
     is_protected_backup,
     validate_backup_password,
 )
+from .database import SCHEMA_VERSION
 from .identity import PRODUCT_DIR_NAME, PRODUCT_NAME
 from .logo_validation import (
     LogoLimitError,
@@ -174,7 +175,13 @@ class BackupService:
 
     @staticmethod
     def _copytree_without_live_sqlite(source: Path, destination: Path) -> None:
-        """Copy application data while excluding live SQLite/WAL artifacts."""
+        """Copy only restore-managed data, excluding live SQLite/WAL artifacts.
+
+        Restore itself replaces only config/data/Print/Loghi.  Rollback must
+        therefore snapshot exactly that same managed set rather than traversing
+        unrelated root files (logs, deployment artifacts, stale legacy files)
+        that a limited shared-install operator may not be able to read.
+        """
 
         database_names = {
             "voucher_management.db",
@@ -183,13 +190,13 @@ class BackupService:
             "voucher_management.db-journal",
         }
 
-        source_root = Path(source).resolve()
+        source_root = Path(source)
+        destination_root = Path(destination)
+        destination_root.mkdir(parents=True, exist_ok=True)
 
         def ignore(path, names):
-            current = Path(path).resolve()
+            current = Path(path)
             ignored: list[str] = []
-            if current == source_root and "application.instance.lock" in names:
-                ignored.append("application.instance.lock")
             if current.name == "data":
                 ignored.extend(
                     name for name in names if name in database_names
@@ -198,7 +205,15 @@ class BackupService:
                     ignored.append("application.instance.lock")
             return ignored
 
-        shutil.copytree(source, destination, ignore=ignore)
+        for dirname in BackupService.DATA_DIRS:
+            managed_source = source_root / dirname
+            if not managed_source.exists():
+                continue
+            shutil.copytree(
+                managed_source,
+                destination_root / dirname,
+                ignore=ignore,
+            )
 
     def consume_restore_warnings(self) -> tuple[str, ...]:
         """Return and clear non-fatal compatibility warnings from restore."""
@@ -799,6 +814,37 @@ class BackupService:
                 "Backup danneggiato o non riconosciuto"
             ) from exc
 
+    def _restore_workspace_root(self) -> Path:
+        """Return a restore workspace writable by an installed operator.
+
+        Shared installs grant Modify on the application data root, not on its
+        ProgramData parent. Keeping staging/rollback under a dedicated
+        application-owned directory therefore works for non-admin operators and
+        remains outside the managed data directories that are replaced.
+        """
+
+        root = Path(self.paths.user_root) / ".maintenance"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    @staticmethod
+    def _assert_restore_schema_supported(manifest: dict) -> None:
+        """Reject snapshots from a newer application before live data changes."""
+
+        sqlite_meta = manifest.get("sqlite_snapshot")
+        if sqlite_meta is None:
+            return
+        if not isinstance(sqlite_meta, dict):
+            raise BackupError("Metadati snapshot SQLite incoerenti")
+        version = sqlite_meta.get("user_version")
+        if type(version) is not int or version < 0:
+            raise BackupError("Versione schema SQLite del backup non valida")
+        if version > SCHEMA_VERSION:
+            raise BackupError(
+                "Il backup usa uno schema dati più recente di quello supportato "
+                "da questa versione di Voucher Management"
+            )
+
     def _extract_validated(self, source, staging: Path) -> dict:
         manifest = self.validate(source)
         source = self._zip_source(source)
@@ -950,26 +996,30 @@ class BackupService:
         mistaken for a usable rollback source.
         """
         self._restore_warnings.clear()
-        parent = self.paths.user_root.parent
-        rollback = parent / (
+        had_existing_root = self.paths.user_root.exists()
+        workspace = self._restore_workspace_root()
+        rollback = workspace / (
             f"{PRODUCT_DIR_NAME}-rollback-"
             f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
         )
         staging = Path(
-            tempfile.mkdtemp(prefix="voucher-management-restore-", dir=parent)
+            tempfile.mkdtemp(
+                prefix="voucher-management-restore-",
+                dir=workspace,
+            )
         )
         rollback_build_root = Path(
             tempfile.mkdtemp(
                 prefix="voucher-management-rollback-build-",
-                dir=parent,
+                dir=workspace,
             )
         )
         rollback_build = rollback_build_root / "snapshot"
-        had_existing_root = self.paths.user_root.exists()
         rollback_ready = False
 
         try:
             manifest = self._extract_validated(source, staging)
+            self._assert_restore_schema_supported(manifest)
             if not (staging / "config" / "settings.json").is_file():
                 raise BackupError(
                     "Il backup non contiene la configurazione"

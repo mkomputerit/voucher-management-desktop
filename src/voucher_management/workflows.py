@@ -410,13 +410,19 @@ def evaluate_delete_candidates(
     stats_by_code: Mapping[str, PrintStats],
     *,
     historically_used_ids: frozenset[str] = frozenset(),
+    usage_unknown_ids: frozenset[str] = frozenset(),
+    durable_generated_ids: frozenset[str] = frozenset(),
 ) -> list[DeleteBlock]:
     """Return every voucher blocked by controller or durable local lifecycle facts."""
 
     blocked: list[DeleteBlock] = []
     for voucher in vouchers:
-        if voucher.id in historically_used_ids:
+        if voucher.id in usage_unknown_ids:
+            result = DeletePolicyResult(False, "usage_unknown")
+        elif voucher.id in historically_used_ids:
             result = DeletePolicyResult(False, "in_use")
+        elif voucher.id in durable_generated_ids:
+            result = DeletePolicyResult(False, "generated")
         else:
             result = evaluate_delete_policy(
                 voucher,

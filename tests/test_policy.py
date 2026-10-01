@@ -56,3 +56,12 @@ def test_expired_voucher_cannot_be_deleted():
 def test_ui_expiry_guard_uses_controller_state_not_translated_label():
     assert VoucherApp._is_expired(voucher(status="EXPIRED")) is True
     assert VoucherApp._is_expired(voucher(status="VALID_MULTI")) is False
+
+
+def test_generated_pdf_blocks_controller_cleanup_before_physical_print():
+    result = evaluate_delete_policy(
+        voucher(),
+        PrintStats(generated_documents=1, generated_copies=1),
+    )
+    assert result.allowed is False
+    assert result.reason == "generated"

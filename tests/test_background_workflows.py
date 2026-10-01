@@ -12,6 +12,8 @@ from voucher_management import data_maintenance_ui as maintenance_ui
 from voucher_management import voucher_creation_ui as creation_ui
 from voucher_management.app import VoucherApp
 from voucher_management.background_tasks import BackgroundResult
+from voucher_management.create_reporting_recovery import load_pending_create_reporting
+from voucher_management.mutation_guard import CreateMutationGuard
 
 
 def exchange_phrase(marker: str = "p") -> str:
@@ -358,7 +360,7 @@ def test_confirmed_create_is_not_reported_failed_when_local_reporting_persistenc
     result = tasks[0]["worker"]()
     tasks[0]["success"](result)
 
-    assert guard.pending is False
+    assert guard.pending is True
     assert network_errors == []
     assert warnings
     assert "UniFi ha confermato la creazione" in warnings[-1][0][1]
@@ -489,8 +491,8 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
 def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
     monkeypatch,
 ):
-    current = SimpleNamespace(code_formatted="11111-22222")
-    other = SimpleNamespace(code_formatted="33333-44444")
+    current = SimpleNamespace(id="v1", code_formatted="11111-22222")
+    other = SimpleNamespace(id="v2", code_formatted="33333-44444")
     resolved = SimpleNamespace(
         path=Path("Print") / "Voucher_Group.pdf",
         linked_codes=("11111-22222", "33333-44444"),
@@ -507,6 +509,7 @@ def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
             (path, list(codes))
         ),
         logger=SimpleNamespace(error=lambda *args: None),
+        _historical_voucher_candidates=lambda: [current, other],
     )
 
     def resolve(voucher, all_vouchers, **kwargs):
@@ -536,7 +539,7 @@ def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
 
 def test_open_existing_pdf_maps_typed_linkage_failure_to_ui(monkeypatch):
     shown = []
-    current = SimpleNamespace(code_formatted="11111-22222")
+    current = SimpleNamespace(id="v1", code_formatted="11111-22222")
     fake = SimpleNamespace(
         selected=lambda: [current],
         vouchers=[current],
@@ -545,6 +548,7 @@ def test_open_existing_pdf_maps_typed_linkage_failure_to_ui(monkeypatch):
         paths=SimpleNamespace(prints=Path("Print")),
         _preview=lambda *args: None,
         logger=SimpleNamespace(error=lambda *args: None),
+        _historical_voucher_candidates=lambda: [current],
     )
     monkeypatch.setattr(
         app_module,
@@ -1287,3 +1291,538 @@ def test_backup_audit_writer_uses_basename_and_verified_metadata():
     assert calls[0]["status"] == "SUCCESS"
     assert calls[0]["sha256"] == "a" * 64
     assert calls[0]["error_summary"] is None
+
+
+def test_confirmed_create_keeps_guard_when_sqlite_and_recovery_marker_both_fail(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+
+    class Guard:
+        def __init__(self):
+            self.pending = False
+
+        def begin(self):
+            self.pending = True
+
+        def clear(self):
+            self.pending = False
+            return True
+
+    guard = Guard()
+    created = SimpleNamespace(id="created-hard-failure")
+    fake = SimpleNamespace(
+        client=object(),
+        create_guard=guard,
+        vouchers=[],
+        checked_ids=set(),
+        filter_var=SimpleNamespace(set=lambda value: None),
+        populate=lambda: None,
+        active_controller_id=7,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_reporting=tmp_path / "pending-create-reporting.json",
+        ),
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "CreateDialog",
+        lambda parent: SimpleNamespace(
+            result={"recipient": "Guest", "quantity": 1, "is_nominal": False}
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "create_vouchers_and_refresh",
+        lambda *args, **kwargs: creation_ui.CreateOutcome(
+            created=(created,),
+            vouchers=(created,),
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "write_pending_create_reporting",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("marker unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "persist_create_result_to_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("sqlite unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: None,
+    )
+
+    VoucherApp.create(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert guard.pending is True
+
+
+def test_manual_refresh_keeps_create_guard_when_local_snapshot_persistence_fails(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+
+    class Guard:
+        pending = True
+
+        def clear(self):
+            self.pending = False
+            return True
+
+    guard = Guard()
+    fake = SimpleNamespace(
+        client=object(),
+        active_controller_id=9,
+        paths=SimpleNamespace(database=tmp_path / "db.sqlite"),
+        create_guard=guard,
+        vouchers=[],
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        populate=lambda: None,
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app_module, "refresh_vouchers", lambda current: ["fresh"])
+    monkeypatch.setattr(
+        app_module,
+        "persist_refresh_snapshot_to_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("sqlite unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: None,
+    )
+
+    VoucherApp.refresh(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert guard.pending is True
+
+
+def test_open_existing_pdf_includes_absent_durable_vouchers_in_linkage(
+    monkeypatch,
+):
+    current = SimpleNamespace(id="live", code_formatted="11111-22222")
+    historical = SimpleNamespace(id="absent", code_formatted="33333-44444")
+    captured = {}
+    fake = SimpleNamespace(
+        selected=lambda: [current],
+        vouchers=[current],
+        active_controller_id=7,
+        database=object(),
+        history=object(),
+        settings={},
+        paths=SimpleNamespace(prints=Path("Print")),
+        _preview=lambda *args: None,
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+    )
+    fake._historical_voucher_candidates = lambda: VoucherApp._historical_voucher_candidates(fake)
+    monkeypatch.setattr(
+        app_module,
+        "load_local_vouchers",
+        lambda database, controller_id: [current, historical],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "resolve_existing_pdf",
+        lambda voucher, all_vouchers, **kwargs: (
+            captured.setdefault(
+                "ids",
+                {item.id for item in all_vouchers},
+            )
+            or SimpleNamespace(
+                path=Path("Print") / "Voucher_Group.pdf",
+                linked_codes=("11111-22222", "33333-44444"),
+            )
+        ),
+    )
+
+    # Use an explicit resolver to avoid the setdefault return value above.
+    def resolve(voucher, all_vouchers, **kwargs):
+        captured["ids"] = {item.id for item in all_vouchers}
+        return SimpleNamespace(
+            path=Path("Print") / "Voucher_Group.pdf",
+            linked_codes=("11111-22222", "33333-44444"),
+        )
+
+    monkeypatch.setattr(app_module, "resolve_existing_pdf", resolve)
+    VoucherApp.open_existing_pdf(fake)
+
+    assert captured["ids"] == {"live", "absent"}
+
+
+def test_pending_print_recovery_uses_durable_historical_candidates(monkeypatch):
+    live = SimpleNamespace(id="live", code_formatted="11111-22222")
+    absent = SimpleNamespace(id="absent", code_formatted="33333-44444")
+    seen = {}
+
+    class History:
+        def resolve_pending_print(self, candidate_codes, settings):
+            seen["codes"] = list(candidate_codes)
+            return None
+
+    fake = SimpleNamespace(
+        vouchers=[live],
+        active_controller_id=7,
+        database=object(),
+        history=History(),
+        settings={},
+    )
+    monkeypatch.setattr(
+        app_module,
+        "load_local_vouchers",
+        lambda database, controller_id: [live, absent],
+    )
+    fake._historical_voucher_candidates = lambda: VoucherApp._historical_voucher_candidates(fake)
+
+    assert VoucherApp._record_pending_print_sqlite_and_finalize(fake) is False
+    assert set(seen["codes"]) == {"11111-22222", "33333-44444"}
+
+
+def test_manual_refresh_keeps_guard_when_pending_reporting_marker_does_not_reconcile(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+
+    class Guard:
+        pending = True
+
+        def clear(self):
+            self.pending = False
+            return True
+
+    marker = tmp_path / "pending_create_reporting.json"
+    marker.write_text("{}", encoding="utf-8")
+    guard = Guard()
+    fake = SimpleNamespace(
+        client=object(),
+        active_controller_id=9,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_reporting=marker,
+        ),
+        create_guard=guard,
+        vouchers=[],
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        populate=lambda: None,
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app_module, "refresh_vouchers", lambda current: ["fresh"])
+    monkeypatch.setattr(
+        app_module,
+        "persist_refresh_snapshot_to_path",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "reconcile_pending_create_reporting_to_path",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: None,
+    )
+
+    VoucherApp.refresh(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert guard.pending is True
+
+
+def test_confirmed_create_uses_guard_as_recovery_when_primary_marker_and_sqlite_fail(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+    guard = CreateMutationGuard(tmp_path / "pending_create_guard")
+    created = SimpleNamespace(id="created-fallback")
+    marker = tmp_path / "pending_create_reporting.json"
+    fake = SimpleNamespace(
+        client=object(),
+        create_guard=guard,
+        vouchers=[],
+        checked_ids=set(),
+        filter_var=SimpleNamespace(set=lambda value: None),
+        populate=lambda: None,
+        active_controller_id=7,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_reporting=marker,
+        ),
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "CreateDialog",
+        lambda parent: SimpleNamespace(
+            result={
+                "recipient": "Guest",
+                "quantity": 1,
+                "is_nominal": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "create_vouchers_and_refresh",
+        lambda *args, **kwargs: creation_ui.CreateOutcome(
+            created=(created,),
+            vouchers=(created,),
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "write_pending_create_reporting",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("primary marker unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "persist_create_result_to_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("sqlite unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: None,
+    )
+
+    VoucherApp.create(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert guard.pending is True
+    assert guard.has_reporting_recovery is True
+    pending = load_pending_create_reporting(guard.path)
+    assert pending is not None
+    assert pending.voucher_ids == ("created-fallback",)
+    assert pending.is_nominal is True
+    assert result.local_persistence_error is not None
+    assert result.recovery_marker_error is None
+
+
+def test_refresh_reconciles_confirmed_create_recovery_from_guard(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+    guard = CreateMutationGuard(tmp_path / "pending_create_guard")
+    guard.begin()
+    guard.store_reporting_recovery(
+        controller_id=9,
+        voucher_ids=["created-fallback"],
+        is_nominal=False,
+        confirmed_at="2026-09-30T14:20:00+00:00",
+    )
+    marker = tmp_path / "pending_create_reporting.json"
+    calls = []
+    fake = SimpleNamespace(
+        client=object(),
+        active_controller_id=9,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_reporting=marker,
+        ),
+        create_guard=guard,
+        vouchers=[],
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        populate=lambda: None,
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app_module, "refresh_vouchers", lambda current: ["fresh"])
+    monkeypatch.setattr(
+        app_module,
+        "persist_refresh_snapshot_to_path",
+        lambda *args, **kwargs: None,
+    )
+
+    def reconcile(database_path, marker_path, *, controller_id=None):
+        calls.append((Path(marker_path), controller_id))
+        assert Path(marker_path) == guard.path
+        guard.clear()
+        return True
+
+    monkeypatch.setattr(
+        app_module,
+        "reconcile_pending_create_reporting_to_path",
+        reconcile,
+    )
+
+    VoucherApp.refresh(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert calls == [(guard.path, 9)]
+    assert guard.pending is False
+
+
+def test_refresh_prefers_valid_guard_recovery_over_redundant_primary_marker(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+    guard = CreateMutationGuard(tmp_path / "pending_create_guard")
+    guard.begin()
+    guard.store_reporting_recovery(
+        controller_id=9,
+        voucher_ids=["created-fallback"],
+        is_nominal=True,
+        confirmed_at="2026-09-30T14:30:00+00:00",
+    )
+    marker = tmp_path / "pending_create_reporting.json"
+    marker.write_text("{broken", encoding="utf-8")
+    calls = []
+    fake = SimpleNamespace(
+        client=object(),
+        active_controller_id=9,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_reporting=marker,
+        ),
+        create_guard=guard,
+        vouchers=[],
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        populate=lambda: None,
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app_module, "refresh_vouchers", lambda current: ["fresh"])
+    monkeypatch.setattr(
+        app_module,
+        "persist_refresh_snapshot_to_path",
+        lambda *args, **kwargs: None,
+    )
+
+    def reconcile(database_path, marker_path, *, controller_id=None):
+        calls.append(Path(marker_path))
+        assert Path(marker_path) == guard.path
+        guard.clear()
+        return True
+
+    monkeypatch.setattr(
+        app_module,
+        "reconcile_pending_create_reporting_to_path",
+        reconcile,
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: None,
+    )
+
+    VoucherApp.refresh(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert calls == [guard.path]
+    assert guard.pending is False
+    assert marker.exists() is False
+
+
+def test_refresh_uses_primary_marker_when_guard_recovery_is_corrupt(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+    guard = CreateMutationGuard(tmp_path / "pending_create_guard")
+    guard.begin()
+    guard.path.write_text('{"format":1,"controller_id":9', encoding="utf-8")
+    marker = tmp_path / "pending_create_reporting.json"
+    marker.write_text('{"format":1}', encoding="utf-8")
+    calls = []
+    fake = SimpleNamespace(
+        client=object(),
+        active_controller_id=9,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_reporting=marker,
+        ),
+        create_guard=guard,
+        vouchers=[],
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        populate=lambda: None,
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(app_module, "refresh_vouchers", lambda current: ["fresh"])
+    monkeypatch.setattr(
+        app_module,
+        "persist_refresh_snapshot_to_path",
+        lambda *args, **kwargs: None,
+    )
+
+    def reconcile(database_path, marker_path, *, controller_id=None):
+        calls.append(Path(marker_path))
+        assert Path(marker_path) == marker
+        marker.unlink()
+        return True
+
+    monkeypatch.setattr(
+        app_module,
+        "reconcile_pending_create_reporting_to_path",
+        reconcile,
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: None,
+    )
+
+    VoucherApp.refresh(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert calls == [marker]
+    assert guard.pending is False
+    assert marker.exists() is False

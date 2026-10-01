@@ -17,8 +17,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+from uuid import uuid4
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 BACKUP_AUDIT_DESTINATIONS = frozenset(
     {
@@ -104,6 +105,7 @@ CREATE TABLE IF NOT EXISTS vouchers (
     is_nominal INTEGER CHECK (is_nominal IS NULL OR is_nominal IN (0, 1)),
     nominality_redacted INTEGER NOT NULL DEFAULT 0
         CHECK (nominality_redacted IN (0, 1)),
+    revoked_for_security_at TEXT,
     archived_at TEXT,
     UNIQUE (controller_id, unifi_id)
 );
@@ -185,11 +187,40 @@ ON voucher_prints(voucher_id, printed_at);
 
 CREATE TABLE IF NOT EXISTS retention_policy (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    unused_unprinted_days INTEGER NOT NULL DEFAULT 180 CHECK (unused_unprinted_days >= 1),
+    unused_unprinted_days INTEGER
+        CHECK (unused_unprinted_days IS NULL OR unused_unprinted_days BETWEEN 1 AND 3650),
+    printed_unused_revoke_days INTEGER
+        CHECK (
+            printed_unused_revoke_days IS NULL
+            OR printed_unused_revoke_days BETWEEN 1 AND 3650
+        ),
+    configured INTEGER NOT NULL DEFAULT 0 CHECK (configured IN (0, 1)),
     protect_used INTEGER NOT NULL DEFAULT 1 CHECK (protect_used = 1),
     protect_printed INTEGER NOT NULL DEFAULT 1 CHECK (protect_printed = 1),
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    CHECK (
+        configured=0
+        OR (
+            unused_unprinted_days IS NOT NULL
+            AND printed_unused_revoke_days IS NOT NULL
+        )
+    )
 );
+
+CREATE TABLE IF NOT EXISTS security_revocations (
+    id INTEGER PRIMARY KEY,
+    operation_uuid TEXT NOT NULL,
+    voucher_id INTEGER NOT NULL REFERENCES vouchers(id),
+    requested_at TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    resolved_at TEXT,
+    status TEXT NOT NULL
+        CHECK (status IN ('PREPARED', 'CONFIRMED', 'CANCELLED')),
+    UNIQUE(operation_uuid, voucher_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_revocations_pending
+ON security_revocations(status, voucher_id);
 
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -344,6 +375,35 @@ SET origin='UNKNOWN'
 WHERE origin='LEGACY_APPLICATION';
 """
 
+
+MIGRATION_4_TO_5_POLICY_SQL = """
+ALTER TABLE vouchers ADD COLUMN revoked_for_security_at TEXT;
+ALTER TABLE retention_policy ADD COLUMN printed_unused_revoke_days INTEGER
+    CHECK (
+        printed_unused_revoke_days IS NULL
+        OR printed_unused_revoke_days BETWEEN 1 AND 3650
+    );
+ALTER TABLE retention_policy ADD COLUMN configured INTEGER NOT NULL DEFAULT 0
+    CHECK (configured IN (0, 1));
+"""
+
+
+MIGRATION_5_TO_6_SQL = """
+CREATE TABLE IF NOT EXISTS security_revocations (
+    id INTEGER PRIMARY KEY,
+    operation_uuid TEXT NOT NULL,
+    voucher_id INTEGER NOT NULL REFERENCES vouchers(id),
+    requested_at TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    resolved_at TEXT,
+    status TEXT NOT NULL
+        CHECK (status IN ('PREPARED', 'CONFIRMED', 'CANCELLED')),
+    UNIQUE(operation_uuid, voucher_id)
+);
+CREATE INDEX IF NOT EXISTS idx_security_revocations_pending
+ON security_revocations(status, voucher_id);
+"""
+
 @dataclass(frozen=True)
 class PrintAuditSummary:
     """Aggregated local print facts used by the duplicate-print warning."""
@@ -352,6 +412,41 @@ class PrintAuditSummary:
     physical_copies: int
     first_printed_at: str
     last_printed_at: str
+
+
+@dataclass(frozen=True)
+class ReportPrintJobTotals:
+    """Distinct print submissions represented by a report voucher set."""
+
+    print_jobs: int
+    reprint_jobs: int
+
+
+@dataclass(frozen=True)
+class VoucherDeletionSafety:
+    """Durable lifecycle facts required before controller-side deletion."""
+
+    voucher_id: int
+    unifi_id: str
+    usage_observed: bool
+    ever_used: bool
+
+
+@dataclass(frozen=True)
+class VoucherLocalMetadata:
+    """Operator-owned voucher facts that must never be written back to UniFi."""
+
+    voucher_id: int
+    controller_id: int
+    unifi_id: str
+    controller_description: str
+    assigned_to: str
+    notes: str
+    origin: str
+    is_nominal: bool | None
+    nominality_redacted: bool
+    present_on_controller: bool
+    archived_at: str
 
 
 class Database:
@@ -465,6 +560,72 @@ COMMIT;
                 self.connection.rollback()
                 raise
 
+        if current == 4:
+            try:
+                voucher_columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                policy_columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(retention_policy)"
+                    )
+                }
+                statements: list[str] = []
+                if "revoked_for_security_at" not in voucher_columns:
+                    statements.append(
+                        "ALTER TABLE vouchers ADD COLUMN revoked_for_security_at TEXT;"
+                    )
+                if "printed_unused_revoke_days" not in policy_columns:
+                    statements.append(
+                        """ALTER TABLE retention_policy
+                           ADD COLUMN printed_unused_revoke_days INTEGER
+                           CHECK (
+                               printed_unused_revoke_days IS NULL
+                               OR printed_unused_revoke_days BETWEEN 1 AND 3650
+                           );"""
+                    )
+                if "configured" not in policy_columns:
+                    statements.append(
+                        """ALTER TABLE retention_policy
+                           ADD COLUMN configured INTEGER NOT NULL DEFAULT 0
+                           CHECK (configured IN (0, 1));"""
+                    )
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + "\n".join(statements)
+                    + """
+PRAGMA user_version = 5;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '5');
+COMMIT;
+"""
+                )
+                current = 5
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 5:
+            try:
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + MIGRATION_5_TO_6_SQL
+                    + """
+PRAGMA user_version = 6;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '6');
+COMMIT;
+"""
+                )
+                current = 6
+            except Exception:
+                self.connection.rollback()
+                raise
+
         if current < SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database schema migration {current}->{SCHEMA_VERSION} is not implemented"
@@ -480,6 +641,32 @@ COMMIT;
         except Exception:
             self.connection.rollback()
             raise
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[sqlite3.Connection]:
+        """Keep a multi-query read on one stable SQLite snapshot.
+
+        Reporting deliberately performs a minimized first pass and may load
+        personal/operator details only for rows that survive filtering.  A
+        deferred read transaction makes those separate SELECTs observe the
+        same database state even if another SQLite connection commits while
+        the report is being assembled.
+
+        When a caller already owns a transaction, reuse it rather than trying
+        to nest BEGIN statements.
+        """
+
+        if self.connection.in_transaction:
+            yield self.connection
+            return
+
+        self.connection.execute("BEGIN")
+        try:
+            yield self.connection
+        finally:
+            # The snapshot is read-only. ROLLBACK releases it without implying
+            # that report construction persisted anything.
+            self.connection.rollback()
 
     def integrity_check(self) -> None:
         """Raise when SQLite reports anything other than a healthy database."""
@@ -606,29 +793,37 @@ COMMIT;
         self,
         *,
         unused_unprinted_days: int,
+        printed_unused_revoke_days: int,
         observed_at: str,
         connection: sqlite3.Connection | None = None,
     ) -> None:
-        """Persist the only currently supported conservative retention policy."""
+        """Persist both explicit lifecycle thresholds selected by the operator."""
 
-        days = int(unused_unprinted_days)
-        if not 1 <= days <= 3650:
+        local_days = int(unused_unprinted_days)
+        revoke_days = int(printed_unused_revoke_days)
+        if not 1 <= local_days <= 3650:
             raise ValueError(
-                "La retention voucher deve essere compresa tra 1 e 3650 giorni"
+                "La retention locale deve essere compresa tra 1 e 3650 giorni"
+            )
+        if not 1 <= revoke_days <= 3650:
+            raise ValueError(
+                "La revoca di sicurezza deve essere compresa tra 1 e 3650 giorni"
             )
 
         def write(db: sqlite3.Connection) -> None:
             db.execute(
                 """INSERT INTO retention_policy (
-                       id, unused_unprinted_days, protect_used,
-                       protect_printed, updated_at
-                   ) VALUES (1, ?, 1, 1, ?)
+                       id, unused_unprinted_days, printed_unused_revoke_days,
+                       configured, protect_used, protect_printed, updated_at
+                   ) VALUES (1, ?, ?, 1, 1, 1, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        unused_unprinted_days=excluded.unused_unprinted_days,
+                       printed_unused_revoke_days=excluded.printed_unused_revoke_days,
+                       configured=1,
                        protect_used=1,
                        protect_printed=1,
                        updated_at=excluded.updated_at""",
-                (days, observed_at),
+                (local_days, revoke_days, observed_at),
             )
 
         if connection is not None:
@@ -636,6 +831,168 @@ COMMIT;
             return
         with self.transaction() as db:
             write(db)
+
+    def prepare_security_revocations(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+        operation_uuid: str,
+        requested_at: str,
+        requested_by: str,
+    ) -> tuple[int, ...]:
+        """Durably record operator revocation intent before the UniFi mutation."""
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        operation = str(operation_uuid or "").strip()
+        stamp = str(requested_at or "").strip()
+        operator = str(requested_by or "").strip()
+        if not ids or not operation or not stamp or not operator:
+            raise ValueError("security revocation preparation fields are required")
+
+        placeholders = ",".join("?" for _ in ids)
+        with self.transaction() as db:
+            rows = db.execute(
+                f"""SELECT id, unifi_id, present_on_controller, usage_observed,
+                           ever_used, archived_at, revoked_for_security_at
+                    FROM vouchers
+                    WHERE controller_id=?
+                      AND unifi_id IN ({placeholders})""",
+                (int(controller_id), *ids),
+            ).fetchall()
+            by_remote = {str(row["unifi_id"]): row for row in rows}
+            if set(by_remote) != set(ids):
+                raise RuntimeError(
+                    "Uno o più voucher da revocare non sono nello snapshot locale."
+                )
+
+            prepared: list[int] = []
+            for remote_id in ids:
+                row = by_remote[remote_id]
+                voucher_id = int(row["id"])
+                if (
+                    not bool(row["present_on_controller"])
+                    or not bool(row["usage_observed"])
+                    or bool(row["ever_used"])
+                    or row["archived_at"] is not None
+                    or row["revoked_for_security_at"] is not None
+                ):
+                    raise RuntimeError(
+                        "Un voucher non soddisfa più i requisiti per la revoca."
+                    )
+                pending = db.execute(
+                    """SELECT 1 FROM security_revocations
+                       WHERE voucher_id=? AND status='PREPARED'
+                       LIMIT 1""",
+                    (voucher_id,),
+                ).fetchone()
+                if pending is not None:
+                    raise RuntimeError(
+                        "Un voucher ha già una revoca di sicurezza da riconciliare."
+                    )
+                printed = db.execute(
+                    "SELECT 1 FROM voucher_prints WHERE voucher_id=? LIMIT 1",
+                    (voucher_id,),
+                ).fetchone()
+                if printed is None:
+                    raise RuntimeError(
+                        "Un voucher da revocare non ha una stampa registrata."
+                    )
+                db.execute(
+                    """INSERT INTO security_revocations(
+                           operation_uuid, voucher_id, requested_at,
+                           requested_by, status
+                       ) VALUES (?, ?, ?, ?, 'PREPARED')""",
+                    (operation, voucher_id, stamp, operator),
+                )
+                prepared.append(voucher_id)
+        return tuple(prepared)
+
+    def reconcile_security_revocations(
+        self,
+        *,
+        controller_id: int,
+        observed_at: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        """Resolve prepared revocations from one complete controller snapshot."""
+
+        stamp = str(observed_at or "").strip()
+        if not stamp:
+            raise ValueError("observed_at is required")
+
+        def reconcile(db: sqlite3.Connection):
+            rows = db.execute(
+                """SELECT sr.id AS request_id, sr.operation_uuid,
+                          sr.voucher_id, sr.requested_by,
+                          v.present_on_controller
+                   FROM security_revocations AS sr
+                   JOIN vouchers AS v ON v.id=sr.voucher_id
+                   WHERE sr.status='PREPARED'
+                     AND v.controller_id=?
+                   ORDER BY sr.id""",
+                (int(controller_id),),
+            ).fetchall()
+            confirmed: list[int] = []
+            cancelled: list[int] = []
+            for row in rows:
+                request_id = int(row["request_id"])
+                voucher_id = int(row["voucher_id"])
+                if bool(row["present_on_controller"]):
+                    db.execute(
+                        """UPDATE security_revocations
+                           SET status='CANCELLED', resolved_at=?
+                           WHERE id=? AND status='PREPARED'""",
+                        (stamp, request_id),
+                    )
+                    cancelled.append(voucher_id)
+                    continue
+
+                db.execute(
+                    """UPDATE security_revocations
+                       SET status='CONFIRMED', resolved_at=?
+                       WHERE id=? AND status='PREPARED'""",
+                    (stamp, request_id),
+                )
+                db.execute(
+                    """UPDATE vouchers
+                       SET revoked_for_security_at=COALESCE(
+                           revoked_for_security_at, ?
+                       )
+                       WHERE id=?""",
+                    (stamp, voucher_id),
+                )
+                db.execute(
+                    """INSERT OR IGNORE INTO voucher_events(
+                           event_uuid, voucher_id, event_type, occurred_at,
+                           source, windows_user, details_json
+                       ) VALUES (?, ?, 'SECURITY_REVOKED', ?, 'SYSTEM', ?, ?)""",
+                    (
+                        f"security-revoked-{request_id}",
+                        voucher_id,
+                        stamp,
+                        str(row["requested_by"]),
+                        self.encode_event_details(
+                            {
+                                "operation_uuid": str(row["operation_uuid"]),
+                                "reason": "printed_unused",
+                            }
+                        ),
+                    ),
+                )
+                confirmed.append(voucher_id)
+            return tuple(confirmed), tuple(cancelled)
+
+        if connection is not None:
+            return reconcile(connection)
+        with self.transaction() as db:
+            return reconcile(db)
 
     def onboarding_has_operational_data(self) -> bool:
         """Return whether the database contains facts from an existing install."""
@@ -915,6 +1272,41 @@ COMMIT;
         with self.transaction() as db:
             return write(db)
 
+    def deletion_safety_facts(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+    ) -> dict[str, VoucherDeletionSafety]:
+        """Return durable facts that make destructive cleanup fail closed."""
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.connection.execute(
+            f"""SELECT id, unifi_id, usage_observed, ever_used
+                FROM vouchers
+                WHERE controller_id=?
+                  AND unifi_id IN ({placeholders})""",
+            (int(controller_id), *ids),
+        ).fetchall()
+        return {
+            str(row["unifi_id"]): VoucherDeletionSafety(
+                voucher_id=int(row["id"]),
+                unifi_id=str(row["unifi_id"]),
+                usage_observed=bool(row["usage_observed"]),
+                ever_used=bool(row["ever_used"]),
+            )
+            for row in rows
+        }
+
     def historically_used_remote_ids(
         self,
         *,
@@ -965,12 +1357,25 @@ COMMIT;
             return
 
         placeholders = ",".join("?" for _ in ids)
-        params = ("APPLICATION", int(bool(is_nominal)), int(controller_id), *ids)
+        nominal = int(bool(is_nominal))
+        params = (
+            "APPLICATION",
+            nominal,
+            nominal,
+            int(controller_id),
+            *ids,
+        )
 
         def write(db: sqlite3.Connection) -> None:
             cursor = db.execute(
                 f"""UPDATE vouchers
-                    SET origin=?, is_nominal=?
+                    SET origin=?,
+                        is_nominal=?,
+                        nominality_redacted=0,
+                        assigned_to=CASE
+                            WHEN ?=1 AND TRIM(assigned_to)='' THEN name
+                            ELSE assigned_to
+                        END
                     WHERE controller_id=? AND unifi_id IN ({placeholders})""",
                 params,
             )
@@ -985,16 +1390,307 @@ COMMIT;
         with self.transaction() as db:
             write(db)
 
+    @staticmethod
+    def _local_metadata_from_row(row: sqlite3.Row) -> VoucherLocalMetadata:
+        nominal = row["is_nominal"]
+        return VoucherLocalMetadata(
+            voucher_id=int(row["id"]),
+            controller_id=int(row["controller_id"]),
+            unifi_id=str(row["unifi_id"]),
+            controller_description=str(row["name"] or ""),
+            assigned_to=str(row["assigned_to"] or ""),
+            notes=str(row["notes"] or ""),
+            origin=str(row["origin"] or "UNKNOWN"),
+            is_nominal=None if nominal is None else bool(nominal),
+            nominality_redacted=bool(row["nominality_redacted"]),
+            present_on_controller=bool(row["present_on_controller"]),
+            archived_at=str(row["archived_at"] or ""),
+        )
+
+    def voucher_local_metadata(
+        self,
+        *,
+        controller_id: int,
+        unifi_id: str,
+    ) -> VoucherLocalMetadata | None:
+        """Return local-only metadata plus immutable controller correlation fields."""
+
+        row = self.connection.execute(
+            """SELECT id, controller_id, unifi_id, name, assigned_to, notes,
+                      origin, is_nominal, nominality_redacted,
+                      present_on_controller, archived_at
+               FROM vouchers
+               WHERE controller_id=? AND unifi_id=?""",
+            (int(controller_id), str(unifi_id).strip()),
+        ).fetchone()
+        return None if row is None else self._local_metadata_from_row(row)
+
+    def voucher_local_metadata_map(
+        self,
+        *,
+        controller_id: int,
+        include_notes: bool = False,
+    ) -> dict[str, VoucherLocalMetadata]:
+        """Return only local fields needed by the voucher list/search.
+
+        Notes are intentionally omitted for ordinary table population and are
+        loaded in bulk only when the operator actually performs a text search.
+        Single-voucher editing uses voucher_local_metadata() and always receives
+        the full local record.
+        """
+
+        notes_expr = "notes" if include_notes else "''"
+        rows = self.connection.execute(
+            f"""SELECT id, controller_id, unifi_id, '' AS name, assigned_to,
+                      {notes_expr} AS notes,
+                      origin, is_nominal, nominality_redacted,
+                      present_on_controller, archived_at
+               FROM vouchers
+               WHERE controller_id=?""",
+            (int(controller_id),),
+        ).fetchall()
+        return {
+            str(row["unifi_id"]): self._local_metadata_from_row(row)
+            for row in rows
+        }
+
+    def update_voucher_local_metadata(
+        self,
+        *,
+        controller_id: int,
+        unifi_id: str,
+        assigned_to: str,
+        notes: str,
+        is_nominal: bool | None,
+        updated_at: str,
+        windows_user: str,
+    ) -> VoucherLocalMetadata:
+        """Update only operator-owned fields; controller-sourced fields stay immutable."""
+
+        remote_id = str(unifi_id or "").strip()
+        local_recipient = str(assigned_to or "").strip()
+        local_notes = str(notes or "").strip()
+        stamp = str(updated_at or "").strip()
+        operator = str(windows_user or "").strip()
+        if not remote_id:
+            raise ValueError("UniFi voucher id is required")
+        if type(is_nominal) is not bool and is_nominal is not None:
+            raise ValueError("is_nominal must be true, false or null")
+        if is_nominal is True and not local_recipient:
+            raise ValueError(
+                "Un voucher nominale richiede un destinatario locale."
+            )
+        if len(local_recipient) > 200:
+            raise ValueError("Il destinatario locale non può superare 200 caratteri.")
+        if len(local_notes) > 2000:
+            raise ValueError("Le note locali non possono superare 2000 caratteri.")
+        if not stamp or not operator:
+            raise ValueError("updated_at and windows_user are required")
+
+        with self.transaction() as db:
+            row = db.execute(
+                """SELECT id, assigned_to, notes, is_nominal,
+                          nominality_redacted, present_on_controller, archived_at
+                   FROM vouchers
+                   WHERE controller_id=? AND unifi_id=?""",
+                (int(controller_id), remote_id),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Voucher locale non trovato. Sincronizzare con UniFi.")
+            if not bool(row["present_on_controller"]) or row["archived_at"] is not None:
+                raise RuntimeError(
+                    "Il voucher non è più attivo nello snapshot UniFi locale. "
+                    "Sincronizzare prima di modificare i dati locali."
+                )
+
+            nominal_value = None if is_nominal is None else int(is_nominal)
+            changed_fields: list[str] = []
+            if str(row["assigned_to"] or "") != local_recipient:
+                changed_fields.append("assigned_to")
+            if str(row["notes"] or "") != local_notes:
+                changed_fields.append("notes")
+            if row["is_nominal"] != nominal_value or bool(row["nominality_redacted"]):
+                changed_fields.append("is_nominal")
+
+            if changed_fields:
+                db.execute(
+                    """UPDATE vouchers
+                       SET assigned_to=?, notes=?, is_nominal=?,
+                           nominality_redacted=0
+                       WHERE id=?""",
+                    (local_recipient, local_notes, nominal_value, int(row["id"])),
+                )
+                db.execute(
+                    """INSERT INTO voucher_events
+                       (event_uuid, voucher_id, event_type, occurred_at,
+                        source, windows_user, details_json)
+                       VALUES (?, ?, 'LOCAL_METADATA_UPDATED', ?, 'OPERATOR', ?, ?)""",
+                    (
+                        str(uuid4()),
+                        int(row["id"]),
+                        stamp,
+                        operator,
+                        self.encode_event_details({"fields": changed_fields}),
+                    ),
+                )
+
+        updated = self.voucher_local_metadata(
+            controller_id=int(controller_id),
+            unifi_id=remote_id,
+        )
+        if updated is None:
+            raise RuntimeError("Voucher locale non disponibile dopo l'aggiornamento.")
+        return updated
+
+    def update_voucher_local_classification_batch(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+        is_nominal: bool | None,
+        updated_at: str,
+        windows_user: str,
+    ) -> tuple[VoucherLocalMetadata, ...]:
+        """Atomically classify multiple vouchers without changing recipient/notes."""
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        if not ids:
+            return ()
+        if type(is_nominal) is not bool and is_nominal is not None:
+            raise ValueError("is_nominal must be true, false or null")
+        stamp = str(updated_at or "").strip()
+        operator = str(windows_user or "").strip()
+        if not stamp or not operator:
+            raise ValueError("updated_at and windows_user are required")
+
+        placeholders = ",".join("?" for _ in ids)
+        nominal_value = None if is_nominal is None else int(is_nominal)
+        with self.transaction() as db:
+            rows = db.execute(
+                f"""SELECT id, unifi_id, assigned_to, is_nominal,
+                           nominality_redacted, present_on_controller, archived_at
+                    FROM vouchers
+                    WHERE controller_id=? AND unifi_id IN ({placeholders})""",
+                (int(controller_id), *ids),
+            ).fetchall()
+            by_remote = {str(row["unifi_id"]): row for row in rows}
+            missing = [remote_id for remote_id in ids if remote_id not in by_remote]
+            if missing:
+                raise RuntimeError(
+                    "Alcuni voucher locali non sono disponibili. Sincronizzare con UniFi."
+                )
+            inactive = [
+                remote_id
+                for remote_id in ids
+                if (
+                    not bool(by_remote[remote_id]["present_on_controller"])
+                    or by_remote[remote_id]["archived_at"] is not None
+                )
+            ]
+            if inactive:
+                raise RuntimeError(
+                    "Alcuni voucher non sono più attivi nello snapshot UniFi locale. "
+                    "Sincronizzare prima di modificare i dati locali."
+                )
+            if is_nominal is True:
+                without_recipient = [
+                    remote_id
+                    for remote_id in ids
+                    if not str(by_remote[remote_id]["assigned_to"] or "").strip()
+                ]
+                if without_recipient:
+                    raise ValueError(
+                        "Per classificare più voucher come nominali, ciascuno deve "
+                        "avere già un destinatario locale."
+                    )
+
+            for remote_id in ids:
+                row = by_remote[remote_id]
+                changed = (
+                    row["is_nominal"] != nominal_value
+                    or bool(row["nominality_redacted"])
+                )
+                if not changed:
+                    continue
+                db.execute(
+                    """UPDATE vouchers
+                       SET is_nominal=?, nominality_redacted=0
+                       WHERE id=?""",
+                    (nominal_value, int(row["id"])),
+                )
+                db.execute(
+                    """INSERT INTO voucher_events
+                       (event_uuid, voucher_id, event_type, occurred_at,
+                        source, windows_user, details_json)
+                       VALUES (?, ?, 'LOCAL_METADATA_UPDATED', ?, 'OPERATOR', ?, ?)""",
+                    (
+                        str(uuid4()),
+                        int(row["id"]),
+                        stamp,
+                        operator,
+                        self.encode_event_details({"fields": ["is_nominal"]}),
+                    ),
+                )
+
+        return tuple(
+            metadata
+            for remote_id in ids
+            if (
+                metadata := self.voucher_local_metadata(
+                    controller_id=int(controller_id),
+                    unifi_id=remote_id,
+                )
+            ) is not None
+        )
+
     def print_summary(self, voucher_id: int) -> PrintAuditSummary:
         """Return immutable print totals used before allowing a duplicate."""
 
         row = self.connection.execute(
-            """SELECT COUNT(*) AS jobs,
-                      COALESCE(SUM(physical_copies), 0) AS copies,
-                      COALESCE(MIN(printed_at), '') AS first_at,
-                      COALESCE(MAX(printed_at), '') AS last_at
-               FROM voucher_prints WHERE voucher_id=?""",
-            (voucher_id,),
+            """SELECT
+                   COUNT(*) AS jobs,
+                   COALESCE(SUM(vp.physical_copies), 0) AS copies,
+                   COALESCE(
+                       (
+                           SELECT first_vp.printed_at
+                           FROM voucher_prints AS first_vp
+                           JOIN print_jobs AS first_pj
+                             ON first_pj.id=first_vp.print_job_id
+                           WHERE first_vp.voucher_id=?
+                           ORDER BY
+                               (julianday(first_vp.printed_at) IS NULL),
+                               julianday(first_vp.printed_at) ASC,
+                               first_pj.print_job_uuid,
+                               first_vp.id
+                           LIMIT 1
+                       ),
+                       ''
+                   ) AS first_at,
+                   COALESCE(
+                       (
+                           SELECT last_vp.printed_at
+                           FROM voucher_prints AS last_vp
+                           JOIN print_jobs AS last_pj
+                             ON last_pj.id=last_vp.print_job_id
+                           WHERE last_vp.voucher_id=?
+                           ORDER BY
+                               (julianday(last_vp.printed_at) IS NULL),
+                               julianday(last_vp.printed_at) DESC,
+                               last_pj.print_job_uuid DESC,
+                               last_vp.id DESC
+                           LIMIT 1
+                       ),
+                       ''
+                   ) AS last_at
+               FROM voucher_prints AS vp
+               WHERE vp.voucher_id=?""",
+            (voucher_id, voucher_id, voucher_id),
         ).fetchone()
         return PrintAuditSummary(
             print_jobs=int(row["jobs"]),
@@ -1165,6 +1861,47 @@ COMMIT;
                     ),
                 )
 
+    def report_print_job_totals(
+        self,
+        *,
+        voucher_ids: list[int] | tuple[int, ...],
+    ) -> ReportPrintJobTotals:
+        """Count distinct print submissions for a selected voucher population.
+
+        voucher_prints is one row per voucher/job relation, so summing the
+        per-voucher counts would overstate document submissions whenever one
+        PDF contains multiple vouchers.  Collect stable job ids in chunks and
+        deduplicate in Python to stay below conservative SQLite parameter
+        limits without double-counting jobs that span chunks.
+        """
+
+        ids = tuple(dict.fromkeys(int(value) for value in voucher_ids))
+        if not ids:
+            return ReportPrintJobTotals(print_jobs=0, reprint_jobs=0)
+
+        job_ids: set[int] = set()
+        reprint_job_ids: set[int] = set()
+        chunk_size = 800
+        for start in range(0, len(ids), chunk_size):
+            chunk = ids[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.connection.execute(
+                f"""SELECT print_job_id, is_reprint
+                    FROM voucher_prints
+                    WHERE voucher_id IN ({placeholders})""",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                job_id = int(row["print_job_id"])
+                job_ids.add(job_id)
+                if bool(row["is_reprint"]):
+                    reprint_job_ids.add(job_id)
+
+        return ReportPrintJobTotals(
+            print_jobs=len(job_ids),
+            reprint_jobs=len(reprint_job_ids),
+        )
+
     def controller_name(self, controller_id: int) -> str | None:
         """Return one persisted non-secret controller display name."""
 
@@ -1195,13 +1932,14 @@ COMMIT;
         self,
         *,
         controller_id: int | None = None,
+        include_voucher_code: bool = False,
     ) -> list[sqlite3.Row]:
-        """Return durable voucher facts aggregated for reporting.
+        """Return only the durable facts required by the requested report layer.
 
-        The query deliberately returns atomic/current facts plus print
-        aggregates. It does not precompute business labels such as "used" or
-        "printed but never used"; those remain pure reporting policy so the
-        same database facts can support multiple report views.
+        Clear voucher credentials are excluded by default. Controller
+        descriptions, local recipients and operator identities are deliberately
+        excluded from this first-pass facts query and can be fetched separately
+        only for rows that actually survive report filtering.
         """
 
         where = ""
@@ -1210,15 +1948,16 @@ COMMIT;
             where = "WHERE v.controller_id=?"
             params = (int(controller_id),)
 
+        code_expr = "v.code" if include_voucher_code else "''"
         return self.connection.execute(
             f"""SELECT
                     v.id AS voucher_id,
-                    v.controller_id,
                     c.name AS controller_name,
-                    c.api_root AS controller_api_root,
-                    v.code,
-                    v.name,
-                    v.assigned_to,
+                    CASE WHEN c.api_root LIKE 'legacy-backup://%' THEN 1 ELSE 0 END
+                        AS legacy_source,
+                    {code_expr} AS code,
+                    '' AS name,
+                    '' AS assigned_to,
                     v.origin,
                     v.is_nominal,
                     v.nominality_redacted,
@@ -1226,16 +1965,19 @@ COMMIT;
                     v.usage_observed,
                     v.created_at,
                     v.imported_at,
-                    v.duration_minutes,
-                    v.authorized_guest_limit,
                     v.authorized_guest_count,
-                    v.activated_at,
                     v.expires_at,
                     v.expired,
                     v.present_on_controller,
+                    v.revoked_for_security_at,
                     v.archived_at,
                     v.last_seen_at,
                     v.last_synced_at,
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM voucher_events AS review
+                        WHERE review.voucher_id=v.id
+                          AND review.event_type='LEGACY_IDENTITY_REVIEW_REQUIRED'
+                    ) THEN 1 ELSE 0 END AS identity_review_required,
                     COUNT(vp.id) AS print_jobs,
                     COALESCE(SUM(vp.physical_copies), 0) AS physical_copies,
                     COALESCE(SUM(CASE WHEN vp.is_reprint=1 THEN 1 ELSE 0 END), 0)
@@ -1247,10 +1989,33 @@ COMMIT;
                         ),
                         0
                     ) AS reprint_copies,
-                    COALESCE(MIN(vp.printed_at), '') AS first_printed_at,
-                    COALESCE(MAX(vp.printed_at), '') AS last_printed_at,
-                    COALESCE(GROUP_CONCAT(DISTINCT vp.windows_user), '')
-                        AS print_operators
+                    COALESCE(
+                        (
+                            SELECT first_vp.printed_at
+                            FROM voucher_prints AS first_vp
+                            WHERE first_vp.voucher_id=v.id
+                            ORDER BY
+                                (julianday(first_vp.printed_at) IS NULL),
+                                julianday(first_vp.printed_at) ASC,
+                                first_vp.id ASC
+                            LIMIT 1
+                        ),
+                        ''
+                    ) AS first_printed_at,
+                    COALESCE(
+                        (
+                            SELECT last_vp.printed_at
+                            FROM voucher_prints AS last_vp
+                            WHERE last_vp.voucher_id=v.id
+                            ORDER BY
+                                (julianday(last_vp.printed_at) IS NULL),
+                                julianday(last_vp.printed_at) DESC,
+                                last_vp.id DESC
+                            LIMIT 1
+                        ),
+                        ''
+                    ) AS last_printed_at,
+                    '' AS print_operators
                FROM vouchers AS v
                -- INNER JOIN is intentional. vouchers.controller_id is a
                -- foreign key with enforcement enabled, so a referenced
@@ -1264,6 +2029,42 @@ COMMIT;
                    v.id DESC""",
             params,
         ).fetchall()
+
+    def report_voucher_personal_details(
+        self,
+        *,
+        voucher_ids: list[int] | tuple[int, ...],
+    ) -> dict[int, sqlite3.Row]:
+        """Load personal/operator detail only for vouchers selected for output."""
+
+        ids = tuple(dict.fromkeys(int(value) for value in voucher_ids))
+        if not ids:
+            return {}
+        result: dict[int, sqlite3.Row] = {}
+        # Stay below conservative SQLite host-parameter limits used by some
+        # Windows builds while still keeping each query reasonably sized.
+        chunk_size = 500
+        for offset in range(0, len(ids), chunk_size):
+            chunk = ids[offset : offset + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.connection.execute(
+                f"""SELECT
+                        v.id AS voucher_id,
+                        v.name,
+                        v.assigned_to,
+                        COALESCE(GROUP_CONCAT(DISTINCT vp.windows_user), '')
+                            AS print_operators
+                    FROM vouchers AS v
+                    LEFT JOIN voucher_prints AS vp ON vp.voucher_id=v.id
+                    WHERE v.id IN ({placeholders})
+                    GROUP BY v.id""",
+                chunk,
+            ).fetchall()
+            result.update(
+                (int(row["voucher_id"]), row)
+                for row in rows
+            )
+        return result
 
     @staticmethod
     def encode_event_details(details: dict | None) -> str | None:

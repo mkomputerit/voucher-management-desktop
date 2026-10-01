@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Iterable
 
 from .database import Database
-from .report_policy import ReportPurpose, report_code_value
+from .report_policy import ReportPurpose, report_code_value, voucher_code_policy
+from .retention import retention_policy_configured, security_revocation_candidates
 
 
 class ReportKind(str, Enum):
@@ -24,10 +25,13 @@ class ReportKind(str, Enum):
     PRINTED_UNUSED = "printed_unused"
     NEVER_PRINTED = "never_printed"
     NOMINAL = "nominal"
+    NON_NOMINAL = "non_nominal"
     UNCLASSIFIED = "unclassified"
     USAGE_UNKNOWN = "usage_unknown"
     ORIGIN_UNKNOWN = "origin_unknown"
     NOMINALITY_REDACTED = "nominality_redacted"
+    SECURITY_REVOCATION_CANDIDATES = "security_revocation_candidates"
+    SECURITY_REVOKED = "security_revoked"
     FULL_HISTORY = "full_history"
 
 
@@ -41,10 +45,13 @@ REPORT_TITLES = {
     ReportKind.PRINTED_UNUSED: "Stampati - nessun utilizzo rilevato",
     ReportKind.NEVER_PRINTED: "Voucher senza stampe registrate",
     ReportKind.NOMINAL: "Voucher nominali",
+    ReportKind.NON_NOMINAL: "Voucher non nominali",
     ReportKind.UNCLASSIFIED: "Voucher non classificati",
     ReportKind.USAGE_UNKNOWN: "Voucher con utilizzo non determinabile",
     ReportKind.ORIGIN_UNKNOWN: "Voucher con origine creazione non determinabile",
     ReportKind.NOMINALITY_REDACTED: "Nominalità rimossa per privacy",
+    ReportKind.SECURITY_REVOCATION_CANDIDATES: "Voucher da revocare per sicurezza",
+    ReportKind.SECURITY_REVOKED: "Voucher revocati per sicurezza",
     ReportKind.FULL_HISTORY: "Storico completo voucher",
 }
 
@@ -75,6 +82,8 @@ class ReportTotals:
     unclassified_vouchers: int
     unknown_origin_vouchers: int = 0
     redacted_nominality_vouchers: int = 0
+    security_revocation_candidates: int = 0
+    security_revoked_vouchers: int = 0
 
 
 @dataclass(frozen=True)
@@ -105,7 +114,12 @@ class ReportRow:
     origin: str
     is_nominal: bool | None
     last_synced_at: str = ""
+    last_seen_at: str = ""
     nominality_redacted: bool = False
+    controller_description: str = ""
+    revoked_for_security_at: str = ""
+    identity_review_required: bool = False
+    security_revocation_candidate: bool = False
 
 
 @dataclass(frozen=True)
@@ -125,17 +139,107 @@ class ReportDataset:
     coverage_note: str = ""
 
 
+def validate_report_dataset_consistency(dataset: ReportDataset) -> None:
+    """Fail closed when aggregate categories no longer describe one population.
+
+    These are semantic invariants, not presentation checks. Every voucher must
+    belong to exactly one usage-provenance class, one nominality class, one
+    print-evidence class and one creation-origin class. A future schema or
+    migration regression must therefore stop report export instead of emitting
+    totals that look credible but describe overlapping populations.
+    """
+
+    totals = dataset.totals
+    numeric_values = (
+        totals.vouchers,
+        totals.generated_vouchers,
+        totals.used_vouchers,
+        totals.never_used_vouchers,
+        totals.usage_unknown_vouchers,
+        totals.total_controller_uses,
+        totals.expired_vouchers,
+        totals.printed_vouchers,
+        totals.print_jobs,
+        totals.physical_copies,
+        totals.reprint_jobs,
+        totals.reprint_copies,
+        totals.printed_never_used,
+        totals.never_printed,
+        totals.nominal_vouchers,
+        totals.non_nominal_vouchers,
+        totals.unclassified_vouchers,
+        totals.unknown_origin_vouchers,
+        totals.redacted_nominality_vouchers,
+        totals.security_revocation_candidates,
+        totals.security_revoked_vouchers,
+    )
+    if any(int(value) < 0 for value in numeric_values):
+        raise RuntimeError("Report totals contain negative values")
+
+    expected = int(totals.vouchers)
+    partitions = {
+        "usage": (
+            totals.used_vouchers
+            + totals.never_used_vouchers
+            + totals.usage_unknown_vouchers
+        ),
+        "nominality": (
+            totals.nominal_vouchers
+            + totals.non_nominal_vouchers
+            + totals.unclassified_vouchers
+            + totals.redacted_nominality_vouchers
+        ),
+        "print": totals.printed_vouchers + totals.never_printed,
+        "origin": totals.generated_vouchers + totals.unknown_origin_vouchers,
+    }
+    invalid = [
+        name for name, value in partitions.items()
+        if int(value) != expected
+    ]
+    if invalid:
+        raise RuntimeError(
+            "Report totals are internally inconsistent: "
+            + ", ".join(sorted(invalid))
+        )
+
+    if totals.printed_never_used > totals.printed_vouchers:
+        raise RuntimeError("Printed-unused total exceeds printed vouchers")
+    if totals.reprint_jobs > totals.print_jobs:
+        raise RuntimeError("Reprint jobs exceed print jobs")
+    if totals.reprint_copies > totals.physical_copies:
+        raise RuntimeError("Reprint copies exceed physical voucher copies")
+
+    if dataset.kind is ReportKind.SUMMARY:
+        if dataset.rows:
+            raise RuntimeError("Summary report must not retain detail rows")
+    elif len(dataset.rows) != expected:
+        raise RuntimeError(
+            "Report detail row count does not match aggregate voucher count"
+        )
+
+
 def _purpose_for_kind(kind: ReportKind) -> ReportPurpose:
     return ReportPurpose.AUDIT if kind is ReportKind.FULL_HISTORY else ReportPurpose.SUMMARY
 
 
+def _operator_label(value: str) -> str:
+    """Translate internal audit sentinels without inventing an operator."""
+
+    normalized = str(value or "").strip()
+    if normalized.upper() == "MIGRATION":
+        return "Importazione storica"
+    if normalized.casefold() == "unknown":
+        return "Operatore non determinato"
+    return normalized
+
+
 def _operators(value: object) -> tuple[str, ...]:
     values = {
-        item.strip()
+        _operator_label(item)
         for item in str(value or "").split(",")
         if item.strip()
     }
-    return tuple(sorted(values, key=str.casefold))
+    return tuple(sorted((item for item in values if item), key=str.casefold))
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -148,6 +252,43 @@ def _parse_time(value: object) -> datetime | None:
         return None
 
 
+def _utc_time(value: object) -> datetime | None:
+    """Normalize persisted/report timestamps to the database's UTC contract."""
+
+    moment = _parse_time(value)
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def _time_bounds(values: Iterable[str]) -> tuple[str, str]:
+    """Return chronological ISO bounds without relying on lexicographic offsets."""
+
+    parsed: list[tuple[datetime, str]] = []
+    for value in values:
+        original = str(value or "").strip()
+        normalized = _utc_time(original)
+        if normalized is None:
+            continue
+        parsed.append((normalized, original))
+    if not parsed:
+        return "", ""
+    parsed.sort(key=lambda item: item[0])
+    return parsed[0][1], parsed[-1][1]
+
+
+def _time_at_or_after(later: object, earlier: object) -> bool:
+    """Return true only when both timestamps are parseable and ordered."""
+
+    later_time = _utc_time(later)
+    earlier_time = _utc_time(earlier)
+    if later_time is None or earlier_time is None:
+        return False
+    return later_time >= earlier_time
+
+
 def _expired_at_report_time(
     *,
     persisted_expired: bool,
@@ -156,18 +297,11 @@ def _expired_at_report_time(
 ) -> bool:
     if persisted_expired:
         return True
-    expiry = _parse_time(expires_at)
-    report_time = _parse_time(generated_at)
+    expiry = _utc_time(expires_at)
+    report_time = _utc_time(generated_at)
     if expiry is None or report_time is None:
         return False
-    if expiry.tzinfo is None and report_time.tzinfo is not None:
-        expiry = expiry.replace(tzinfo=report_time.tzinfo)
-    if report_time.tzinfo is None and expiry.tzinfo is not None:
-        report_time = report_time.replace(tzinfo=expiry.tzinfo)
-    try:
-        return expiry <= report_time
-    except TypeError:
-        return False
+    return expiry <= report_time
 
 
 def _status(
@@ -175,17 +309,28 @@ def _status(
     archived: bool,
     expired: bool,
     ever_used: bool,
+    usage_observed: bool,
     print_jobs: int,
+    revoked_for_security: bool = False,
+    identity_review_required: bool = False,
 ) -> str:
+    if identity_review_required:
+        return "Da verificare"
+    if archived and revoked_for_security:
+        return "Revocato per sicurezza · Archiviato"
     if archived:
         return "Archiviato"
+    if revoked_for_security:
+        return "Revocato per sicurezza"
     if expired:
         return "Scaduto"
-    if ever_used:
+    if usage_observed and ever_used:
         return "Utilizzato"
     if print_jobs > 0:
         return "Stampato"
-    return "Mai stampato"
+    if not usage_observed:
+        return "Utilizzo non determinabile"
+    return "Senza stampe registrate"
 
 
 def origin_label(origin: str) -> str:
@@ -207,6 +352,17 @@ def nominal_label(value: bool | None, *, redacted: bool = False) -> str:
     return "Non classificato"
 
 
+def _is_printed_unused(row: ReportRow) -> bool:
+    """Require zero observed use plus controller evidence after latest issuance."""
+
+    return (
+        row.print_jobs > 0
+        and row.usage_observed
+        and not row.ever_used
+        and _time_at_or_after(row.last_seen_at, row.last_printed_at)
+    )
+
+
 def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind in {ReportKind.SUMMARY, ReportKind.FULL_HISTORY}:
         return True
@@ -219,17 +375,19 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
             and not row.ever_used
         )
     if kind is ReportKind.USED:
-        return row.ever_used
+        return row.usage_observed and row.ever_used
     if kind is ReportKind.EXPIRED:
         return row.expired
     if kind is ReportKind.PRINTED:
         return row.print_jobs > 0
     if kind is ReportKind.PRINTED_UNUSED:
-        return row.print_jobs > 0 and row.usage_observed and not row.ever_used
+        return _is_printed_unused(row)
     if kind is ReportKind.NEVER_PRINTED:
         return row.print_jobs == 0
     if kind is ReportKind.NOMINAL:
-        return row.is_nominal is True
+        return row.is_nominal is True and not row.nominality_redacted
+    if kind is ReportKind.NON_NOMINAL:
+        return row.is_nominal is False and not row.nominality_redacted
     if kind is ReportKind.UNCLASSIFIED:
         return row.is_nominal is None and not row.nominality_redacted
     if kind is ReportKind.USAGE_UNKNOWN:
@@ -238,35 +396,63 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
         return row.origin != "APPLICATION"
     if kind is ReportKind.NOMINALITY_REDACTED:
         return row.nominality_redacted
+    if kind is ReportKind.SECURITY_REVOCATION_CANDIDATES:
+        return row.security_revocation_candidate
+    if kind is ReportKind.SECURITY_REVOKED:
+        return bool(row.revoked_for_security_at)
     raise ValueError(f"Unsupported report kind: {kind}")
 
 
-def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
+def _totals(
+    rows: Iterable[ReportRow],
+    *,
+    distinct_print_jobs: int | None = None,
+    distinct_reprint_jobs: int | None = None,
+) -> ReportTotals:
     materialized = tuple(rows)
     return ReportTotals(
         vouchers=len(materialized),
         generated_vouchers=sum(row.origin in APPLICATION_ORIGINS for row in materialized),
-        used_vouchers=sum(row.ever_used for row in materialized),
+        used_vouchers=sum(
+            row.usage_observed and row.ever_used for row in materialized
+        ),
         never_used_vouchers=sum(
             row.usage_observed and not row.ever_used for row in materialized
         ),
         usage_unknown_vouchers=sum(
             not row.usage_observed for row in materialized
         ),
-        total_controller_uses=sum(row.authorized_guest_count for row in materialized),
+        total_controller_uses=sum(
+            row.authorized_guest_count
+            for row in materialized
+            if row.usage_observed
+        ),
         expired_vouchers=sum(row.expired for row in materialized),
         printed_vouchers=sum(row.print_jobs > 0 for row in materialized),
-        print_jobs=sum(row.print_jobs for row in materialized),
+        print_jobs=(
+            sum(row.print_jobs for row in materialized)
+            if distinct_print_jobs is None
+            else int(distinct_print_jobs)
+        ),
         physical_copies=sum(row.physical_copies for row in materialized),
-        reprint_jobs=sum(row.reprint_jobs for row in materialized),
+        reprint_jobs=(
+            sum(row.reprint_jobs for row in materialized)
+            if distinct_reprint_jobs is None
+            else int(distinct_reprint_jobs)
+        ),
         reprint_copies=sum(row.reprint_copies for row in materialized),
         printed_never_used=sum(
-            row.print_jobs > 0 and row.usage_observed and not row.ever_used
-            for row in materialized
+            _is_printed_unused(row) for row in materialized
         ),
         never_printed=sum(row.print_jobs == 0 for row in materialized),
-        nominal_vouchers=sum(row.is_nominal is True for row in materialized),
-        non_nominal_vouchers=sum(row.is_nominal is False for row in materialized),
+        nominal_vouchers=sum(
+            row.is_nominal is True and not row.nominality_redacted
+            for row in materialized
+        ),
+        non_nominal_vouchers=sum(
+            row.is_nominal is False and not row.nominality_redacted
+            for row in materialized
+        ),
         unclassified_vouchers=sum(
             row.is_nominal is None and not row.nominality_redacted
             for row in materialized
@@ -277,10 +463,16 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
         redacted_nominality_vouchers=sum(
             row.nominality_redacted for row in materialized
         ),
+        security_revocation_candidates=sum(
+            row.security_revocation_candidate for row in materialized
+        ),
+        security_revoked_vouchers=sum(
+            bool(row.revoked_for_security_at) for row in materialized
+        ),
     )
 
 
-def build_report_dataset(
+def _build_report_dataset_snapshot(
     database: Database,
     *,
     kind: ReportKind,
@@ -300,12 +492,44 @@ def build_report_dataset(
     """
 
     purpose = _purpose_for_kind(kind)
-    raw_rows = database.report_voucher_rows(controller_id=controller_id)
+    code_policy = voucher_code_policy(
+        purpose,
+        include_code_requested=include_code_requested,
+    )
+    raw_rows = database.report_voucher_rows(
+        controller_id=controller_id,
+        include_voucher_code=code_policy.expose_code,
+    )
+    security_candidate_ids: set[int] = set()
+    security_policy_ready = retention_policy_configured(database)
+    if (
+        kind is ReportKind.SECURITY_REVOCATION_CANDIDATES
+        and not security_policy_ready
+    ):
+        raise RuntimeError(
+            "La policy di revoca di sicurezza non è ancora configurata."
+        )
+    if (
+        security_policy_ready
+        and kind in {
+            ReportKind.SUMMARY,
+            ReportKind.SECURITY_REVOCATION_CANDIDATES,
+            ReportKind.FULL_HISTORY,
+        }
+    ):
+        security_candidate_ids = {
+            item.voucher_id
+            for item in security_revocation_candidates(
+                database,
+                now=generated_at,
+                controller_id=controller_id,
+            )
+        }
 
     all_rows: list[ReportRow] = []
     rows: list[ReportRow] = []
     controllers: set[str] = set()
-    code_exposed = False
+    code_exposed = code_policy.expose_code
     for raw in raw_rows:
         controller_name = str(raw["controller_name"] or "").strip() or "Controller"
         controllers.add(controller_name)
@@ -314,10 +538,7 @@ def build_report_dataset(
             purpose,
             include_code_requested=include_code_requested,
         )
-        if clear_code:
-            code_exposed = True
-
-        legacy = str(raw["controller_api_root"]).startswith("legacy-backup://")
+        legacy = bool(raw["legacy_source"])
         print_jobs = int(raw["print_jobs"] or 0)
         expired = _expired_at_report_time(
             persisted_expired=bool(raw["expired"]) and not legacy,
@@ -327,14 +548,18 @@ def build_report_dataset(
         nominal_raw = raw["is_nominal"]
         is_nominal = None if nominal_raw is None else bool(nominal_raw)
         assigned_to = str(raw["assigned_to"] or "").strip()
-        recipient = assigned_to or str(raw["name"] or "").strip()
+        controller_description = str(raw["name"] or "").strip()
         ever_used = bool(raw["ever_used"])
+        # usage_observed is the coverage/provenance gate. A contradictory
+        # migrated row may carry ever_used=1 while its usage provenance is
+        # explicitly unavailable; reporting must remain conservative and keep
+        # that row in "usage unknown" rather than promoting it to confirmed use.
         usage_observed = bool(raw["usage_observed"])
         row = ReportRow(
             voucher_id=int(raw["voucher_id"]),
             controller_name=controller_name,
             code=clear_code,
-            recipient=recipient,
+            recipient=assigned_to,
             created_at=str(raw["created_at"] or ""),
             imported_at=str(raw["imported_at"] or ""),
             expires_at=str(raw["expires_at"] or ""),
@@ -355,18 +580,69 @@ def build_report_dataset(
                 archived=bool(raw["archived_at"]),
                 expired=expired,
                 ever_used=ever_used,
+                usage_observed=usage_observed,
                 print_jobs=print_jobs,
+                revoked_for_security=bool(raw["revoked_for_security_at"]),
+                identity_review_required=bool(raw["identity_review_required"]),
             ),
             origin=str(raw["origin"] or "UNKNOWN"),
             is_nominal=is_nominal,
             last_synced_at="" if legacy else str(raw["last_synced_at"] or ""),
+            last_seen_at="" if legacy else str(raw["last_seen_at"] or ""),
             nominality_redacted=bool(raw["nominality_redacted"]),
+            controller_description=controller_description,
+            revoked_for_security_at=str(raw["revoked_for_security_at"] or ""),
+            identity_review_required=bool(raw["identity_review_required"]),
+            security_revocation_candidate=(
+                int(raw["voucher_id"]) in security_candidate_ids
+            ),
         )
         if legacy:
-            row = replace(row, status="Backup precedente - scadenza non verificata", expires_at="")
+            row = replace(
+                row,
+                status="Backup precedente - scadenza non verificata",
+                expires_at="",
+            )
+        elif not row.present_on_controller and not row.archived_at:
+            row = replace(
+                row,
+                status=f"{row.status} · non presente su UniFi",
+            )
         all_rows.append(row)
         if _matches(kind, row):
             rows.append(row)
+
+    if kind is not ReportKind.SUMMARY and rows:
+        details = database.report_voucher_personal_details(
+            voucher_ids=[row.voucher_id for row in rows],
+        )
+        if len(details) != len(rows):
+            raise RuntimeError(
+                "Report detail rows changed while the report was being built"
+            )
+        rows = [
+            replace(
+                row,
+                controller_description=(
+                    ""
+                    if row.archived_at
+                    else str(
+                        details[row.voucher_id]["name"] or ""
+                    ).strip()
+                ),
+                recipient=(
+                    ""
+                    if row.nominality_redacted or row.archived_at
+                    else str(
+                        details[row.voucher_id]["assigned_to"] or ""
+                    ).strip()
+                ),
+                print_operators=_operators(
+                    details[row.voucher_id]["print_operators"]
+                ),
+            )
+            for row in rows
+        ]
 
     if controller_id is None:
         controller_label = "Tutto lo storico locale"
@@ -376,38 +652,108 @@ def build_report_dataset(
             or (next(iter(controllers)) if len(controllers) == 1 else "Controller selezionato")
         )
 
-    materialized = tuple(rows)
-    sync_times = sorted(
-        row.last_synced_at for row in all_rows if row.last_synced_at
+    # The summary is aggregate-only by design: do not retain per-voucher
+    # personal/operator detail in the renderer input when it cannot be shown.
+    materialized = () if kind is ReportKind.SUMMARY else tuple(rows)
+    totals_source = all_rows if kind is ReportKind.SUMMARY else rows
+    freshness_source = (
+        all_rows
+        if kind is ReportKind.SUMMARY or not rows
+        else rows
+    )
+    data_from, data_as_of = _time_bounds(
+        row.last_seen_at
+        for row in freshness_source
+        if row.last_seen_at
     )
     unknown_origin = sum(row.origin != "APPLICATION" for row in all_rows)
     unknown_usage = sum(not row.usage_observed for row in all_rows)
-    unclassified = sum(row.is_nominal is None for row in all_rows)
-    legacy_count = sum(str(raw["controller_api_root"]).startswith("legacy-backup://") for raw in raw_rows)
-    coverage_note = (
-        f"Ambito: {len(all_rows)} registrazioni locali. Informazioni mancanti: "
-        f"origine creazione {unknown_origin}, utilizzo {unknown_usage}, nominalità {unclassified}. "
-        f"Registrazioni da backup precedente: {legacy_count}; la loro importazione non prova "
-        "scadenza né utilizzo e non è una sincronizzazione controller. "
-        "Senza stampe registrate significa senza evidenze associate a questa identità locale, "
-        "non necessariamente mai stampato. I nomi uguali non provano che due registrazioni "
-        "siano lo stesso voucher."
+    unclassified = sum(
+        row.is_nominal is None and not row.nominality_redacted
+        for row in all_rows
     )
-    if not rows:
-        coverage_note = "Nessun risultato per i criteri scelti. Le informazioni mancanti possono escludere voucher dal report. " + coverage_note
-    return ReportDataset(
+    redacted = sum(row.nominality_redacted for row in all_rows)
+    legacy_count = sum(bool(raw["legacy_source"]) for raw in raw_rows)
+    review_required = sum(bool(raw["identity_review_required"]) for raw in raw_rows)
+    revoked_count = sum(bool(raw["revoked_for_security_at"]) for raw in raw_rows)
+    coverage_note = (
+        f"Ambito: {len(all_rows)} registrazioni locali. La freschezza riportata usa "
+        "l'ultima presenza effettivamente osservata del voucher, non una successiva "
+        "sincronizzazione che ne abbia rilevato soltanto l'assenza. Informazioni non determinabili: "
+        f"origine creazione {unknown_origin}, utilizzo {unknown_usage}, "
+        f"nominalità non classificata {unclassified}; nominalità rimossa per privacy {redacted}. "
+        f"Registrazioni da backup precedente: {legacy_count}; identità da verificare "
+        f"{review_required}; revocati per sicurezza {revoked_count}. "
+        + (
+            "Policy revoca sicurezza configurata. "
+            if security_policy_ready
+            else "Policy revoca sicurezza non configurata: candidati non calcolati. "
+        )
+        + "La loro importazione non prova "
+        "scadenza né utilizzo e non è una sincronizzazione controller. Per queste righe "
+        "la data di creazione/evidenza può derivare dalla prima generazione verificata "
+        "nel backup, non da una data di creazione letta da UniFi. "
+        "Senza stampe registrate significa senza evidenze associate a questa identità locale, "
+        "non necessariamente mai stampato. 'Stampati - nessun utilizzo rilevato' richiede "
+        "una osservazione controller non precedente alla prima stampa. "
+        "I job di stampa sono invii documento unici; "
+        "le copie fisiche contano invece le copie dei singoli voucher associate ai job. "
+        "Descrizione UniFi e destinatario locale sono mantenuti separati: uno non prova "
+        "il significato dell'altro."
+    )
+    if not all_rows:
+        coverage_note = (
+            "Archivio locale senza registrazioni nell'ambito scelto. "
+            + coverage_note
+        )
+    elif kind is not ReportKind.SUMMARY and not rows:
+        coverage_note = (
+            "Nessun risultato per i criteri scelti. Le informazioni non determinabili "
+            "possono escludere voucher dal report. "
+            + coverage_note
+        )
+    print_job_totals = database.report_print_job_totals(
+        voucher_ids=[row.voucher_id for row in totals_source],
+    )
+    dataset = ReportDataset(
         kind=kind,
         purpose=purpose,
         title=REPORT_TITLES[kind],
         generated_at=str(generated_at),
         controller_label=controller_label,
         rows=materialized,
-        totals=_totals(materialized),
+        totals=_totals(
+            totals_source,
+            distinct_print_jobs=print_job_totals.print_jobs,
+            distinct_reprint_jobs=print_job_totals.reprint_jobs,
+        ),
         code_exposed=code_exposed,
-        data_from=sync_times[0] if sync_times else "",
-        data_as_of=sync_times[-1] if sync_times else "",
+        data_from=data_from,
+        data_as_of=data_as_of,
         coverage_note=coverage_note,
     )
+    validate_report_dataset_consistency(dataset)
+    return dataset
+
+
+def build_report_dataset(
+    database: Database,
+    *,
+    kind: ReportKind,
+    generated_at: str,
+    controller_id: int | None = None,
+    include_code_requested: bool = False,
+) -> ReportDataset:
+    """Build one report from a single stable SQLite read snapshot."""
+
+    with database.read_snapshot():
+        return _build_report_dataset_snapshot(
+            database,
+            kind=kind,
+            generated_at=generated_at,
+            controller_id=controller_id,
+            include_code_requested=include_code_requested,
+        )
 
 
 def build_report_dataset_from_path(

@@ -1,6 +1,6 @@
 """Report print submission is independent of the voucher audit lifecycle."""
 from types import SimpleNamespace
-from voucher_management.report_preview import ReportPreview
+from voucher_management.report_preview import ReportPreview, report_result_message
 
 
 def test_report_print_submits_without_voucher_history(monkeypatch):
@@ -32,3 +32,13 @@ def test_report_busy_close_preserves_pdf_until_print_finishes():
     view = SimpleNamespace(_printing=True, bell=lambda: calls.append("busy"))
     ReportPreview.destroy(view)
     assert calls == ["busy"]
+
+
+def test_report_result_message_distinguishes_valid_zero_results():
+    zero = report_result_message(0)
+    assert "Nessun voucher soddisfa" in zero
+    assert "copertura dati" in zero
+
+    populated = report_result_message(3)
+    assert "3 voucher" in populated
+    assert "non modifica lo stato" in populated

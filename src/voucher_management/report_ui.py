@@ -5,11 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import tkinter as tk
-from tempfile import TemporaryDirectory
 from .report_guide import HISTORY_NOTICE, REPORT_GUIDE
 from tkinter import filedialog, messagebox, ttk
 
 from .report_render import render_report_csv, render_report_pdf
+from .report_temp import create_report_temporary_directory
 from .reporting import ReportKind, build_report_dataset_from_path
 
 
@@ -23,10 +23,13 @@ REPORT_CHOICES = (
     ("Stampati - nessun utilizzo rilevato", ReportKind.PRINTED_UNUSED),
     ("Senza stampe registrate", ReportKind.NEVER_PRINTED),
     ("Nominali", ReportKind.NOMINAL),
+    ("Non nominali", ReportKind.NON_NOMINAL),
     ("Non classificati", ReportKind.UNCLASSIFIED),
     ("Uso non determinabile", ReportKind.USAGE_UNKNOWN),
     ("Origine creazione non determinabile", ReportKind.ORIGIN_UNKNOWN),
     ("Nominalità rimossa per privacy", ReportKind.NOMINALITY_REDACTED),
+    ("Da revocare per sicurezza", ReportKind.SECURITY_REVOCATION_CANDIDATES),
+    ("Revocati per sicurezza", ReportKind.SECURITY_REVOKED),
     ("Storico completo", ReportKind.FULL_HISTORY),
 )
 REPORT_KIND_BY_LABEL = dict(REPORT_CHOICES)
@@ -60,7 +63,8 @@ class ReportDialog(tk.Toplevel):
             text=(
                 HISTORY_NOTICE + " I codici voucher non sono esportati in chiaro. "
                 "Il Riepilogo storico contiene solo aggregati; i report di dettaglio "
-                "possono contenere destinatari e account Windows degli operatori."
+                "possono contenere descrizioni UniFi, destinatari locali e "
+                "account Windows degli operatori."
             ),
             style="Muted.TLabel",
             wraplength=520,
@@ -115,7 +119,7 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(
             shell,
             text=(
-                "Nota: “mai osservato utilizzato” descrive solo ciò che Voucher "
+                "Nota: “Nessun utilizzo rilevato” descrive solo ciò che Voucher "
                 "Management ha visto fino all'ultima osservazione controller "
                 "riportata nel file. Se l'evidenza manca, il voucher resta in "
                 "“Uso non determinabile”. La nominalità è una classificazione "
@@ -223,7 +227,7 @@ class ReportDialog(tk.Toplevel):
         safe_kind = kind.value.replace("_", "-")
         temporary = None
         if extension == ".pdf":
-            temporary = TemporaryDirectory(prefix="voucher-report-")
+            temporary = create_report_temporary_directory()
             output = Path(temporary.name) / f"Report-{safe_kind}-{timestamp}.pdf"
         else:
             target = filedialog.asksaveasfilename(parent=self, title="Salva CSV", defaultextension=".csv", initialfile=f"Report-{safe_kind}-{timestamp}.csv", filetypes=(("CSV", "*.csv"),))
@@ -251,20 +255,41 @@ class ReportDialog(tk.Toplevel):
                 )
             else:
                 render_report_csv(dataset, output)
-            return output
+            return output, dataset
 
-        def completed(path: Path) -> None:
+        def completed(result) -> None:
+            path, dataset = result
             self._busy = False
             if temporary is not None:
                 try:
                     from .report_preview import ReportPreview
-                    ReportPreview(self.app, path, temporary)
+                    ReportPreview(
+                        self.app,
+                        path,
+                        temporary,
+                        result_count=dataset.totals.vouchers,
+                    )
                 except Exception:
                     temporary.cleanup()
-                    messagebox.showerror("Report", "Impossibile aprire l'anteprima. Riprova la generazione.", parent=self)
+                    messagebox.showerror(
+                        "Report",
+                        "Impossibile aprire l'anteprima. Riprova la generazione.",
+                        parent=self,
+                    )
                     return
             else:
-                messagebox.showinfo("Report", f"CSV salvato:\n{path}", parent=self)
+                count = dataset.totals.vouchers
+                detail = (
+                    "Nessun voucher soddisfa i criteri; il CSV contiene comunque "
+                    "ambito, copertura dati e riepilogo."
+                    if count == 0
+                    else f"{count} voucher nel report."
+                )
+                messagebox.showinfo(
+                    "Report",
+                    f"CSV salvato:\n{path}\n\n{detail}",
+                    parent=self,
+                )
             self.destroy()
 
         def failed(exc: Exception) -> None:

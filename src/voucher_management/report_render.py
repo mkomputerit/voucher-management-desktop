@@ -41,7 +41,7 @@ def _validate_dataset_policy(dataset: ReportDataset) -> None:
     has_clear_code = any(bool(row.code) for row in dataset.rows)
     if decision.expose_code != dataset.code_exposed:
         raise ValueError("Report dataset code policy is inconsistent")
-    if has_clear_code != dataset.code_exposed:
+    if has_clear_code and not dataset.code_exposed:
         raise ValueError("Report dataset contains unexpected voucher code data")
 
 
@@ -93,7 +93,7 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Utilizzati almeno una volta", str(totals.used_vouchers)],
         ["Nessun utilizzo rilevato", str(totals.never_used_vouchers)],
         ["Utilizzo non determinabile", str(totals.usage_unknown_vouchers)],
-        ["Guest autorizzati (somma ultimo conteggio)", str(totals.total_controller_uses)],
+        ["Guest autorizzati (somma ultimo conteggio osservato)", str(totals.total_controller_uses)],
         ["Voucher scaduti", str(totals.expired_vouchers)],
         ["Voucher stampati", str(totals.printed_vouchers)],
         ["Senza stampe registrate", str(totals.never_printed)],
@@ -102,10 +102,12 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Voucher non nominali", str(totals.non_nominal_vouchers)],
         ["Nominalità non classificata", str(totals.unclassified_vouchers)],
         ["Nominalità rimossa per privacy", str(totals.redacted_nominality_vouchers)],
-        ["Job di stampa", str(totals.print_jobs)],
-        ["Copie fisiche", str(totals.physical_copies)],
-        ["Ristampe", str(totals.reprint_jobs)],
-        ["Copie da ristampa", str(totals.reprint_copies)],
+        ["Job di stampa unici", str(totals.print_jobs)],
+        ["Copie fisiche dei voucher", str(totals.physical_copies)],
+        ["Job con almeno una ristampa", str(totals.reprint_jobs)],
+        ["Copie di voucher ristampate", str(totals.reprint_copies)],
+        ["Da revocare per sicurezza", str(totals.security_revocation_candidates)],
+        ["Revocati per sicurezza", str(totals.security_revoked_vouchers)],
     ]
 
 
@@ -115,24 +117,56 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
         headers.append("Voucher")
     headers.extend(
         [
-            "Destinatario",
+            "Descrizione UniFi",
+            "Destinatario locale",
             "Origine",
             "Nominale",
-            "Creazione controller",
+            "Data creazione / evidenza",
             "Prima acquisizione",
             "Scadenza",
-            "Ultima osservazione controller",
+            "Ultima presenza osservata",
             "Dato uso",
             "Utilizzato",
             "Guest autorizzati",
-            "Stampe",
-            "Copie",
-            "Ristampe",
-            "Operatori",
+            "Job stampa",
+            "Copie voucher",
+            "Job ristampa",
+            "Operatore stampa",
+            "Revoca sicurezza",
             "Stato",
         ]
     )
     return headers
+
+
+_DETAIL_COLUMN_WEIGHTS = {
+    "Controller": 0.72,
+    "Voucher": 0.72,
+    "Descrizione UniFi": 0.90,
+    "Destinatario locale": 1.00,
+    "Origine": 0.88,
+    "Nominale": 0.55,
+    "Data creazione / evidenza": 0.68,
+    "Prima acquisizione": 0.68,
+    "Scadenza": 0.68,
+    "Ultima presenza osservata": 0.72,
+    "Dato uso": 0.66,
+    "Utilizzato": 0.46,
+    "Guest autorizzati": 0.40,
+    "Job stampa": 0.44,
+    "Copie voucher": 0.46,
+    "Job ristampa": 0.46,
+    "Operatore stampa": 0.72,
+    "Revoca sicurezza": 0.68,
+    "Stato": 0.62,
+}
+
+
+def _detail_column_weights(dataset: ReportDataset) -> list[float]:
+    """Keep PDF widths structurally aligned with the generated headers."""
+
+    headers = _detail_headers(dataset)
+    return [_DETAIL_COLUMN_WEIGHTS[header] for header in headers]
 
 
 def _detail_row(dataset: ReportDataset, row) -> list[str]:
@@ -141,6 +175,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
         values.append(row.code)
     values.extend(
         [
+            row.controller_description or "—",
             row.recipient or "—",
             origin_label(row.origin),
             nominal_label(
@@ -150,11 +185,11 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
             _display_time(row.created_at),
             _display_time(row.imported_at),
             _display_time(row.expires_at),
-            _display_time(row.last_synced_at),
+            _display_time(row.last_seen_at),
             "Osservato" if row.usage_observed else "Non disponibile",
             (
                 "Sì"
-                if row.ever_used
+                if row.usage_observed and row.ever_used
                 else ("No" if row.usage_observed else "—")
             ),
             str(row.authorized_guest_count) if row.usage_observed else "—",
@@ -162,6 +197,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
             str(row.physical_copies),
             str(row.reprint_jobs),
             ", ".join(row.print_operators) or "—",
+            _display_time(row.revoked_for_security_at),
             row.status,
         ]
     )
@@ -188,11 +224,14 @@ def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
                 [_csv_cell("Ambito"), _csv_cell(dataset.controller_label)]
             )
             writer.writerow(
-                [_csv_cell("Dati controller dal"), _csv_cell(_display_time(dataset.data_from))]
+                [
+                    _csv_cell("Ultima presenza osservata per voucher - più vecchia"),
+                    _csv_cell(_display_time(dataset.data_from)),
+                ]
             )
             writer.writerow(
                 [
-                    _csv_cell("Dati controller aggiornati fino a"),
+                    _csv_cell("Ultima presenza osservata per voucher - più recente"),
                     _csv_cell(_display_time(dataset.data_as_of)),
                 ]
             )
@@ -242,6 +281,7 @@ def render_report_pdf(
             for row in dataset.rows
             for value in (
                 row.controller_name,
+                row.controller_description,
                 row.recipient,
                 row.status,
                 ", ".join(row.print_operators),
@@ -316,7 +356,7 @@ def render_report_pdf(
                 (
                     f"Generato: {_display_time(dataset.generated_at)}"
                     f"  |  Ambito: {dataset.controller_label}"
-                    f"  |  Ultime osservazioni controller nell’ambito: {_display_time(dataset.data_from)} - {_display_time(dataset.data_as_of)}"
+                    f"  |  Ultime presenze osservate per voucher: {_display_time(dataset.data_from)} - {_display_time(dataset.data_as_of)}"
                 ),
                 subtitle_style,
             )
@@ -376,10 +416,11 @@ def render_report_pdf(
                 )
             else:
                 usable = page_width - 20 * mm
-                if dataset.code_exposed:
-                    weights = [0.72, 0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.72, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
-                else:
-                    weights = [0.72, 1.05, 0.88, 0.55, 0.68, 0.68, 0.68, 0.72, 0.66, 0.46, 0.4, 0.4, 0.4, 0.44, 0.72, 0.56]
+                weights = _detail_column_weights(dataset)
+                if len(weights) != len(headers):
+                    raise RuntimeError(
+                        "La configurazione colonne del report non è coerente."
+                    )
                 scale = usable / sum(weights)
                 detail_table = Table(
                     rows,
@@ -407,10 +448,11 @@ def render_report_pdf(
         story.append(Spacer(1, 4 * mm))
         story.append(
             _paragraph(
-                "Nota: “Mai osservato utilizzato” significa soltanto che Voucher "
+                "Nota: “Nessun utilizzo rilevato” significa soltanto che Voucher "
                 "Management non ha mai osservato un conteggio guest autorizzati positivo "
-                "fino all'ultima osservazione controller indicata. Se manca questa "
-                "evidenza, il report mostra “uso non determinabile”. Il conteggio guest "
+                "fino all'ultima presenza del voucher effettivamente osservata su UniFi. "
+                "Se manca questa evidenza, il report mostra “uso non determinabile”. "
+                "Il conteggio guest "
                 "autorizzati è l'ultimo valore conservato e non è un contatore cumulativo "
                 "di accessi né un timestamp d'uso.",
                 small,

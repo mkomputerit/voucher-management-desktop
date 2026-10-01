@@ -8,6 +8,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from .create_reporting_recovery import reconcile_pending_create_reporting_to_path
+from .retention import durable_legacy_generation_blockers
 from .sync_store import persist_refresh_snapshot_to_path
 from .unifi_api import UniFiClient
 from .workflows import (
@@ -80,22 +81,56 @@ class VoucherDeletionMixin:
             return
 
         controller_id = getattr(self, "active_controller_id", None)
-        historically_used = (
-            self.database.historically_used_remote_ids(
-                controller_id=controller_id,
-                unifi_ids=[voucher.id for voucher in current],
+        database = getattr(self, "database", None)
+        if controller_id is None or database is None:
+            messagebox.showwarning(
+                "Eliminazione non consentita",
+                "Lo storico locale necessario a verificare il ciclo di vita "
+                "dei voucher non è disponibile. Sincronizzare prima di eliminare.",
+                parent=self,
             )
-            if controller_id is not None and getattr(self, "database", None) is not None
-            else frozenset()
+            return
+
+        safety = database.deletion_safety_facts(
+            controller_id=controller_id,
+            unifi_ids=[voucher.id for voucher in current],
         )
+        current_ids = {str(voucher.id) for voucher in current}
+        missing_local = current_ids - set(safety)
+        usage_unknown = {
+            remote_id
+            for remote_id, fact in safety.items()
+            if not fact.usage_observed
+        } | missing_local
+        historically_used = {
+            remote_id
+            for remote_id, fact in safety.items()
+            if fact.ever_used
+        }
+        durable_generated_local_ids = durable_legacy_generation_blockers(
+            database,
+            voucher_ids=[fact.voucher_id for fact in safety.values()],
+        )
+        durable_generated = {
+            remote_id
+            for remote_id, fact in safety.items()
+            if fact.voucher_id in durable_generated_local_ids
+        }
         blocked = evaluate_delete_candidates(
             current,
             stats,
-            historically_used_ids=historically_used,
+            historically_used_ids=frozenset(historically_used),
+            usage_unknown_ids=frozenset(usage_unknown),
+            durable_generated_ids=frozenset(durable_generated),
         )
         if blocked:
             reasons = {item.policy.reason for item in blocked}
-            if "in_use" in reasons:
+            if "usage_unknown" in reasons:
+                detail = (
+                    "Per almeno un voucher selezionato lo storico locale non "
+                    "permette di determinare con certezza l'utilizzo."
+                )
+            elif "in_use" in reasons:
                 detail = (
                     "Almeno un voucher selezionato risulta già utilizzato o "
                     "in uso sul controller."
@@ -104,6 +139,11 @@ class VoucherDeletionMixin:
                 detail = (
                     "Almeno un voucher selezionato risulta già stampato."
                 )
+            elif "generated" in reasons:
+                detail = (
+                    "Almeno un voucher selezionato ha già un PDF/emissione "
+                    "registrata nello storico locale."
+                )
             else:
                 detail = (
                     "Almeno un voucher selezionato non è eliminabile "
@@ -111,9 +151,10 @@ class VoucherDeletionMixin:
                 )
             messagebox.showwarning(
                 "Eliminazione non consentita",
-                f"{detail}\n\nVoucher Management consente solo la pulizia "
-                "dei voucher non ancora emessi. L'eventuale revoca resta di "
-                "competenza dell'amministratore IT.",
+                f"{detail}\n\nVoucher Management consente qui solo la pulizia "
+                "dei voucher non ancora emessi. Per i voucher stampati e mai "
+                "utilizzati usare Revoca sicurezza nella sezione Retention, "
+                "quando soddisfano la policy configurata.",
                 parent=self,
             )
             return

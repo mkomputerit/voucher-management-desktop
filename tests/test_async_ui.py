@@ -217,7 +217,10 @@ def test_refresh_defers_network_and_snapshot_persistence_to_worker(monkeypatch):
         paths=SimpleNamespace(database="test.sqlite"),
         bell=lambda: None,
         vouchers=[],
-        create_guard=SimpleNamespace(clear=lambda: False),
+        create_guard=SimpleNamespace(
+            clear=lambda: False,
+            has_reporting_recovery=False,
+        ),
         populate=lambda: calls.append(("populate", None)),
         _run_network_task=lambda label, worker, success, error: captured.update(
             label=label,
