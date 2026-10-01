@@ -50,6 +50,7 @@ class ReportDialog(tk.Toplevel):
         self.kind_var = tk.StringVar(value=REPORT_CHOICES[0][0])
         self.scope_var = tk.StringVar(value="Tutto lo storico locale")
         self.format_var = tk.StringVar(value="PDF")
+        self.include_codes_var = tk.BooleanVar(value=False)
 
         shell = ttk.Frame(self, padding=20)
         shell.pack(fill="both", expand=True)
@@ -63,8 +64,10 @@ class ReportDialog(tk.Toplevel):
             text=(
                 "I report amministrativi leggono lo storico locale conservato "
                 "da Voucher Management e non dipendono dalla connessione corrente "
-                "alla controller. I codici voucher non sono esportati in chiaro. "
-                "Il Riepilogo storico contiene solo aggregati; i report di dettaglio "
+                "alla controller. I codici voucher restano nascosti nei report "
+                "ordinari; lo Storico completo può includerli solo su richiesta "
+                "esplicita dell'operatore. Il Riepilogo storico contiene solo "
+                "aggregati; i report di dettaglio "
                 "possono contenere destinatari e account Windows degli operatori."
             ),
             style="Muted.TLabel",
@@ -85,6 +88,10 @@ class ReportDialog(tk.Toplevel):
             width=30,
         )
         self.kind_combo.grid(row=0, column=1, sticky="ew", pady=7)
+        self.kind_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._update_code_option(),
+        )
 
         ttk.Label(grid, text="Ambito").grid(
             row=1, column=0, sticky="w", pady=7, padx=(0, 16)
@@ -110,7 +117,18 @@ class ReportDialog(tk.Toplevel):
         )
         self.format_combo.grid(row=2, column=1, sticky="w", pady=7)
 
+        ttk.Label(grid, text="Codici voucher").grid(
+            row=3, column=0, sticky="w", pady=7, padx=(0, 16)
+        )
+        self.include_codes_check = ttk.Checkbutton(
+            grid,
+            text="Includi in chiaro nello Storico completo",
+            variable=self.include_codes_var,
+        )
+        self.include_codes_check.grid(row=3, column=1, sticky="w", pady=7)
+
         grid.columnconfigure(1, weight=1)
+        self._update_code_option()
 
         ttk.Label(
             shell,
@@ -149,6 +167,20 @@ class ReportDialog(tk.Toplevel):
         self.geometry(f"{width}x{height}")
         self.resizable(True, False)
 
+    def _update_code_option(self) -> None:
+        """Expose clear-code export only for the explicit full-history report."""
+
+        allowed = (
+            REPORT_KIND_BY_LABEL.get(self.kind_var.get())
+            is ReportKind.FULL_HISTORY
+        )
+        if allowed and not self._busy:
+            self.include_codes_check.state(["!disabled"])
+        else:
+            self.include_codes_check.state(["disabled"])
+            if not allowed:
+                self.include_codes_var.set(False)
+
     def _close(self) -> None:
         """Do not destroy Tk widgets while a renderer callback is pending."""
 
@@ -168,12 +200,14 @@ class ReportDialog(tk.Toplevel):
             self.kind_combo.state(["disabled"])
             self.scope_combo.state(["disabled"])
             self.format_combo.state(["disabled"])
+            self.include_codes_check.state(["disabled"])
         else:
             self.cancel_button.state(["!disabled"])
             self.generate_button.state(["!disabled"])
             self.kind_combo.state(["!disabled", "readonly"])
             self.scope_combo.state(["!disabled", "readonly"])
             self.format_combo.state(["!disabled", "readonly"])
+            self._update_code_option()
 
 
     def _generate(self) -> None:
@@ -224,6 +258,10 @@ class ReportDialog(tk.Toplevel):
                 kind=kind,
                 generated_at=generated_at,
                 controller_id=controller_id,
+                include_code_requested=bool(
+                    kind is ReportKind.FULL_HISTORY
+                    and self.include_codes_var.get()
+                ),
             )
             if extension == ".pdf":
                 render_report_pdf(
