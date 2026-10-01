@@ -9,6 +9,7 @@ import pytest
 from voucher_management.database import Database
 from voucher_management.report_policy import ReportPurpose
 from voucher_management.reporting import ReportKind, build_report_dataset
+from voucher_management.security_revocation import record_security_revocations
 from voucher_management.sync_store import persist_successful_snapshot
 from voucher_management.unifi_api import ApiVoucher
 
@@ -427,5 +428,53 @@ def test_retention_archived_row_remains_in_full_history(tmp_path):
         assert row.code == ""
         assert row.recipient == ""
         assert row.nominality_redacted is True
+    finally:
+        db.close()
+
+
+def test_security_revoked_report_preserves_history_and_labels_status(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "revoked",
+            "7777788888",
+            name="Guest Revoked",
+        )
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="revoked-job",
+            codes=["77777-88888"],
+            output_file="revoked.pdf",
+            document_copies=1,
+            printed_at="2026-09-10T08:00:00+00:00",
+            windows_user="PC\\\\operator",
+        )
+        record_security_revocations(
+            db,
+            voucher_ids=[voucher_id],
+            revoked_at="2026-09-30T08:00:00+00:00",
+            windows_user="PC\\\\operator",
+        )
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.SECURITY_REVOKED,
+            generated_at=NOW,
+        )
+        assert [row.voucher_id for row in dataset.rows] == [voucher_id]
+        row = dataset.rows[0]
+        assert row.status == "Revocato per sicurezza"
+        assert row.recipient == "Guest Revoked"
+        assert row.security_revoked_at == "2026-09-30T08:00:00+00:00"
+        assert dataset.totals.security_revoked_vouchers == 1
+
+        stored = db.connection.execute(
+            "SELECT code, archived_at FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert stored["code"] == "7777788888"
+        assert stored["archived_at"] is None
     finally:
         db.close()
