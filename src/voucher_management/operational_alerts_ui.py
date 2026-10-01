@@ -144,6 +144,9 @@ class OperationalAlertsDialog(tk.Toplevel):
         refresh_home = getattr(self.app, "_refresh_home_threshold_alerts", None)
         if refresh_home is not None:
             refresh_home()
+        refresh_settings = getattr(self.app, "_refresh_threshold_summary", None)
+        if refresh_settings is not None:
+            refresh_settings()
 
     def _refresh(self) -> None:
         self.tree.delete(*self.tree.get_children())
