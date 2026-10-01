@@ -981,3 +981,111 @@ def test_generated_pdf_hmac_lookup_uses_printed_code_format(tmp_path):
         assert result.skipped_ids == (voucher_id,)
     finally:
         database.close()
+
+
+def test_pending_security_revocation_is_not_offered_again(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="pending-security",
+            code="2323232323",
+            expires_at=None,
+            expired=False,
+            present=True,
+        )
+        database.record_print_audit(
+            controller_id=controller,
+            audit_id="pending-security-print",
+            codes=["23232-32323"],
+            output_file="pending.pdf",
+            document_copies=1,
+            printed_at="2026-06-01T08:00:00+00:00",
+            windows_user="operator",
+        )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET last_seen_at=? WHERE id=?",
+                (NOW, voucher_id),
+            )
+
+        before = security_revocation_candidates(
+            database,
+            now=NOW,
+            controller_id=controller,
+        )
+        assert [item.voucher_id for item in before] == [voucher_id]
+
+        prepare_security_revocation_operation(
+            database,
+            controller_id=controller,
+            voucher_ids=[voucher_id],
+            operation_uuid="pending-security-operation",
+            requested_at=NOW,
+            windows_user="operator",
+        )
+
+        assert security_revocation_candidates(
+            database,
+            now=NOW,
+            controller_id=controller,
+        ) == ()
+    finally:
+        database.close()
+
+
+def test_database_rejects_second_pending_security_revocation_intent(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="double-pending-security",
+            code="2424242424",
+            expires_at=None,
+            expired=False,
+            present=True,
+        )
+        database.record_print_audit(
+            controller_id=controller,
+            audit_id="double-pending-print",
+            codes=["24242-42424"],
+            output_file="double-pending.pdf",
+            document_copies=1,
+            printed_at="2026-06-01T08:00:00+00:00",
+            windows_user="operator",
+        )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET last_seen_at=? WHERE id=?",
+                (NOW, voucher_id),
+            )
+
+        database.prepare_security_revocations(
+            controller_id=controller,
+            unifi_ids=["double-pending-security"],
+            operation_uuid="first-pending-operation",
+            requested_at=NOW,
+            requested_by="operator",
+        )
+        with pytest.raises(RuntimeError, match="già una revoca"):
+            database.prepare_security_revocations(
+                controller_id=controller,
+                unifi_ids=["double-pending-security"],
+                operation_uuid="second-pending-operation",
+                requested_at=NOW,
+                requested_by="operator",
+            )
+
+        rows = database.connection.execute(
+            """SELECT operation_uuid, status
+               FROM security_revocations
+               WHERE voucher_id=?""",
+            (voucher_id,),
+        ).fetchall()
+        assert [(row["operation_uuid"], row["status"]) for row in rows] == [
+            ("first-pending-operation", "PREPARED")
+        ]
+    finally:
+        database.close()
