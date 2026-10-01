@@ -427,6 +427,36 @@ the source profile because that source is contractually left unchanged; after
 a successful restore it writes the verified source-backup facts into the
 resulting shared database instead.
 
+## Export identity and uniqueness
+
+Exported administrative data is keyed by the durable SQLite voucher row, whose
+controller identity is `(controller_id, unifi_id)`. A voucher code is not an
+identity key and is never used to collapse report rows. The reporting query
+returns one row per voucher and aggregates print facts by that voucher row;
+security events are read through a scalar aggregate so additional historical
+events cannot multiply print totals.
+
+Any future reporting change that returns the same voucher ID more than once is
+rejected before PDF/CSV rendering. Logically inconsistent states such as
+`ever_used=1` without usage evidence, or simultaneous nominal classification
+and privacy redaction, also fail closed rather than producing a plausible but
+incorrect export.
+
+Physical-print and voucher-PDF workflows resolve human-readable codes only when
+the code maps to exactly one voucher on the active controller. Missing or
+ambiguous mappings are rejected. A print batch also rejects duplicate voucher
+IDs and duplicate codes; deliberate multiple labels remain supported only for
+the explicit single unlimited-voucher copy workflow.
+
+History exchange uses stable `event_id` / `print_job_id + voucher_id`
+identities for modern events, preserves legacy rows as a multiset and rejects
+duplicate/conflicting modern event identities. Re-import is idempotent.
+
+Backup export does not recalculate or deduplicate application facts: it captures
+a transactionally consistent SQLite image. The backup container rejects
+duplicate/case-colliding Windows paths and validates SQLite integrity, snapshot
+hash and schema version before restore.
+
 ## Reporting
 
 Reports are calculated from durable atomic facts rather than stored aggregate
