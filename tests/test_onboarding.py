@@ -17,6 +17,7 @@ from voucher_management.onboarding import (
     legacy_installation_has_evidence,
     onboarding_state,
 )
+from voucher_management.modern_app import ModernVoucherApp
 from voucher_management.onboarding_ui import (
     schedule_first_run_onboarding,
     startup_onboarding_state,
@@ -47,6 +48,28 @@ def _draft():
         pdf_notes="Conservare il voucher",
         unused_unprinted_days=180,
     )
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (OnboardingState.EXISTING_INSTALLATION, True),
+        (OnboardingState.COMPLETE, True),
+        (OnboardingState.REQUIRED, False),
+        (OnboardingState.MIGRATION_AVAILABLE, False),
+    ],
+)
+def test_retention_startup_gate_covers_completed_upgrades(
+    monkeypatch,
+    state,
+    expected,
+):
+    monkeypatch.setattr(
+        "voucher_management.modern_app.startup_onboarding_state",
+        lambda _app: state,
+    )
+    fake = object()
+    assert ModernVoucherApp._retention_intro_allowed_on_startup(fake) is expected
 
 
 def test_fresh_database_requires_onboarding(tmp_path):
