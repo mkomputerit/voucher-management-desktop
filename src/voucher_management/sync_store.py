@@ -118,6 +118,62 @@ def _renumber_prints_chronologically(tx, voucher_id: int) -> None:
         )
 
 
+def _legacy_identity_temporally_compatible(
+    tx,
+    *,
+    target_id: int,
+    source_id: int,
+) -> bool | None:
+    """Prove that a live voucher existed no later than its legacy evidence.
+
+    Code equality is necessary but not sufficient for historical consolidation:
+    a controller could theoretically expose the same clear code for a later
+    voucher.  When timestamps are unavailable or unparsable, return None so the
+    caller can fail closed and request review instead of guessing.
+    """
+
+    target = tx.execute(
+        "SELECT created_at FROM vouchers WHERE id=?",
+        (int(target_id),),
+    ).fetchone()
+    if target is None or not str(target["created_at"] or "").strip():
+        return None
+
+    evidence = tx.execute(
+        """SELECT stamp
+           FROM (
+               SELECT created_at AS stamp
+               FROM vouchers
+               WHERE id=? AND created_at IS NOT NULL
+               UNION ALL
+               SELECT occurred_at AS stamp
+               FROM legacy_audit_events
+               WHERE voucher_id=?
+               UNION ALL
+               SELECT printed_at AS stamp
+               FROM voucher_prints
+               WHERE voucher_id=?
+           )
+           WHERE TRIM(COALESCE(stamp, '')) <> ''
+           ORDER BY
+               (julianday(stamp) IS NULL),
+               julianday(stamp) ASC,
+               stamp ASC
+           LIMIT 1""",
+        (int(source_id), int(source_id), int(source_id)),
+    ).fetchone()
+    if evidence is None:
+        return None
+
+    parsed = tx.execute(
+        "SELECT julianday(?) AS live_created, julianday(?) AS legacy_evidence",
+        (str(target["created_at"]), str(evidence["stamp"])),
+    ).fetchone()
+    if parsed["live_created"] is None or parsed["legacy_evidence"] is None:
+        return None
+    return float(parsed["live_created"]) <= float(parsed["legacy_evidence"])
+
+
 def _merge_legacy_archive_voucher(
     database: Database,
     tx,
@@ -300,6 +356,26 @@ def _consolidate_legacy_identity_for_live_voucher(
             source_ids=source_ids,
             observed_at=observed_at,
             reason="multiple_legacy_identities",
+        )
+        return
+
+    temporal_match = _legacy_identity_temporally_compatible(
+        tx,
+        target_id=int(target_id),
+        source_id=source_ids[0],
+    )
+    if temporal_match is not True:
+        _record_identity_review_required(
+            database,
+            tx,
+            target_id=int(target_id),
+            source_ids=source_ids,
+            observed_at=observed_at,
+            reason=(
+                "live_created_after_legacy_evidence"
+                if temporal_match is False
+                else "temporal_identity_unverified"
+            ),
         )
         return
 
