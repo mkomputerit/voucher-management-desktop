@@ -233,6 +233,8 @@ def test_absent_fresh_snapshot_confirms_delete_and_preserves_reason(tmp_path):
         assert event["event_type"] == "PREPARATION_DELETED"
         details = json.loads(event["details_json"])
         assert details["reason"] == "Destinatario errato"
+        assert details["requested_at"] == NOW
+        assert details["confirmed_at"] == "2026-10-01T10:05:00+00:00"
         assert details["workflow"] == "preparation_error"
         assert details["confirmation_source"] == "fresh_snapshot_absent"
     finally:
