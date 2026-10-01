@@ -22,3 +22,21 @@ def test_any_previous_physical_print_requires_warning():
     assert warning.previous_print_jobs == 2
     assert warning.previous_physical_copies == 3
     assert warning.last_printed_at.endswith("11:00:00Z")
+
+
+
+def test_known_legacy_print_without_audit_requires_warning():
+    warning = evaluate_reprint(
+        PrintAuditSummary(
+            print_jobs=0,
+            physical_copies=0,
+            first_printed_at="",
+            last_printed_at="",
+            known_printed_without_audit=True,
+        )
+    )
+
+    assert warning.required is True
+    assert warning.print_history_incomplete is True
+    assert warning.previous_print_jobs == 0
+    assert warning.last_printed_at == ""
