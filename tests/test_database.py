@@ -81,9 +81,10 @@ def test_voucher_upsert_preserves_local_fields(tmp_path):
         )
         db.connection.execute(
             """UPDATE vouchers
-               SET assigned_to=?, notes=?, origin='APPLICATION', is_nominal=1
+               SET notes=?, origin='APPLICATION', is_nominal=1,
+                   print_state='NOT_PRINTED'
                WHERE id=?""",
-            ("Mario Rossi", "Consegna reception", voucher_id),
+            ("Consegna reception", voucher_id),
         )
         db.connection.commit()
 
@@ -103,10 +104,10 @@ def test_voucher_upsert_preserves_local_fields(tmp_path):
         assert same_id == voucher_id
         assert row["authorized_guest_count"] == 2
         assert row["expired"] == 1
-        assert row["assigned_to"] == "Mario Rossi"
         assert row["notes"] == "Consegna reception"
         assert row["origin"] == "APPLICATION"
         assert row["is_nominal"] == 1
+        assert row["print_state"] == "NOT_PRINTED"
     finally:
         db.close()
 
@@ -295,6 +296,9 @@ def test_record_print_audit_is_idempotent_and_sequences_reprints(tmp_path):
         summary = db.print_summary(voucher)
         assert summary.print_jobs == 1
         assert summary.physical_copies == 2
+        assert db.connection.execute(
+            "SELECT print_state FROM vouchers WHERE id=?", (voucher,)
+        ).fetchone()["print_state"] == "PRINTED"
 
         db.record_print_audit(
             audit_id="audit-2",
@@ -690,7 +694,7 @@ def test_intermediate_schema_three_with_redaction_column_upgrades_idempotently(t
         migrated.close()
 
 
-def test_schema_four_upgrade_moves_only_legacy_recipient_to_local_metadata(tmp_path):
+def test_schema_four_upgrade_restores_legacy_display_name_without_touching_live_unifi_name(tmp_path):
     path = tmp_path / "schema-four-legacy-recipient.db"
     db = Database(path)
     db.initialize()
@@ -763,17 +767,101 @@ def test_schema_four_upgrade_moves_only_legacy_recipient_to_local_metadata(tmp_p
             (live_id,),
         ).fetchone()
 
-        assert legacy["name"] == ""
+        assert legacy["name"] == "Ospite legacy"
         assert legacy["assigned_to"] == "Ospite legacy"
         assert legacy["origin"] == "UNKNOWN"
         assert legacy["created_at"] is None
-        assert preserved["name"] == ""
+        assert preserved["name"] == "Destinatario locale già corretto"
         assert preserved["assigned_to"] == "Destinatario locale già corretto"
         assert preserved["origin"] == "UNKNOWN"
         assert preserved["created_at"] is None
         assert live["name"] == "Descrizione UniFi"
         assert live["assigned_to"] == "Destinatario live"
         assert live["origin"] == "CONTROLLER"
+        assert migrated.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0] == SCHEMA_VERSION
+    finally:
+        migrated.close()
+
+
+
+def test_schema_five_backfills_print_state_without_guessing_external_history(tmp_path):
+    path = tmp_path / "schema-five-print-state.db"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="UniFi",
+        api_root="https://controller.example",
+        created_at="t",
+    )
+    application_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="application",
+        code="11111-11111",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    external_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="external",
+        code="22222-22222",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    printed_external_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="external-printed",
+        code="33333-33333",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            "UPDATE vouchers SET origin='APPLICATION', print_state='UNKNOWN' WHERE id=?",
+            (application_id,),
+        )
+        cursor = tx.execute(
+            """INSERT INTO print_jobs
+               (print_job_uuid, created_at, submitted_at, windows_user,
+                document_copies, status)
+               VALUES ('legacy-print-state', 't', 't', 'MIGRATION', 1, 'AUDITED')"""
+        )
+        tx.execute(
+            """INSERT INTO voucher_prints
+               (print_job_id, voucher_id, printed_at, windows_user,
+                physical_copies, print_sequence, is_reprint)
+               VALUES (?, ?, 't', 'MIGRATION', 1, 1, 0)""",
+            (cursor.lastrowid, printed_external_id),
+        )
+        tx.execute(
+            "UPDATE vouchers SET print_state='UNKNOWN' WHERE id IN (?, ?)",
+            (external_id, printed_external_id),
+        )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("PRAGMA user_version = 5")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '5')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        states = {
+            row["unifi_id"]: row["print_state"]
+            for row in migrated.connection.execute(
+                "SELECT unifi_id, print_state FROM vouchers"
+            )
+        }
+        assert states == {
+            "application": "NOT_PRINTED",
+            "external": "UNKNOWN",
+            "external-printed": "PRINTED",
+        }
         assert migrated.connection.execute(
             "PRAGMA user_version"
         ).fetchone()[0] == SCHEMA_VERSION
