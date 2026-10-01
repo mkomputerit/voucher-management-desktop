@@ -84,7 +84,8 @@ def test_wizard_persists_backup_options_and_export_drops_machine_specific_folder
             structure_name="Example Venue",
             backup_directory=str(tmp_path / "copies"),
             backup_on_close=False,
-            unused_unprinted_days=180,
+            unprinted_warning_days=30,
+            security_revoke_days=180,
         )
         complete_onboarding(database, store, draft, observed_at="2026-09-29T06:00:00+00:00")
         settings = store.load()
@@ -175,7 +176,8 @@ def test_real_wizard_reaches_backup_step_and_saves_it_at_completion(tmp_path, mo
         wizard._controller_result = SimpleNamespace(client=object(), info={}, vouchers=[], observed_at="2026-09-29T06:00:00+00:00")
         wizard._next()
         assert wizard.page == wizard.PAGE_RETENTION
-        wizard.retention_days_var.set("180")
+        wizard.unprinted_warning_days_var.set("30")
+        wizard.security_revoke_days_var.set("180")
         wizard._next()
         assert wizard.page == wizard.PAGE_BACKUP
         wizard.backup_directory_var.set(str(tmp_path / "chosen"))
