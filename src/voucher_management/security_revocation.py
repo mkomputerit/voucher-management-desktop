@@ -461,6 +461,7 @@ def reconcile_pending_security_revocations(
         voucher_ids=confirmed,
         revoked_at=observed_at,
         windows_user=windows_user,
+        confirmation_source="fresh_snapshot_absent",
     )
 
 
@@ -494,13 +495,21 @@ def record_security_revocations(
     voucher_ids: list[int] | tuple[int, ...],
     revoked_at: str,
     windows_user: str,
+    confirmation_source: str = "delete_response",
 ) -> tuple[int, ...]:
-    """Record confirmed UniFi revocations without minimizing local data."""
+    """Record a security revocation outcome without minimizing local data.
+
+    confirmation_source distinguishes a directly confirmed DELETE from a later
+    full-snapshot reconciliation that only proves the voucher is absent.
+    """
 
     stamp = _normalize_now(revoked_at).isoformat()
     operator = str(windows_user or "").strip()
     if not operator:
         raise ValueError("windows user is required")
+    source = str(confirmation_source or "").strip()
+    if source not in {"delete_response", "fresh_snapshot_absent"}:
+        raise ValueError("unsupported security revocation confirmation source")
     requested = tuple(dict.fromkeys(int(value) for value in voucher_ids))
     if not requested:
         return ()
@@ -543,7 +552,11 @@ def record_security_revocations(
             details = Database.encode_event_details(
                 {
                     "reason": "printed_unused_threshold",
-                    "remote_delete_confirmed": True,
+                    "confirmation_source": source,
+                    "remote_delete_confirmed": source == "delete_response",
+                    "fresh_snapshot_confirmed_absent": (
+                        source == "fresh_snapshot_absent"
+                    ),
                     "credential_preserved_locally": True,
                 }
             )
