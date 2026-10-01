@@ -80,6 +80,94 @@ def test_complete_snapshot_marks_missing_voucher_absent_but_keeps_history(tmp_pa
         db.close()
 
 
+
+
+def test_new_controller_voucher_keeps_unifi_facts_and_does_not_invent_local_classification(tmp_path):
+    db = Database(tmp_path / "discovered.sqlite")
+    db.initialize()
+    controller = db.create_controller(
+        name="Reception",
+        api_root="https://controller.example",
+        created_at="t",
+    )
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("external-1", recipient="Ospite Controller")],
+            observed_at="2026-10-01T08:00:00+00:00",
+            sync_uuid="discover-external",
+        )
+
+        row = db.connection.execute(
+            """SELECT name, created_at, origin, is_nominal, print_state,
+                      notes, present_on_controller
+               FROM vouchers
+               WHERE controller_id=? AND unifi_id='external-1'""",
+            (controller,),
+        ).fetchone()
+
+        assert row["name"] == "Ospite Controller"
+        assert row["created_at"] == "2023-11-14T22:13:20+00:00"
+        assert row["origin"] == "CONTROLLER"
+        assert row["is_nominal"] is None
+        assert row["print_state"] == "UNKNOWN"
+        assert row["notes"] == ""
+        assert row["present_on_controller"] == 1
+    finally:
+        db.close()
+
+
+def test_controller_absence_preserves_local_alignment_and_history(tmp_path):
+    db = Database(tmp_path / "absence-history.sqlite")
+    db.initialize()
+    controller = db.create_controller(
+        name="Reception",
+        api_root="https://controller.example",
+        created_at="t",
+    )
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("external-2", recipient="Tecnico Rossi")],
+            observed_at="2026-10-01T08:00:00+00:00",
+            sync_uuid="external-present",
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET is_nominal=1, print_state='PRINTED',
+                       notes='Allineato operatore'
+                   WHERE controller_id=? AND unifi_id='external-2'""",
+                (controller,),
+            )
+
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[],
+            observed_at="2026-10-01T09:00:00+00:00",
+            sync_uuid="external-absent",
+        )
+
+        row = db.connection.execute(
+            """SELECT name, origin, is_nominal, print_state, notes,
+                      present_on_controller
+               FROM vouchers
+               WHERE controller_id=? AND unifi_id='external-2'""",
+            (controller,),
+        ).fetchone()
+        assert row is not None
+        assert row["name"] == "Tecnico Rossi"
+        assert row["origin"] == "CONTROLLER"
+        assert row["is_nominal"] == 1
+        assert row["print_state"] == "PRINTED"
+        assert row["notes"] == "Allineato operatore"
+        assert row["present_on_controller"] == 0
+    finally:
+        db.close()
+
 def test_new_voucher_does_not_create_fake_change_history(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     db.initialize()
