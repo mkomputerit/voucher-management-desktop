@@ -110,6 +110,7 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Voucher non nominali", str(totals.non_nominal_vouchers)],
         ["Nominalità non classificata", str(totals.unclassified_vouchers)],
         ["Revocati per sicurezza", str(totals.security_revoked_vouchers)],
+        ["Eliminati dalla controller", str(totals.preparation_deleted_vouchers)],
         ["Nominalità rimossa per privacy", str(totals.redacted_nominality_vouchers)],
         ["Job di stampa", str(totals.print_jobs)],
         ["Copie fisiche", str(totals.physical_copies)],
@@ -140,6 +141,8 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
             "Copie",
             "Ristampe",
             "Operatori",
+            "Data cancellazione",
+            "Motivo cancellazione",
             "Stato",
         ]
     )
@@ -175,6 +178,8 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
             str(row.physical_copies),
             str(row.reprint_jobs),
             ", ".join(row.print_operators) or "—",
+            _display_time(row.preparation_deleted_at),
+            row.preparation_delete_reason or "—",
             row.status,
         ]
     )
@@ -395,7 +400,7 @@ def render_report_pdf(
                     [
                         0.96, 1.20, 0.80, 0.50, 0.60, 0.60, 0.60,
                         0.64, 0.58, 0.40, 0.35, 0.52, 0.35, 0.35,
-                        0.35, 0.64, 0.50,
+                        0.35, 0.64, 0.62, 1.00, 0.50,
                     ]
                 )
                 if len(weights) != len(headers):
