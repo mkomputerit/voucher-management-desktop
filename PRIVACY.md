@@ -70,25 +70,30 @@ not stored in settings, logs or backup metadata. Encrypted validation/restore us
 an OS-managed anonymous/auto-delete temporary file for decrypted ZIP bytes,
 rather than a named plaintext archive under the application-data directory.
 
-Voucher Management 5.0 also applies review-driven local retention.
-Used, physically printed or PDF-generated vouchers are never retention
-candidates. Old unused vouchers with no generated PDF are proposed only after
-they are absent from a complete controller snapshot. Nothing is minimized
-automatically. When an
-operator explicitly archives a candidate, the durable historical row remains
-but the reusable voucher code, recipient label, nominal assignment and free-text
-notes are removed.
+Voucher Management 5.1 keeps local retention review separate from privacy
+minimization. The operator must explicitly choose the age threshold used to
+identify old records for review. Used, physically printed or PDF-generated
+vouchers remain protected by the conservative candidate rules. In this release
+privacy minimization is disabled: retention review does not replace voucher
+codes, remove recipient labels, clear nominal classification or erase local
+notes.
+
+Security revocation is a separate controller-side operation. A printed voucher
+that remains without positive-use evidence beyond an operator-selected threshold
+may be proposed for revocation. Immediately before deletion Voucher Management
+reads that voucher again from UniFi and refuses the operation if the live state
+is no longer eligible. After revocation the complete local historical record,
+including the voucher code and local metadata, remains available for audit and
+reporting. The audit distinguishes a DELETE confirmed by its response from an
+outcome later reconciled only because a complete fresh controller snapshot
+confirmed the voucher absent.
 
 Pre-SQLite legacy ZIP import is an explicit historical-recovery operation.
-Voucher rows backed by verified legacy PDF-generation or print evidence are
-protected from ordinary retention so that imported audit evidence is not
-silently disconnected from its subject. Those imported rows, including any
-recipient label recovered from the legacy history, therefore remain in the
-local archive unless a future explicit archive-removal workflow is used.
-Importing an old ZIP can also deliberately restore clear voucher/recipient data
-that had already been minimized in the current database when no durable
-verifiable identity remains to prove that the ZIP record is the same minimized
-voucher. The import confirmation warns about this before any live data changes.
+Verified legacy PDF-generation or print evidence is retained as document/print
+history. A legacy `generate` event proves that Voucher Management generated a
+document for the voucher; it does not prove that the application originally
+created that voucher on the UniFi controller. Imported recipient and audit data
+remain in the local archive; no current-release retention action minimizes them.
 
 Manual history exchange packages (`.vmhx`) are always password-protected.
 They contain local audit rows and the portable history key needed to preserve
