@@ -488,11 +488,15 @@ class AlignmentDialog(tk.Toplevel):
         has_unknown_nominal = any(
             item.is_nominal is None for item in selected_candidates
         )
-        if not has_unknown_nominal and len(known_nominal) > 1:
+        if (
+            (not has_unknown_nominal and len(known_nominal) > 1)
+            or (has_unknown_nominal and bool(known_nominal))
+        ):
             messagebox.showinfo(
                 "Allinea voucher",
-                "La selezione contiene nominalità già assegnate diverse. "
-                "Allineare i gruppi separatamente.",
+                "La selezione mescola voucher con nominalità già assegnata e "
+                "voucher ancora da classificare, oppure contiene classificazioni "
+                "diverse. Allineare i gruppi separatamente.",
                 parent=self,
             )
             return
