@@ -470,6 +470,23 @@ def build_print_batch(
     if not 1 <= int(unlimited_copies) <= 999:
         raise ValueError("Numero copie non valido")
 
+    voucher_ids = [str(voucher.id).strip() for voucher in selected]
+    if any(not voucher_id for voucher_id in voucher_ids):
+        raise ValueError("Identità voucher mancante nella selezione")
+    if len(set(voucher_ids)) != len(voucher_ids):
+        raise ValueError("Selezione voucher duplicata")
+
+    canonical_codes = [
+        str(voucher.code_formatted).strip().replace("-", "")
+        for voucher in selected
+    ]
+    if any(not code for code in canonical_codes):
+        raise ValueError("Codice voucher mancante nella selezione")
+    if len(set(canonical_codes)) != len(canonical_codes):
+        raise ValueError(
+            "Codice voucher duplicato o ambiguo nella selezione"
+        )
+
     records: list[VoucherRecord] = []
     only_unlimited = len(selected) == 1 and selected[0].quota == 0
 
