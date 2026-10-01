@@ -1002,6 +1002,10 @@ COMMIT;
                        download_limit_kbps=excluded.download_limit_kbps,
                        upload_limit_kbps=excluded.upload_limit_kbps,
                        present_on_controller=1, archived_at=NULL,
+                       origin=CASE
+                           WHEN vouchers.origin='UNKNOWN' THEN 'CONTROLLER'
+                           ELSE vouchers.origin
+                       END,
                        last_seen_at=excluded.last_seen_at,
                        last_synced_at=excluded.last_synced_at""",
                 values,
