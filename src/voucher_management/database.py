@@ -1436,6 +1436,20 @@ COMMIT;
                         WHERE ve.voucher_id=v.id
                           AND ve.event_type='SECURITY_REVOKED'
                     ), '') AS security_revoked_at,
+                    COALESCE((
+                        SELECT MAX(ve.occurred_at)
+                        FROM voucher_events AS ve
+                        WHERE ve.voucher_id=v.id
+                          AND ve.event_type='PREPARATION_DELETED'
+                    ), '') AS preparation_deleted_at,
+                    COALESCE((
+                        SELECT ve.details_json
+                        FROM voucher_events AS ve
+                        WHERE ve.voucher_id=v.id
+                          AND ve.event_type='PREPARATION_DELETED'
+                        ORDER BY ve.occurred_at DESC, ve.id DESC
+                        LIMIT 1
+                    ), '') AS preparation_delete_details,
                     COUNT(vp.id) AS print_jobs,
                     COALESCE(SUM(vp.physical_copies), 0) AS physical_copies,
                     COALESCE(SUM(CASE WHEN vp.is_reprint=1 THEN 1 ELSE 0 END), 0)
