@@ -20,6 +20,7 @@ REPORT_CHOICES = (
     ("Stampati", ReportKind.PRINTED),
     ("Stampati senza uso positivo osservato", ReportKind.PRINTED_UNUSED),
     ("Mai stampati", ReportKind.NEVER_PRINTED),
+    ("Stato stampa non determinabile", ReportKind.PRINT_UNKNOWN),
     ("Creati ma non stampati oltre soglia", ReportKind.UNPRINTED_WARNING),
     ("Da revocare per sicurezza", ReportKind.SECURITY_REVIEW),
     ("Nominali", ReportKind.NOMINAL),
