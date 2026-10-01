@@ -21,6 +21,7 @@ REPORT_CHOICES = (
     ("Stampati senza uso positivo osservato", ReportKind.PRINTED_UNUSED),
     ("Mai stampati", ReportKind.NEVER_PRINTED),
     ("Nominali", ReportKind.NOMINAL),
+    ("Non nominali", ReportKind.NON_NOMINAL),
     ("Non classificati", ReportKind.UNCLASSIFIED),
     ("Uso non determinabile", ReportKind.USAGE_UNKNOWN),
     ("Origine creazione non determinabile", ReportKind.ORIGIN_UNKNOWN),
