@@ -370,10 +370,13 @@ WHERE controller_id IN (
 """
 
 
-MIGRATION_5_TO_6_SQL = """
+MIGRATION_5_TO_6_ADD_PRINT_STATE_SQL = """
 ALTER TABLE vouchers ADD COLUMN print_state TEXT NOT NULL DEFAULT 'UNKNOWN'
     CHECK (print_state IN ('UNKNOWN', 'NOT_PRINTED', 'PRINTED'));
+"""
 
+
+MIGRATION_5_TO_6_BACKFILL_SQL = """
 UPDATE vouchers
 SET print_state='PRINTED'
 WHERE EXISTS (
@@ -539,9 +542,19 @@ COMMIT;
 
         if current == 5:
             try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                migration_sql = (
+                    (MIGRATION_5_TO_6_ADD_PRINT_STATE_SQL if "print_state" not in columns else "")
+                    + MIGRATION_5_TO_6_BACKFILL_SQL
+                )
                 self.connection.executescript(
                     "BEGIN IMMEDIATE;\n"
-                    + MIGRATION_5_TO_6_SQL
+                    + migration_sql
                     + """
 PRAGMA user_version = 6;
 INSERT OR REPLACE INTO app_metadata(key, value)
