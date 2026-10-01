@@ -203,6 +203,26 @@ def test_reason_is_mandatory_before_request_is_recorded(tmp_path):
         db.close()
 
 
+def test_reason_length_is_bounded_before_request_is_recorded(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        _row(db, controller, "v1")
+        with pytest.raises(ValueError, match="1000"):
+            record_preparation_delete_requests(
+                db,
+                controller_id=controller,
+                unifi_ids=["v1"],
+                reason="x" * 1001,
+                requested_at=NOW,
+                windows_user=r"PC\operatore",
+            )
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM voucher_events"
+        ).fetchone()[0] == 0
+    finally:
+        db.close()
+
+
 def test_absent_fresh_snapshot_confirms_delete_and_preserves_reason(tmp_path):
     db, controller = _db(tmp_path)
     try:
