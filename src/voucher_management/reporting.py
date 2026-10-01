@@ -31,6 +31,7 @@ class ReportKind(str, Enum):
     PRINTED = "printed"
     PRINTED_UNUSED = "printed_unused"
     NEVER_PRINTED = "never_printed"
+    PRINT_UNKNOWN = "print_unknown"
     UNPRINTED_WARNING = "unprinted_warning"
     SECURITY_REVIEW = "security_review"
     NOMINAL = "nominal"
@@ -52,6 +53,7 @@ REPORT_TITLES = {
     ReportKind.PRINTED: "Voucher stampati",
     ReportKind.PRINTED_UNUSED: "Voucher stampati senza uso positivo osservato",
     ReportKind.NEVER_PRINTED: "Voucher mai stampati",
+    ReportKind.PRINT_UNKNOWN: "Voucher con stato stampa non determinabile",
     ReportKind.UNPRINTED_WARNING: "Voucher creati ma non stampati oltre soglia",
     ReportKind.SECURITY_REVIEW: "Voucher da revocare per sicurezza",
     ReportKind.NOMINAL: "Voucher nominali",
@@ -93,6 +95,7 @@ class ReportTotals:
     redacted_nominality_vouchers: int = 0
     security_revoked_vouchers: int = 0
     printed_usage_unknown: int = 0
+    print_unknown_vouchers: int = 0
 
 
 @dataclass(frozen=True)
@@ -128,6 +131,7 @@ class ReportRow:
     unifi_id: str = ""
     unifi_name: str = ""
     local_notes: str = ""
+    print_state: str = "UNKNOWN"
 
 
 @dataclass(frozen=True)
@@ -196,6 +200,7 @@ def _status(
     archived: bool,
     expired: bool,
     ever_used: bool,
+    print_state: str,
     print_jobs: int,
     security_revoked: bool = False,
 ) -> str:
@@ -207,9 +212,32 @@ def _status(
         return "Scaduto"
     if ever_used:
         return "Utilizzato"
-    if print_jobs > 0:
+    normalized_print_state = str(print_state or "UNKNOWN").strip().upper()
+    if print_jobs > 0 or normalized_print_state == "PRINTED":
         return "Stampato"
-    return "Mai stampato"
+    if normalized_print_state == "NOT_PRINTED":
+        return "Mai stampato"
+    return "Stampa non determinabile"
+
+
+def _is_printed(row: ReportRow) -> bool:
+    return row.print_jobs > 0 or row.print_state == "PRINTED"
+
+
+def _is_not_printed(row: ReportRow) -> bool:
+    return row.print_jobs == 0 and row.print_state == "NOT_PRINTED"
+
+
+def _is_print_unknown(row: ReportRow) -> bool:
+    return not _is_printed(row) and not _is_not_printed(row)
+
+
+def print_state_label(row: ReportRow) -> str:
+    if _is_printed(row):
+        return "Stampato"
+    if _is_not_printed(row):
+        return "Non stampato"
+    return "Non determinabile"
 
 
 def origin_label(origin: str) -> str:
@@ -247,11 +275,13 @@ def _matches(kind: ReportKind, row: ReportRow) -> bool:
     if kind is ReportKind.EXPIRED:
         return row.expired
     if kind is ReportKind.PRINTED:
-        return row.print_jobs > 0
+        return _is_printed(row)
     if kind is ReportKind.PRINTED_UNUSED:
-        return row.print_jobs > 0 and not row.ever_used
+        return _is_printed(row) and not row.ever_used
     if kind is ReportKind.NEVER_PRINTED:
-        return row.print_jobs == 0
+        return _is_not_printed(row)
+    if kind is ReportKind.PRINT_UNKNOWN:
+        return _is_print_unknown(row)
     if kind in {ReportKind.UNPRINTED_WARNING, ReportKind.SECURITY_REVIEW}:
         raise ValueError("threshold report kind requires candidate selection")
     if kind is ReportKind.NOMINAL:
@@ -285,16 +315,16 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
         ),
         total_controller_uses=sum(row.authorized_guest_count for row in materialized),
         expired_vouchers=sum(row.expired for row in materialized),
-        printed_vouchers=sum(row.print_jobs > 0 for row in materialized),
+        printed_vouchers=sum(_is_printed(row) for row in materialized),
         print_jobs=sum(row.print_jobs for row in materialized),
         physical_copies=sum(row.physical_copies for row in materialized),
         reprint_jobs=sum(row.reprint_jobs for row in materialized),
         reprint_copies=sum(row.reprint_copies for row in materialized),
         printed_never_used=sum(
-            row.print_jobs > 0 and row.usage_observed and not row.ever_used
+            _is_printed(row) and row.usage_observed and not row.ever_used
             for row in materialized
         ),
-        never_printed=sum(row.print_jobs == 0 for row in materialized),
+        never_printed=sum(_is_not_printed(row) for row in materialized),
         nominal_vouchers=sum(row.is_nominal is True for row in materialized),
         non_nominal_vouchers=sum(row.is_nominal is False for row in materialized),
         unclassified_vouchers=sum(
@@ -311,8 +341,11 @@ def _totals(rows: Iterable[ReportRow]) -> ReportTotals:
             bool(row.security_revoked_at) for row in materialized
         ),
         printed_usage_unknown=sum(
-            row.print_jobs > 0 and not row.usage_observed
+            _is_printed(row) and not row.usage_observed
             for row in materialized
+        ),
+        print_unknown_vouchers=sum(
+            _is_print_unknown(row) for row in materialized
         ),
     )
 
@@ -328,7 +361,12 @@ def _validated_totals(rows: Iterable[ReportRow]) -> ReportTotals:
         != totals.vouchers
     ):
         raise RuntimeError("report usage totals are internally inconsistent")
-    if totals.printed_vouchers + totals.never_printed != totals.vouchers:
+    if (
+        totals.printed_vouchers
+        + totals.never_printed
+        + totals.print_unknown_vouchers
+        != totals.vouchers
+    ):
         raise RuntimeError("report print totals are internally inconsistent")
     if (
         totals.nominal_vouchers
@@ -469,6 +507,7 @@ def build_report_dataset(
                 archived=bool(raw["archived_at"]),
                 expired=expired,
                 ever_used=ever_used,
+                print_state=str(raw["print_state"] or "UNKNOWN"),
                 print_jobs=print_jobs,
                 security_revoked=bool(raw["security_revoked_at"]),
             ),
@@ -480,6 +519,7 @@ def build_report_dataset(
             unifi_id=unifi_id,
             unifi_name=unifi_name,
             local_notes=local_notes,
+            print_state=str(raw["print_state"] or "UNKNOWN").strip().upper(),
         )
         if threshold_candidate_ids is not None:
             if voucher_id in threshold_candidate_ids:
