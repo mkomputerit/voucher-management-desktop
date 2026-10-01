@@ -1089,3 +1089,48 @@ def test_database_rejects_second_pending_security_revocation_intent(tmp_path):
         ]
     finally:
         database.close()
+
+
+def test_identity_review_required_blocks_local_retention_and_archive(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="identity-review-retention",
+            code="4545454545",
+        )
+        with database.transaction() as db:
+            db.execute(
+                """INSERT INTO voucher_events(
+                       event_uuid, voucher_id, event_type, occurred_at,
+                       source, details_json
+                   ) VALUES ('identity-review-retention-event', ?,
+                       'LEGACY_IDENTITY_REVIEW_REQUIRED', ?, 'SYSTEM', '{}')""",
+                (voucher_id, NOW),
+            )
+
+        assert retention_candidates(
+            database,
+            now=NOW,
+            controller_id=controller,
+        ) == ()
+
+        result = archive_retention_candidates(
+            database,
+            voucher_ids=[voucher_id],
+            archived_at=NOW,
+            windows_user="operator",
+            history=_history(),
+            settings={},
+        )
+        assert result.archived_ids == ()
+        assert result.skipped_ids == (voucher_id,)
+        row = database.connection.execute(
+            "SELECT code, archived_at FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["code"] == "4545454545"
+        assert row["archived_at"] is None
+    finally:
+        database.close()
