@@ -924,7 +924,9 @@ def test_security_review_report_uses_last_print_threshold(tmp_path):
         )
 
         assert [row.voucher_id for row in dataset.rows] == [voucher_id]
-        assert dataset.title.endswith("(10 giorni dall'ultima stampa)")
+        assert dataset.title.endswith(
+            "(soglia 10 giorni; data stampa ignota: revisione immediata)"
+        )
     finally:
         db.close()
 
