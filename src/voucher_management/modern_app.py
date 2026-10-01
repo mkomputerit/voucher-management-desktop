@@ -22,6 +22,7 @@ from .identity import (
     PRODUCT_NAME,
 )
 from .logo_validation import LogoValidationError, validate_logo_image
+from .local_data_ui import LocalDataMixin
 from .onboarding import OnboardingState, choose_shared_fresh_start
 from .onboarding_ui import schedule_first_run_onboarding, startup_onboarding_state
 from .pdf_render import VOUCHERS_PER_PAGE
@@ -954,6 +955,7 @@ class MigrationRequiredDialog(tk.Toplevel):
 
 
 class ModernVoucherApp(
+    LocalDataMixin,
     SecurityRevocationMixin,
     RetentionMixin,
     DataMaintenanceMixin,
@@ -1215,6 +1217,7 @@ class ModernVoucherApp(
             self.home_sync_button,
             self.sidebar_action_button,
             self.refresh_button,
+            self.local_data_button,
             self.delete_button,
             self.print_button,
             self.open_pdf_button,
@@ -1454,6 +1457,12 @@ class ModernVoucherApp(
             text="Seleziona tutti da stampare",
             command=self.select_unprinted,
         ).pack(side="left", padx=(8, 0))
+        self.local_data_button = ttk.Button(
+            primary_actions,
+            text="Dati locali…",
+            command=self.edit_selected_local_data,
+        )
+        self.local_data_button.pack(side="left", padx=(8, 0))
 
         secondary_actions = ttk.Frame(toolbar)
         secondary_actions.grid(row=0, column=1, sticky="e")
