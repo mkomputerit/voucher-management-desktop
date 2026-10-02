@@ -112,7 +112,7 @@ class CreateDialog(tk.Toplevel):
             width=8,
         ).grid(row=5, column=1, sticky="w")
 
-        ttk.Label(frame, text="Scadenza").grid(
+        ttk.Label(frame, text="Validità dal primo utilizzo").grid(
             row=6,
             column=0,
             sticky="w",
