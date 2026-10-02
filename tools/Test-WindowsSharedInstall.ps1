@@ -5,10 +5,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$root = Join-Path $env:RUNNER_TEMP ("voucher-management-install-test-" + [Guid]::NewGuid().ToString("N"))
-$installRoot = Join-Path $root "Program Files\Voucher Management"
-$dataRoot = Join-Path $root "ProgramData\VoucherManagement"
-$groupName = "VMTest-" + [Guid]::NewGuid().ToString("N").Substring(0, 12)
+$token = [Guid]::NewGuid().ToString("N")
+$root = Join-Path $env:RUNNER_TEMP ("voucher-management-install-test-" + $token)
+$installRoot = Join-Path $env:ProgramFiles ("Voucher Management Test-" + $token)
+$dataRoot = Join-Path $env:ProgramData ("VoucherManagementTest-" + $token)
+$invalidDataParent = Join-Path $env:ProgramData ("VoucherManagementInvalid-" + $token)
+$groupName = "VMTest-" + $token.Substring(0, 12)
 $operatorUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $installer = Join-Path $PSScriptRoot "Install-VoucherManagement.ps1"
 $uninstaller = Join-Path $PSScriptRoot "Uninstall-VoucherManagement.ps1"
@@ -58,7 +60,6 @@ try {
     New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
     $oldInstallSentinel = Join-Path $installRoot "old-install.txt"
     Set-Content -LiteralPath $oldInstallSentinel -Value "old" -Encoding ascii
-    $invalidDataParent = Join-Path $root "invalid-data-parent"
     Set-Content -LiteralPath $invalidDataParent -Value "not-a-directory" -Encoding ascii
     $invalidDataRoot = Join-Path $invalidDataParent "child"
     $failedAsExpected = $false
@@ -180,6 +181,9 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $dataRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $invalidDataParent -Force -ErrorAction SilentlyContinue
     if (Get-LocalGroup -Name $groupName -ErrorAction SilentlyContinue) {
         Remove-LocalGroup -Name $groupName -ErrorAction SilentlyContinue
     }
