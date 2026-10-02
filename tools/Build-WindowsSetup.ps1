@@ -39,22 +39,14 @@ if (-not $csc) {
     throw "Compilatore C# .NET Framework non trovato."
 }
 
-$referenceBase = Join-Path ${env:ProgramFiles(x86)} "Reference Assemblies\Microsoft\Framework\.NETFramework"
-$referenceDirectory = @("v4.8.1", "v4.8", "v4.7.2") |
-    ForEach-Object { Join-Path $referenceBase $_ } |
-    Where-Object {
-        (Test-Path -LiteralPath (Join-Path $_ "System.Windows.Forms.dll") -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $_ "System.IO.Compression.dll") -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $_ "System.IO.Compression.FileSystem.dll") -PathType Leaf)
-    } |
-    Select-Object -First 1
-if (-not $referenceDirectory) {
-    throw ".NET Framework Developer Pack 4.7.2 o successivo non trovato."
+$frameworkDirectory = Split-Path -Parent $csc
+$compression = Join-Path $frameworkDirectory "System.IO.Compression.dll"
+$compressionFs = Join-Path $frameworkDirectory "System.IO.Compression.FileSystem.dll"
+foreach ($reference in @($compression, $compressionFs)) {
+    if (-not (Test-Path -LiteralPath $reference -PathType Leaf)) {
+        throw "Assembly .NET Framework non trovato: $reference"
+    }
 }
-
-$compression = Join-Path $referenceDirectory "System.IO.Compression.dll"
-$compressionFs = Join-Path $referenceDirectory "System.IO.Compression.FileSystem.dll"
-$windowsForms = Join-Path $referenceDirectory "System.Windows.Forms.dll"
 
 $bootstrapSource = Join-Path $PSScriptRoot "SetupBootstrapper.cs"
 $manifest = Join-Path $PSScriptRoot "SetupBootstrapper.manifest"
@@ -107,7 +99,6 @@ using System.Reflection;
         "/win32manifest:$manifest",
         "/out:$output",
         "/resource:$payloadZip,VoucherManagement.Payload.zip",
-        "/reference:$windowsForms",
         "/reference:$compression",
         "/reference:$compressionFs",
         $bootstrapSource,
