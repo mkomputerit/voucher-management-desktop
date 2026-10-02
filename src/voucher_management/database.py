@@ -1235,6 +1235,41 @@ COMMIT;
         with self.transaction() as db:
             return write(db)
 
+    def usage_state_for_remote_ids(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+    ) -> dict[str, bool | None]:
+        """Return True/False/None for used, observed-unused, or unknown usage."""
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.connection.execute(
+            f"""SELECT unifi_id, ever_used, usage_observed
+                FROM vouchers
+                WHERE controller_id=?
+                  AND unifi_id IN ({placeholders})""",
+            (int(controller_id), *ids),
+        ).fetchall()
+        result: dict[str, bool | None] = {}
+        for row in rows:
+            remote_id = str(row["unifi_id"])
+            if not bool(row["usage_observed"]):
+                result[remote_id] = None
+            else:
+                result[remote_id] = bool(row["ever_used"])
+        return result
+
+
     def historically_used_remote_ids(
         self,
         *,
