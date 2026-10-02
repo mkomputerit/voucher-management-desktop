@@ -1209,6 +1209,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         *,
         site_id: str = "",
         unifi_ids: list[str] | None = None,
+        allow_physical_print: bool = True,
     ):
         stable_ids = (
             list(unifi_ids)
@@ -1223,6 +1224,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             self.settings,
             site_id=site_id,
             unifi_ids=stable_ids,
+            allow_physical_print=allow_physical_print,
             on_print=self.populate,
             on_audit=lambda pending, audit_codes, pdf_path: (
                 self._record_sqlite_print_audit(
@@ -1320,6 +1322,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     if resolved.linked_voucher_ids
                     else None
                 ),
+                allow_physical_print=False,
             )
         except Exception as exc:
             self.logger.error(
