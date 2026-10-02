@@ -11,6 +11,7 @@ from voucher_management.unifi_api import (
     ApiVoucher,
     UniFiApiError,
     UniFiMutationUncertain,
+    UniFiVoucherNotFound,
 )
 from voucher_management.workflows import (
     ExistingPdfResolutionError,
@@ -26,6 +27,7 @@ from voucher_management.workflows import (
     resolve_existing_pdf,
     validate_create_params,
     verify_print_history_ready,
+    verify_snapshot_absences,
 )
 
 
@@ -88,6 +90,64 @@ def test_refresh_vouchers_is_controller_state_not_cached_state():
     client.list_result = [fresh]
 
     assert refresh_vouchers(client) == [fresh]
+
+
+def test_verify_snapshot_absence_accepts_only_typed_uuid_not_found():
+    current = voucher("present", "1111122222")
+    client = FakeClient()
+
+    def missing(_voucher_id):
+        raise UniFiVoucherNotFound("missing")
+
+    client.get_voucher = missing
+    outcome = verify_snapshot_absences(
+        client,
+        [current],
+        ["missing"],
+    )
+
+    assert outcome.vouchers == (current,)
+    assert outcome.confirmed_absent_ids == frozenset({"missing"})
+    assert outcome.unresolved_ids == frozenset()
+    assert outcome.recovered_ids == frozenset()
+
+
+def test_verify_snapshot_absence_merges_directly_recovered_voucher():
+    current = voucher("present", "1111122222")
+    recovered = voucher("missing", "3333344444")
+    client = FakeClient()
+    client.get_voucher = lambda voucher_id: recovered
+
+    outcome = verify_snapshot_absences(
+        client,
+        [current],
+        ["missing"],
+    )
+
+    assert {item.id for item in outcome.vouchers} == {"present", "missing"}
+    assert outcome.confirmed_absent_ids == frozenset()
+    assert outcome.unresolved_ids == frozenset()
+    assert outcome.recovered_ids == frozenset({"missing"})
+
+
+def test_verify_snapshot_absence_keeps_transport_failure_unresolved():
+    current = voucher("present", "1111122222")
+    client = FakeClient()
+
+    def unavailable(_voucher_id):
+        raise UniFiApiError("Controller UniFi non raggiungibile")
+
+    client.get_voucher = unavailable
+    outcome = verify_snapshot_absences(
+        client,
+        [current],
+        ["missing"],
+    )
+
+    assert outcome.vouchers == (current,)
+    assert outcome.confirmed_absent_ids == frozenset()
+    assert outcome.unresolved_ids == frozenset({"missing"})
+    assert outcome.recovered_ids == frozenset()
 
 
 def test_create_success_refresh_failure_merges_created_without_recreating():
