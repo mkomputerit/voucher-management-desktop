@@ -1,7 +1,9 @@
 """Operator-driven alignment of controller/legacy vouchers.
 
-Alignment fills only facts Voucher Management cannot infer safely from UniFi:
-nominality and historical print state.  Controller-owned fields remain read-only.
+Alignment fills only facts Voucher Management cannot infer safely. Controller-
+owned fields remain read-only. Controller-discovered vouchers without verified
+print evidence keep print state UNKNOWN; legacy positive print evidence is
+preserved and cannot be downgraded.
 """
 
 from __future__ import annotations
@@ -155,13 +157,18 @@ def align_vouchers(
             )
 
         if normalized_print_state != PRINT_STATE_PRINTED:
-            verified_print_ids = [
-                int(row["id"]) for row in rows if bool(row["has_verified_print"])
+            positive_print_ids = [
+                int(row["id"])
+                for row in rows
+                if bool(row["has_verified_print"])
+                or str(
+                    row["print_state"] or PRINT_STATE_UNKNOWN
+                ).strip().upper() == PRINT_STATE_PRINTED
             ]
-            if verified_print_ids:
+            if positive_print_ids:
                 raise ValueError(
-                    "Lo stato stampa richiesto contraddice una stampa verificata "
-                    "già presente nello storico."
+                    "Lo stato stampa richiesto contraddice una prova positiva "
+                    "di stampa già presente nello storico."
                 )
 
         controller_origin_without_verified_print = [
