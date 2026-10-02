@@ -381,7 +381,6 @@ def persist_connection_snapshot_to_path(
             controller_id=controller_id,
             vouchers=list(vouchers),
             observed_at=observed_at,
-            confirmed_absent_ids=confirmed_absent_ids,
         )
         return PersistedControllerSnapshot(
             controller_id=controller_id,
@@ -411,6 +410,7 @@ def persist_refresh_snapshot_to_path(
             controller_id=int(controller_id),
             vouchers=list(vouchers),
             observed_at=observed_at,
+            confirmed_absent_ids=confirmed_absent_ids,
         )
     finally:
         database.close()
