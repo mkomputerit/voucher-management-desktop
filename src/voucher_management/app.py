@@ -646,7 +646,10 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                                 getattr(client, "trusted_cert_sha256", "") or ""
                             ),
                             requested_name=requested_name,
-                            site_name=requested_name,
+                            site_name=str(
+                                getattr(client, "site_name", "") or requested_name
+                            ),
+                            site_id=str(getattr(client, "site_id", "") or ""),
                             vouchers=snapshot,
                             observed_at=observed_at,
                         )
