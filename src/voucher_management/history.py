@@ -305,6 +305,25 @@ class HistoryService:
             settings["history_key_fingerprint"] = fp
             self.settings_store.save(settings)
 
+    def correlation_digest(
+        self,
+        namespace: str,
+        value: str,
+        settings: dict | None = None,
+    ) -> str:
+        """Return a keyed digest for privacy-safe local correlation markers."""
+
+        label = str(namespace or "").strip()
+        if not label:
+            raise ValueError("namespace is required")
+        payload = str(value or "")
+        secret = self._secret(settings)
+        return hmac.new(
+            secret,
+            f"{label}\n{payload}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
     def _secret(self, settings: dict | None = None) -> bytes:
         """Return a usable audit key or raise instead of failing silently."""
         current = self.settings_store.load()
