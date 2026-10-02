@@ -373,6 +373,25 @@ def test_delete_policy_allows_aligned_unprinted_unused_voucher():
     assert blocked == []
 
 
+def test_delete_success_filters_stale_deleted_row_and_marks_snapshot_non_authoritative():
+    deleted = voucher("delete-me", "1111122222")
+    survivor = voucher("keep-me", "3333344444")
+    client = FakeClient()
+    # Simulate read-after-delete lag: the list still contains the deleted UUID.
+    client.list_result = [deleted, survivor]
+
+    outcome = delete_vouchers_and_refresh(
+        client,
+        [deleted, survivor],
+        [deleted],
+    )
+
+    assert client.delete_calls == [["delete-me"]]
+    assert outcome.vouchers == (survivor,)
+    assert outcome.refresh_error is None
+    assert outcome.reconciliation_required is True
+
+
 def test_delete_success_refresh_failure_removes_deleted_rows_from_cache():
     deleted = voucher("delete-me", "1111122222")
     survivor = voucher("keep-me", "3333344444")
