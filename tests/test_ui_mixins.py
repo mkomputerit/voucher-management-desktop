@@ -189,6 +189,12 @@ def test_delete_ui_revalidation_is_deferred_to_network_worker(monkeypatch):
             or True
         ),
     )
+    fake._request_delete_vouchers = (
+        lambda current: VoucherDeletionMixin._request_delete_vouchers(
+            fake,
+            current,
+        )
+    )
     calls = []
     monkeypatch.setattr(
         deletion_ui,
@@ -286,6 +292,7 @@ def test_transport_failure_schedules_finite_auto_retry_before_red():
         _controller_retry_dot_phase=False,
         _controller_status_failed=False,
         _controller_status_stale=False,
+        _CONTROLLER_RETRY_DELAYS_MS=ModernVoucherApp._CONTROLLER_RETRY_DELAYS_MS,
         logger=SimpleNamespace(
             warning=lambda *args, **kwargs: None,
             info=lambda *args, **kwargs: None,
