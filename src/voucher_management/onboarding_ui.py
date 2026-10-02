@@ -728,13 +728,25 @@ class FirstRunWizard(tk.Toplevel):
             if saved_pin and saved_normalized == normalized
             else None
         )
-        self._start_probe(normalized, key, trusted_pin)
+        preferred_site_id = (
+            str(settings.get("controller_site_id", "") or "").strip()
+            if saved_normalized == normalized
+            else ""
+        )
+        self._start_probe(
+            normalized,
+            key,
+            trusted_pin,
+            preferred_site_id=preferred_site_id or None,
+        )
 
     def _start_probe(
         self,
         api_root: str,
         api_key: str,
         trusted_pin: str | None,
+        *,
+        preferred_site_id: str | None = None,
     ) -> None:
         self.controller_status_var.set("Verifica in corso…")
 
@@ -743,6 +755,7 @@ class FirstRunWizard(tk.Toplevel):
                 api_root,
                 api_key,
                 trusted_cert_sha256=trusted_pin,
+                preferred_site_id=preferred_site_id,
             )
 
         def completed(result: ControllerProbeResult) -> None:
