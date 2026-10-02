@@ -96,12 +96,12 @@ def security_revocation_candidates(
     - the operator must configure a threshold explicitly;
     - the voucher is still present on UniFi and not reported expired;
     - usage was observed and has never been positive;
-    - print_state is positively PRINTED; security review does not depend on
-      nominality/alignment completion;
-    - with a known print date, a controller observation exists after the most
-      recent print and that last print is older than the configured threshold;
-    - with PRINTED but no historical print date, review is immediate because no
-      safe age calculation is possible;
+    - print_state is positively PRINTED and at least one verified physical
+      print job exists in the local audit;
+    - a controller observation exists after the most recent verified print and
+      that print is older than the configured threshold;
+    - legacy PRINTED state without an auditable print date is not a security
+      revocation candidate because its physical-print history is indeterminate;
     - no previous security-revocation event exists.
 
     The caller must still perform a fresh controller read immediately before
@@ -155,16 +155,11 @@ def security_revocation_candidates(
             GROUP BY
                 v.id, v.controller_id, c.name, v.unifi_id, v.code, v.name,
                 v.last_seen_at, v.last_synced_at
-            HAVING (
-                    MAX(vp.printed_at) IS NULL
-                    OR (
-                        MAX(vp.printed_at) <= ?
-                        AND v.last_seen_at IS NOT NULL
-                        AND julianday(v.last_seen_at) > julianday(MAX(vp.printed_at))
-                    )
-                )
+            HAVING MAX(vp.printed_at) IS NOT NULL
+               AND MAX(vp.printed_at) <= ?
+               AND v.last_seen_at IS NOT NULL
+               AND julianday(v.last_seen_at) > julianday(MAX(vp.printed_at))
             ORDER BY
-                CASE WHEN MAX(vp.printed_at) IS NULL THEN 0 ELSE 1 END,
                 MAX(vp.printed_at) ASC,
                 v.id ASC""",
         tuple(params),
