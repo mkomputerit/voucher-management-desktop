@@ -26,6 +26,10 @@ DEFAULT_SETTINGS = {
     # Prefer the exact root copied from UniFi Network > Integrations. The value
     # is not a credential and may therefore be persisted/backed up.
     "controller_api_root": "",
+    # Stable UniFi Site UUID paired with controller_api_root. This is public
+    # controller identity, not a credential, and prevents an offline archive
+    # from silently drifting to a different Site hosted at the same URL.
+    "controller_site_id": "",
     # Optional SHA-256 pin for an explicitly trusted local/self-signed
     # controller certificate. This is not a credential.
     "controller_cert_sha256": "",
