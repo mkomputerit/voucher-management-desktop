@@ -209,6 +209,93 @@ def test_installed_marker_uses_shared_programdata_without_implicit_profile_impor
     assert paths.per_user_root in paths.legacy_user_roots
 
 
+def test_installed_marker_honors_custom_direct_programdata_root(
+    tmp_path,
+    monkeypatch,
+):
+    program = tmp_path / "ProgramFiles" / "VoucherManagement"
+    program.mkdir(parents=True)
+    programdata = tmp_path / "ProgramData"
+    custom_root = programdata / "VoucherManagement-Custom"
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "profile"))
+    monkeypatch.setenv("PROGRAMDATA", str(programdata))
+    (program / "voucher-management-deployment.json").write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "mode": "shared_programdata",
+                "data_root": str(custom_root),
+                "operator_group_sid": "S-1-5-21-1-2-3-1001",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    paths = AppPaths(base_override=program)
+
+    assert paths.shared_mode is True
+    assert paths.user_root == custom_root.resolve()
+    assert paths.database == custom_root.resolve() / "data" / "voucher_management.db"
+
+
+def test_installed_marker_rejects_data_root_outside_programdata(
+    tmp_path,
+    monkeypatch,
+):
+    program = tmp_path / "ProgramFiles" / "VoucherManagement"
+    program.mkdir(parents=True)
+    programdata = tmp_path / "ProgramData"
+    outside = tmp_path / "Elsewhere" / "VoucherManagement"
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "profile"))
+    monkeypatch.setenv("PROGRAMDATA", str(programdata))
+    (program / "voucher-management-deployment.json").write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "mode": "shared_programdata",
+                "data_root": str(outside),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        AppPaths(base_override=program)
+    except RuntimeError as exc:
+        assert "DataRoot" in str(exc)
+    else:
+        raise AssertionError("out-of-ProgramData DataRoot must fail closed")
+
+
+def test_installed_marker_rejects_nested_programdata_root(
+    tmp_path,
+    monkeypatch,
+):
+    program = tmp_path / "ProgramFiles" / "VoucherManagement"
+    program.mkdir(parents=True)
+    programdata = tmp_path / "ProgramData"
+    nested = programdata / "Company" / "VoucherManagement"
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "profile"))
+    monkeypatch.setenv("PROGRAMDATA", str(programdata))
+    (program / "voucher-management-deployment.json").write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "mode": "shared_programdata",
+                "data_root": str(nested),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        AppPaths(base_override=program)
+    except RuntimeError as exc:
+        assert "sottocartella diretta" in str(exc)
+    else:
+        raise AssertionError("nested ProgramData root must fail closed")
+
+
 def test_portable_mode_remains_per_user_even_when_programdata_exists(
     tmp_path,
     monkeypatch,
