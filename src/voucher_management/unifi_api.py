@@ -309,9 +309,10 @@ class UniFiClient:
         uncertain_operation: str | None = None,
     ) -> dict:
         method_upper = method.upper()
-        if method_upper == "POST" and not uncertain_operation:
+        mutating = method_upper in {"POST", "DELETE"}
+        if mutating and not uncertain_operation:
             raise ValueError(
-                "Le richieste POST richiedono una descrizione esplicita "
+                "Le richieste mutative richiedono una descrizione esplicita "
                 "dell'operazione incerta"
             )
         if not self._api_key:
@@ -351,7 +352,7 @@ class UniFiClient:
                     not_found_message
                     or "Endpoint UniFi non disponibile: verificare l'URL API in Network > Integrations"
                 ) from exc
-            if method_upper == "POST" and (exc.code == 408 or exc.code >= 500):
+            if mutating and (exc.code == 408 or exc.code >= 500):
                 raise UniFiMutationUncertain(uncertain_operation) from exc
             raise UniFiApiError(f"Errore HTTP UniFi {exc.code}") from exc
         except URLError as exc:
@@ -364,16 +365,16 @@ class UniFiClient:
             if isinstance(reason, ssl.SSLCertVerificationError):
                 fingerprint = self._server_certificate_sha256()
                 raise UniFiCertificateTrustRequired(fingerprint) from exc
-            if method_upper == "POST":
+            if mutating:
                 raise UniFiMutationUncertain(uncertain_operation) from exc
             raise UniFiApiError("Controller UniFi non raggiungibile") from exc
         except (TimeoutError, OSError, http.client.HTTPException) as exc:
-            if method_upper == "POST":
+            if mutating:
                 raise UniFiMutationUncertain(uncertain_operation) from exc
             raise UniFiApiError("Controller UniFi non raggiungibile") from exc
 
         if status not in expected:
-            if method_upper == "POST":
+            if mutating:
                 raise UniFiMutationUncertain(uncertain_operation)
             raise UniFiApiError(f"Risposta HTTP UniFi inattesa: {status}")
 
@@ -382,18 +383,23 @@ class UniFiClient:
         try:
             result = json.loads(raw)
         except json.JSONDecodeError as exc:
-            if method_upper == "POST":
+            if mutating:
                 raise UniFiMutationUncertain(uncertain_operation) from exc
             raise UniFiApiError("Il controller UniFi non ha restituito JSON valido") from exc
         if not isinstance(result, dict):
-            if method_upper == "POST":
+            if mutating:
                 raise UniFiMutationUncertain(uncertain_operation)
             raise UniFiApiError("Formato risposta UniFi non valido")
         return result
 
     @staticmethod
-    def _page(result: dict, *, context: str) -> tuple[list[dict], int]:
-        """Validate the documented paginated response envelope."""
+    def _page(
+        result: dict,
+        *,
+        context: str,
+        expected_offset: int | None = None,
+    ) -> tuple[list[dict], int]:
+        """Validate the documented paginated response envelope strictly."""
 
         required = ("data", "count", "totalCount", "offset", "limit")
         if any(key not in result for key in required):
@@ -402,9 +408,34 @@ class UniFiClient:
         if not isinstance(data, list):
             raise UniFiApiError(f"{context}: campo data non valido")
         try:
+            count = int(result["count"])
             total = int(result["totalCount"])
+            offset = int(result["offset"])
+            limit = int(result["limit"])
         except (TypeError, ValueError) as exc:
-            raise UniFiApiError(f"{context}: totalCount non valido") from exc
+            raise UniFiApiError(
+                f"{context}: metadati di paginazione non validi"
+            ) from exc
+        if count < 0 or total < 0 or offset < 0 or limit <= 0:
+            raise UniFiApiError(
+                f"{context}: metadati di paginazione fuori intervallo"
+            )
+        if count != len(data):
+            raise UniFiApiError(
+                f"{context}: count non corrisponde agli elementi restituiti"
+            )
+        if count > limit:
+            raise UniFiApiError(
+                f"{context}: pagina più grande del limite dichiarato"
+            )
+        if offset + count > total:
+            raise UniFiApiError(
+                f"{context}: pagina oltre totalCount"
+            )
+        if expected_offset is not None and offset != expected_offset:
+            raise UniFiApiError(
+                f"{context}: offset di risposta inatteso"
+            )
         return data, total
 
     def _list_sites(self) -> list[dict]:
@@ -412,16 +443,37 @@ class UniFiClient:
         offset = 0
         limit = 200
 
+        expected_total: int | None = None
+        seen_ids: set[str] = set()
         while True:
             result = self._request(
                 "GET",
                 f"/sites?offset={offset}&limit={limit}",
             )
-            page, total = self._page(result, context="Elenco siti")
+            page, total = self._page(
+                result,
+                context="Elenco siti",
+                expected_offset=offset,
+            )
+            if expected_total is None:
+                expected_total = total
+            elif total != expected_total:
+                raise UniFiApiError(
+                    "Elenco siti: totalCount cambiato durante la paginazione"
+                )
+            for item in page:
+                site_id = str(item.get("id", "")).strip()
+                if not site_id:
+                    raise UniFiApiError("Elenco siti: Site ID mancante")
+                if site_id in seen_ids:
+                    raise UniFiApiError(
+                        "Elenco siti: Site ID duplicato nella paginazione"
+                    )
+                seen_ids.add(site_id)
             items.extend(page)
-            if len(items) >= total:
+            if len(items) == total:
                 return items
-            if not page:
+            if len(items) > total or not page:
                 raise UniFiApiError(
                     "Elenco siti: paginazione incoerente prima di totalCount"
                 )
@@ -577,16 +629,35 @@ class UniFiClient:
         offset = 0
         limit = 1000
 
+        expected_total: int | None = None
+        seen_ids: set[str] = set()
         while True:
             result = self._request(
                 "GET",
                 f"/sites/{encoded_site}/hotspot/vouchers?offset={offset}&limit={limit}",
             )
-            page, total = self._page(result, context="Elenco voucher")
-            items.extend(self._voucher_from_json(item) for item in page)
-            if len(items) >= total:
+            page, total = self._page(
+                result,
+                context="Elenco voucher",
+                expected_offset=offset,
+            )
+            if expected_total is None:
+                expected_total = total
+            elif total != expected_total:
+                raise UniFiApiError(
+                    "Elenco voucher: totalCount cambiato durante la paginazione"
+                )
+            mapped = [self._voucher_from_json(item) for item in page]
+            for voucher in mapped:
+                if voucher.id in seen_ids:
+                    raise UniFiApiError(
+                        "Elenco voucher: UUID duplicato nella paginazione"
+                    )
+                seen_ids.add(voucher.id)
+            items.extend(mapped)
+            if len(items) == total:
                 return items
-            if not page:
+            if len(items) > total or not page:
                 raise UniFiApiError(
                     "Elenco voucher: paginazione incoerente prima di totalCount"
                 )
@@ -713,21 +784,30 @@ class UniFiClient:
                         "Il voucher è già stato rimosso dal controller UniFi. "
                         "Aggiornare l'elenco prima di riprovare."
                     ),
+                    uncertain_operation="la cancellazione del voucher",
                 )
-                count = int(result.get("vouchersDeleted", 0) or 0)
+                try:
+                    count = int(result["vouchersDeleted"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise UniFiMutationUncertain(
+                        "la cancellazione del voucher"
+                    ) from exc
                 if count < 1:
-                    raise UniFiApiError(
-                        "Il controller non ha confermato la cancellazione"
+                    raise UniFiMutationUncertain(
+                        "la cancellazione del voucher"
                     )
                 deleted += 1
-            except (TypeError, ValueError, UniFiApiError) as exc:
+            except UniFiMutationUncertain as exc:
+                if deleted:
+                    raise UniFiMutationUncertain(
+                        "la cancellazione dei voucher "
+                        f"({deleted} già confermati su {len(ids)})"
+                    ) from exc
+                raise
+            except UniFiApiError as exc:
                 if deleted:
                     raise UniFiApiError(
                         f"Eliminati {deleted} voucher su {len(ids)}; "
                         "operazione interrotta. Aggiornare l'elenco prima di riprovare."
                     ) from exc
-                if isinstance(exc, UniFiApiError):
-                    raise
-                raise UniFiApiError(
-                    "Risposta di cancellazione UniFi non valida"
-                ) from exc
+                raise
