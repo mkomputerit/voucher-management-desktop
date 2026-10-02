@@ -1135,6 +1135,36 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 )
                 return False
 
+        unknown_print_count = sum(
+            1
+            for summary in summaries.values()
+            if (
+                summary.print_jobs <= 0
+                and str(
+                    getattr(summary, "print_state", "UNKNOWN") or "UNKNOWN"
+                ).strip().upper() == "UNKNOWN"
+            )
+        )
+        if unknown_print_count:
+            subject = (
+                "questo voucher"
+                if unknown_print_count == 1
+                else f"questi {unknown_print_count} voucher"
+            )
+            if not messagebox.askyesno(
+                "Stampa non determinabile",
+                (
+                    f"Per {subject} lo stato di stampa precedente non è "
+                    "determinabile. Potrebbe essere già stato stampato o "
+                    "consegnato fuori da Voucher Management.\n\n"
+                    "Vuoi procedere comunque con la stampa?\n\n"
+                    "Se la stampa verrà effettivamente inviata, da quel "
+                    "momento sarà registrata come stampa verificata."
+                ),
+                parent=parent,
+            ):
+                return False
+
         warnings = []
         seen: set[str] = set()
         for index, display_code in enumerate(codes):
