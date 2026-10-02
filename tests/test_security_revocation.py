@@ -413,7 +413,7 @@ def test_pending_request_is_not_offered_again_until_reconciled(tmp_path):
         db.close()
 
 
-def test_fresh_full_snapshot_reconciles_absent_pending_revocation(tmp_path):
+def test_list_absence_does_not_reconcile_pending_revocation_without_uuid_404(tmp_path):
     db, controller = _database(tmp_path)
     try:
         voucher_id = _voucher(db, controller)
@@ -432,6 +432,18 @@ def test_fresh_full_snapshot_reconciles_absent_pending_revocation(tmp_path):
             windows_user="operator",
         )
 
+        assert confirmed == ()
+        assert pending_security_revocation_ids(db) == (voucher_id,)
+
+        confirmed = reconcile_pending_security_revocations(
+            db,
+            controller_id=controller,
+            live_voucher_ids=frozenset(),
+            confirmed_absent_ids=frozenset({"v1"}),
+            observed_at=NOW,
+            windows_user="operator",
+        )
+
         assert confirmed == (voucher_id,)
         assert pending_security_revocation_ids(db) == ()
         row = db.connection.execute(
@@ -445,9 +457,10 @@ def test_fresh_full_snapshot_reconciles_absent_pending_revocation(tmp_path):
                WHERE voucher_id=? AND event_type='SECURITY_REVOKED'""",
             (voucher_id,),
         ).fetchone()
-        assert '"confirmation_source":"fresh_snapshot_absent"' in event["details_json"]
+        assert '"confirmation_source":"direct_uuid_not_found"' in event["details_json"]
         assert '"remote_delete_confirmed":false' in event["details_json"]
-        assert '"fresh_snapshot_confirmed_absent":true' in event["details_json"]
+        assert '"fresh_snapshot_confirmed_absent":false' in event["details_json"]
+        assert '"direct_uuid_confirmed_absent":true' in event["details_json"]
     finally:
         db.close()
 
