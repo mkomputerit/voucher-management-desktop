@@ -333,6 +333,9 @@ try {
     if ([string]$marker.operator_group_sid -ine [string]$group.SID.Value) {
         throw "Il marker non registra il SID del gruppo operatori effettivo."
     }
+    if ([string]$marker.operator_group_name -ine [string]$group.Name) {
+        throw "Il marker non registra il nome del gruppo operatori effettivo."
+    }
     $aclState = Get-AllowRightsBySid -Path $dataRoot
     if (-not $aclState.Protected) {
         throw "Le ACL ProgramData ereditano ancora permessi dal parent."
@@ -356,10 +359,28 @@ try {
     $sentinel = Join-Path $dataRoot "upgrade-preserves-data.txt"
     Set-Content -LiteralPath $sentinel -Value "preserve" -Encoding ascii
 
-    & $installer @installArgs
+    # A normal future Setup does not need to repeat custom deployment choices:
+    # the installed marker must preserve DataRoot and operator-group identity.
+    $upgradeArgs = @{
+        SourcePath = $SourcePath
+        InstallRoot = $installRoot
+        OperatorUser = $operatorUser
+        SkipShortcut = $true
+    }
+    & $installer @upgradeArgs
 
     if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) {
         throw "Un aggiornamento ha cancellato i dati condivisi."
+    }
+    $upgradedMarker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+    if ([IO.Path]::GetFullPath([string]$upgradedMarker.data_root) -ine [IO.Path]::GetFullPath($dataRoot)) {
+        throw "Un aggiornamento senza parametri ha cambiato il DataRoot."
+    }
+    if (
+        [string]$upgradedMarker.operator_group_sid -ine [string]$group.SID.Value -or
+        [string]$upgradedMarker.operator_group_name -ine [string]$group.Name
+    ) {
+        throw "Un aggiornamento senza parametri ha cambiato il gruppo operatori."
     }
 
     $uninstallArgs = @{
