@@ -33,6 +33,19 @@ function Resolve-ManagedChildPath {
     ) {
         throw "$Label deve essere una sottocartella di: $parent"
     }
+    $directParent = [IO.Path]::GetDirectoryName($full).TrimEnd("\")
+    if ($directParent -ine $parent) {
+        throw "$Label deve essere una sottocartella diretta di: $parent"
+    }
+    if (Test-Path -LiteralPath $full) {
+        $item = Get-Item -LiteralPath $full -Force
+        if (
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne
+            [IO.FileAttributes]::Normal
+        ) {
+            throw "$Label non può essere un junction, link o altro reparse point."
+        }
+    }
     return $full
 }
 
@@ -89,6 +102,13 @@ function Set-SharedDataAcl {
         [Security.Principal.SecurityIdentifier]$OperatorGroupSid
     )
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
+    $rootItem = Get-Item -LiteralPath $Path -Force
+    if (
+        ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne
+        [IO.FileAttributes]::Normal
+    ) {
+        throw "La cartella dati condivisa è diventata un reparse point."
+    }
 
     # /grant:r only replaces grants for principals explicitly named in the
     # command. Reset first so stale explicit ACEs from manual/older installs
