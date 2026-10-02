@@ -78,6 +78,12 @@ $tempRoot = Join-Path $tempBase ("voucher-management-setup-build-" + [Guid]::New
 New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 
 try {
+    $payloadRoot = Join-Path $tempRoot "VoucherManagementPayload"
+    New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
+    Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $payloadRoot -Recurse -Force
+    }
+
     $uninstallAssemblyInfo = Join-Path $tempRoot "UninstallAssemblyInfo.cs"
     @"
 using System.Reflection;
@@ -92,7 +98,7 @@ using System.Reflection;
 [assembly: AssemblyInformationalVersion("$version")]
 "@ | Set-Content -LiteralPath $uninstallAssemblyInfo -Encoding UTF8
 
-    $uninstallExe = Join-Path $source "VoucherManagement-Uninstall.exe"
+    $uninstallExe = Join-Path $payloadRoot "VoucherManagement-Uninstall.exe"
     $uninstallCompilerArgs = @(
         "/nologo",
         "/target:winexe",
@@ -122,7 +128,7 @@ using System.Reflection;
     $payloadZip = Join-Path $tempRoot "VoucherManagement-Payload.zip"
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory(
-        $source,
+        $payloadRoot,
         $payloadZip,
         [IO.Compression.CompressionLevel]::Optimal,
         $false
