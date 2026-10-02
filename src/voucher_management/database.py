@@ -1122,14 +1122,21 @@ COMMIT;
                 (root, site),
             ).fetchone()
             if row is None:
-                legacy_rows = self.connection.execute(
-                    """SELECT id FROM controllers
-                       WHERE api_root=? AND site_id='' AND is_active=1
+                # A pre-Site-UUID profile may be adopted only when it is the
+                # *only* active identity at this API root. If another scoped
+                # Site already exists, the legacy row is ambiguous historical
+                # data and must never be silently merged into a new Site.
+                root_rows = self.connection.execute(
+                    """SELECT id, site_id FROM controllers
+                       WHERE api_root=? AND is_active=1
                        ORDER BY id""",
                     (root,),
                 ).fetchall()
-                if len(legacy_rows) == 1:
-                    row = legacy_rows[0]
+                if (
+                    len(root_rows) == 1
+                    and not str(root_rows[0]["site_id"] or "").strip()
+                ):
+                    row = root_rows[0]
                     with self.transaction() as db:
                         db.execute(
                             """UPDATE controllers
