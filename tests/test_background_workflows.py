@@ -331,6 +331,7 @@ def test_confirmed_create_is_not_reported_failed_when_local_reporting_persistenc
     created = SimpleNamespace(id="created-1")
     fake = SimpleNamespace(
         client=SimpleNamespace(site_id="site-a"),
+        controller_snapshot_live=True,
         create_guard=guard,
         vouchers=[],
         checked_ids=set(),
