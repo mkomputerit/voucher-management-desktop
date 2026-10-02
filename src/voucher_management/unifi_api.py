@@ -40,6 +40,10 @@ class UniFiVoucherNotFound(UniFiApiError):
     """Raised when a voucher UUID is definitively absent from UniFi."""
 
 
+class UniFiTransportError(UniFiApiError):
+    """Raised for retryable transport loss after controller configuration."""
+
+
 class UniFiMutationUncertain(UniFiApiError):
     """Raised when a non-idempotent request may have reached the controller."""
 
@@ -374,11 +378,11 @@ class UniFiClient:
                 raise UniFiCertificateTrustRequired(fingerprint) from exc
             if mutating:
                 raise UniFiMutationUncertain(uncertain_operation) from exc
-            raise UniFiApiError("Controller UniFi non raggiungibile") from exc
+            raise UniFiTransportError("Controller UniFi non raggiungibile") from exc
         except (TimeoutError, OSError, http.client.HTTPException) as exc:
             if mutating:
                 raise UniFiMutationUncertain(uncertain_operation) from exc
-            raise UniFiApiError("Controller UniFi non raggiungibile") from exc
+            raise UniFiTransportError("Controller UniFi non raggiungibile") from exc
 
         if status not in expected:
             if mutating:
