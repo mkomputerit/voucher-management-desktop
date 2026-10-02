@@ -64,9 +64,10 @@ The application currently provides:
 - explicit per-voucher nominal classification at creation time. This flag is
   local to Voucher Management and is never sent to UniFi; older vouchers remain
   unclassified rather than being guessed from the recipient text;
-- source-explicit detailed reporting: the UniFi voucher ID, local recipient,
-  UniFi description and local notes are exported as distinct fields; no
-  controller description is silently reinterpreted as local recipient data;
+- source-explicit detailed reporting: the UniFi voucher UUID, UniFi
+  description/destinatario and local notes remain distinguishable. Voucher
+  Management does not maintain a second editable recipient field: controller
+  description is read-only, while nominality and notes are local metadata;
 - review-driven voucher retention with an age threshold chosen explicitly by
   the operator: used, printed or PDF-generated vouchers remain protected and
   old/absent rows can be reviewed, but privacy minimization is disabled in this
@@ -93,9 +94,10 @@ Voucher Management 5.0.0 uses Ubiquiti's documented Network integration API with
   can manually export/import an encrypted history package between stations that
   share the same audit identity; an empty station can explicitly adopt the
   imported identity. This is deliberate merge/transfer, not live synchronization;
-- the current operator UI requires UniFi site discovery to be unambiguous; a
-  controller exposing multiple sites is rejected rather than selecting one
-  automatically;
+- first association with a controller requires UniFi site discovery to be
+  unambiguous. Once associated, Voucher Management persists the verified Site
+  UUID and reconnects only to that Site; it does not guess among multiple Sites
+  during an unknown first association;
 - Windows printing submits each PDF page for the requested copy count; printer
   collation behavior therefore depends on the selected printer/driver;
 - voucher creation is intentionally limited to batches of 50 in the operator
@@ -238,9 +240,11 @@ container with AES-GCM. Wrong passwords and modified encrypted files are
 rejected before live application data is changed. Legacy unencrypted ZIP
 backups remain supported for compatibility and explicit operator choice.
 
-After restoring a backup, the saved controller API root and TLS certificate pin
-are intentionally cleared. Re-enter the controller API root and independently
-verify/approve the certificate fingerprint before reconnecting. This prevents a
+After restoring a backup, the saved controller API root, Site UUID and TLS
+certificate pin are intentionally cleared. Re-enter the controller API root and
+independently verify/approve the certificate fingerprint before reconnecting.
+The restored SQLite archive still retains its historical controller/Site
+identity, but no restored setting pre-authorizes a live target. This prevents a
 backup from carrying controller trust to another installation.
 
 ## Manual history exchange between workstations
