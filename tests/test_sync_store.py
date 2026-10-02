@@ -8,6 +8,7 @@ from voucher_management.security_revocation import (
     record_security_revocation_request,
 )
 from voucher_management.sync_store import (
+    inspect_snapshot_absences,
     load_local_vouchers,
     persist_connection_snapshot_to_path,
     persist_create_result_to_path,
@@ -58,7 +59,7 @@ def test_snapshot_records_usage_change_without_inventing_use_timestamp(tmp_path)
         db.close()
 
 
-def test_complete_snapshot_marks_missing_voucher_absent_but_keeps_history(tmp_path):
+def test_first_missing_snapshot_is_only_suspicious_until_uuid_confirmation(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     db.initialize()
     controller = db.create_controller(name="A", api_root="https://a.example", created_at="t")
@@ -67,19 +68,94 @@ def test_complete_snapshot_marks_missing_voucher_absent_but_keeps_history(tmp_pa
             db, controller_id=controller, vouchers=[voucher("1")],
             observed_at="2026-09-25T10:00:00+00:00", sync_uuid="sync-1",
         )
+
+        first_plan = inspect_snapshot_absences(
+            db,
+            controller_id=controller,
+            present_unifi_ids=frozenset(),
+        )
+        assert first_plan.suspected_ids == ("1",)
+        assert first_plan.confirmation_ids == ()
+
         persist_successful_snapshot(
             db, controller_id=controller, vouchers=[],
             observed_at="2026-09-25T12:00:00+00:00", sync_uuid="sync-2",
         )
         row = db.connection.execute("SELECT * FROM vouchers").fetchone()
         assert row is not None
+        assert row["present_on_controller"] == 1
+        assert row["missing_observation_count"] == 1
+        assert row["missing_since"] == "2026-09-25T12:00:00+00:00"
+        assert db.connection.execute(
+            """SELECT COUNT(*) FROM voucher_sync_observations
+               WHERE field_name='present_on_controller'"""
+        ).fetchone()[0] == 0
+
+        second_plan = inspect_snapshot_absences(
+            db,
+            controller_id=controller,
+            present_unifi_ids=frozenset(),
+        )
+        assert second_plan.confirmation_ids == ("1",)
+
+        persist_successful_snapshot(
+            db, controller_id=controller, vouchers=[],
+            confirmed_absent_ids=frozenset({"1"}),
+            observed_at="2026-09-25T13:00:00+00:00", sync_uuid="sync-3",
+        )
+        row = db.connection.execute("SELECT * FROM vouchers").fetchone()
         assert row["present_on_controller"] == 0
+        assert row["missing_observation_count"] == 0
+        assert row["missing_since"] is None
         observation = db.connection.execute(
             """SELECT * FROM voucher_sync_observations
                WHERE field_name='present_on_controller'"""
         ).fetchone()
         assert observation["previous_value"] == "1"
         assert observation["new_value"] == "0"
+    finally:
+        db.close()
+
+
+def test_reappearance_clears_suspicious_absence_without_history_noise(tmp_path):
+    db = Database(tmp_path / "reappear.sqlite")
+    db.initialize()
+    controller = db.create_controller(name="A", api_root="https://a.example", created_at="t")
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("1")],
+            observed_at="2026-09-25T10:00:00+00:00",
+            sync_uuid="present-before-gap",
+        )
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[],
+            observed_at="2026-09-25T11:00:00+00:00",
+            sync_uuid="single-gap",
+        )
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("1")],
+            observed_at="2026-09-25T12:00:00+00:00",
+            sync_uuid="present-again",
+        )
+
+        row = db.connection.execute(
+            """SELECT present_on_controller, missing_observation_count, missing_since
+               FROM vouchers WHERE controller_id=? AND unifi_id='1'""",
+            (controller,),
+        ).fetchone()
+        assert row["present_on_controller"] == 1
+        assert row["missing_observation_count"] == 0
+        assert row["missing_since"] is None
+        assert db.connection.execute(
+            """SELECT COUNT(*) FROM voucher_sync_observations
+               WHERE field_name='present_on_controller'"""
+        ).fetchone()[0] == 0
     finally:
         db.close()
 
@@ -192,6 +268,7 @@ def test_controller_absence_preserves_local_alignment_and_history(tmp_path):
             db,
             controller_id=controller,
             vouchers=[],
+            confirmed_absent_ids=frozenset({"external-2"}),
             observed_at="2026-10-01T09:00:00+00:00",
             sync_uuid="external-absent",
         )
@@ -332,6 +409,7 @@ def test_controller_reappearance_reactivates_archived_voucher(tmp_path):
             db,
             controller_id=controller,
             vouchers=[],
+            confirmed_absent_ids=frozenset({"1"}),
             observed_at="2026-01-02T06:00:00+00:00",
             sync_uuid="sync-gone",
         )
@@ -653,6 +731,7 @@ def test_complete_snapshot_reconciles_pending_security_revocation(tmp_path):
             db,
             controller_id=controller,
             vouchers=[],
+            confirmed_absent_ids=frozenset({"pending-security"}),
             observed_at="2026-09-25T12:00:00+00:00",
             sync_uuid="security-after",
         )
@@ -666,7 +745,7 @@ def test_complete_snapshot_reconciles_pending_security_revocation(tmp_path):
         assert event["event_type"] == "SECURITY_REVOKED"
         assert event["source"] == "SYSTEM"
         assert event["windows_user"] == "SYSTEM"
-        assert '"confirmation_source":"fresh_snapshot_absent"' in event["details_json"]
+        assert '"confirmation_source":"direct_uuid_not_found"' in event["details_json"]
     finally:
         db.close()
 
