@@ -94,7 +94,7 @@ try {
         throw "ProductName dell'uninstaller installato non valido."
     }
 
-    $uninstallRegistryPath = "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\VoucherManagement"
+    $uninstallRegistryPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VoucherManagement"
     if (-not (Test-Path -LiteralPath $uninstallRegistryPath)) {
         throw "Il Setup non ha registrato Voucher Management in App installate."
     }
@@ -204,7 +204,7 @@ try {
     Write-Host "Windows Setup bootstrapper integration test OK"
 }
 finally {
-    Remove-Item -LiteralPath "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\VoucherManagement" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VoucherManagement" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $dataRoot -Recurse -Force -ErrorAction SilentlyContinue
