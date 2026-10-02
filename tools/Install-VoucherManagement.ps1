@@ -24,9 +24,9 @@ function Resolve-ManagedChildPath {
         [string]$RequiredParent,
         [string]$Label
     )
-    $full = [IO.Path]::GetFullPath($Path).TrimEnd("\\")
-    $parent = [IO.Path]::GetFullPath($RequiredParent).TrimEnd("\\")
-    $prefix = $parent + "\\"
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd("\")
+    $parent = [IO.Path]::GetFullPath($RequiredParent).TrimEnd("\")
+    $prefix = $parent + "\"
     if (
         $full -ieq $parent -or
         -not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
@@ -42,10 +42,10 @@ function Assert-PathsDoNotOverlap {
         [string]$Second,
         [string]$Message
     )
-    $a = [IO.Path]::GetFullPath($First).TrimEnd("\\")
-    $b = [IO.Path]::GetFullPath($Second).TrimEnd("\\")
-    $aPrefix = $a + "\\"
-    $bPrefix = $b + "\\"
+    $a = [IO.Path]::GetFullPath($First).TrimEnd("\")
+    $b = [IO.Path]::GetFullPath($Second).TrimEnd("\")
+    $aPrefix = $a + "\"
+    $bPrefix = $b + "\"
     if (
         $a -ieq $b -or
         $aPrefix.StartsWith($bPrefix, [StringComparison]::OrdinalIgnoreCase) -or
