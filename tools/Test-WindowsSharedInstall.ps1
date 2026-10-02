@@ -11,6 +11,9 @@ $installRoot = Join-Path $env:ProgramFiles ("Voucher Management Test-" + $token)
 $dataRoot = Join-Path $env:ProgramData ("VoucherManagementTest-" + $token)
 $invalidDataParent = Join-Path $env:ProgramData ("VoucherManagementInvalid-" + $token)
 $groupName = "VMTest-" + $token.Substring(0, 12)
+$foreignGroupName = "VMForeign-" + $token.Substring(0, 10)
+$nestedMemberGroupName = "VMNested-" + $token.Substring(0, 10)
+$nestedOperatorGroupName = "VMNestedOp-" + $token.Substring(0, 8)
 $operatorUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $installer = Join-Path $PSScriptRoot "Install-VoucherManagement.ps1"
 $uninstaller = Join-Path $PSScriptRoot "Uninstall-VoucherManagement.ps1"
@@ -164,6 +167,103 @@ try {
     }
     Remove-Item -LiteralPath $junctionDataRoot -Force
 
+    # The data ACL must never be delegated to a broad Windows built-in group.
+    $administrators = Get-LocalGroup -SID "S-1-5-32-544"
+    $builtInGroupRejected = $false
+    try {
+        $builtInArgs = @{
+            SourcePath = $SourcePath
+            InstallRoot = $installRoot
+            DataRoot = $dataRoot
+            OperatorGroup = $administrators.Name
+            OperatorUser = $operatorUser
+            SkipShortcut = $true
+        }
+        & $installer @builtInArgs
+    }
+    catch {
+        $builtInGroupRejected = $true
+    }
+    if (-not $builtInGroupRejected) {
+        throw "L'installer ha accettato un gruppo Windows built-in come gruppo operatori."
+    }
+
+    # A same-named but unrelated local group must not be adopted and later
+    # removed by Voucher Management.
+    New-LocalGroup -Name $foreignGroupName -Description "Gruppo estraneo al test Voucher Management" | Out-Null
+    $foreignGroupRejected = $false
+    try {
+        $foreignArgs = @{
+            SourcePath = $SourcePath
+            InstallRoot = $installRoot
+            DataRoot = $dataRoot
+            OperatorGroup = $foreignGroupName
+            OperatorUser = $operatorUser
+            SkipShortcut = $true
+        }
+        & $installer @foreignArgs
+    }
+    catch {
+        $foreignGroupRejected = $true
+    }
+    if (-not $foreignGroupRejected) {
+        throw "L'installer ha adottato un gruppo locale non gestito dall'applicazione."
+    }
+    if (-not (Get-LocalGroup -Name $foreignGroupName -ErrorAction SilentlyContinue)) {
+        throw "Il rifiuto dell'installer ha rimosso un gruppo locale estraneo."
+    }
+
+    New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
+    $foreignDataSentinel = Join-Path $dataRoot "must-survive-foreign-group.txt"
+    Set-Content -LiteralPath $foreignDataSentinel -Value "preserve" -Encoding ascii
+    $foreignUninstallRejected = $false
+    try {
+        $foreignUninstallArgs = @{
+            InstallRoot = $installRoot
+            DataRoot = $dataRoot
+            OperatorGroup = $foreignGroupName
+            RemoveData = $true
+            SkipShortcut = $true
+        }
+        & $uninstaller @foreignUninstallArgs
+    }
+    catch {
+        $foreignUninstallRejected = $true
+    }
+    if (
+        -not $foreignUninstallRejected -or
+        -not (Test-Path -LiteralPath $foreignDataSentinel) -or
+        -not (Get-LocalGroup -Name $foreignGroupName -ErrorAction SilentlyContinue)
+    ) {
+        throw "Il disinstaller non ha protetto dati o gruppo locale estraneo."
+    }
+
+    # Passing another group as OperatorUser would create nested membership and
+    # broaden access transitively. The failed attempt must roll back the
+    # product group it created for that request.
+    New-LocalGroup -Name $nestedMemberGroupName -Description "Nested membership regression test" | Out-Null
+    $nestedRejected = $false
+    try {
+        $nestedArgs = @{
+            SourcePath = $SourcePath
+            InstallRoot = $installRoot
+            DataRoot = $dataRoot
+            OperatorGroup = $nestedOperatorGroupName
+            OperatorUser = $nestedMemberGroupName
+            SkipShortcut = $true
+        }
+        & $installer @nestedArgs
+    }
+    catch {
+        $nestedRejected = $true
+    }
+    if (-not $nestedRejected) {
+        throw "L'installer ha accettato un gruppo annidato come operatore."
+    }
+    if (Get-LocalGroup -Name $nestedOperatorGroupName -ErrorAction SilentlyContinue) {
+        throw "Il rollback ha lasciato il gruppo operatori creato per una membership non valida."
+    }
+
     # A failure before the staged application swap must never destroy the
     # previously installed version or leave a shared-deployment marker behind.
     New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
@@ -293,7 +393,14 @@ finally {
     Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $dataRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $invalidDataParent -Force -ErrorAction SilentlyContinue
-    if (Get-LocalGroup -Name $groupName -ErrorAction SilentlyContinue) {
-        Remove-LocalGroup -Name $groupName -ErrorAction SilentlyContinue
+    foreach ($cleanupGroup in @(
+        $groupName,
+        $foreignGroupName,
+        $nestedMemberGroupName,
+        $nestedOperatorGroupName
+    )) {
+        if (Get-LocalGroup -Name $cleanupGroup -ErrorAction SilentlyContinue) {
+            Remove-LocalGroup -Name $cleanupGroup -ErrorAction SilentlyContinue
+        }
     }
 }
