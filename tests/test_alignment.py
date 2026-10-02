@@ -202,6 +202,66 @@ def test_verified_print_history_cannot_be_downgraded_by_alignment(tmp_path):
         db.close()
 
 
+def test_positive_legacy_print_state_without_job_cannot_be_downgraded(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[_voucher("legacy-positive-print")],
+            observed_at="2026-10-01T08:00:00+00:00",
+            sync_uuid="discover-legacy-positive-print",
+        )
+        voucher_id = int(
+            db.connection.execute(
+                "SELECT id FROM vouchers WHERE unifi_id='legacy-positive-print'"
+            ).fetchone()["id"]
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET origin='UNKNOWN',
+                       print_state='PRINTED',
+                       alignment_completed_at=NULL
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+
+        candidate = alignment_candidates(
+            db,
+            controller_id=controller,
+        )[0]
+        assert candidate.print_state == PRINT_STATE_PRINTED
+        assert candidate.last_printed_at == ""
+
+        try:
+            align_vouchers(
+                db,
+                controller_id=controller,
+                voucher_ids=[voucher_id],
+                is_nominal=False,
+                print_state="NOT_PRINTED",
+                aligned_at="2026-10-01T09:00:00+00:00",
+                windows_user=r"PC\operatore",
+            )
+        except ValueError as exc:
+            assert "prova positiva" in str(exc)
+        else:
+            raise AssertionError(
+                "positive legacy PRINTED state must not be downgraded"
+            )
+
+        row = db.connection.execute(
+            """SELECT print_state, alignment_completed_at
+               FROM vouchers WHERE id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert row["print_state"] == PRINT_STATE_PRINTED
+        assert row["alignment_completed_at"] is None
+    finally:
+        db.close()
+
+
 def test_alignment_is_atomic_for_mixed_controller_selection(tmp_path):
     db, controller = _db(tmp_path)
     other = db.create_controller(
