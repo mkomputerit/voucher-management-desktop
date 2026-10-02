@@ -315,6 +315,45 @@ def test_reason_length_is_bounded_before_request_is_recorded(tmp_path):
         db.close()
 
 
+def test_confirmed_delete_response_finalizes_request_without_waiting_for_list(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _row(db, controller, "v1")
+        record_preparation_delete_requests(
+            db,
+            controller_id=controller,
+            unifi_ids=["v1"],
+            reason="Errore preparazione",
+            requested_at=NOW,
+            windows_user=r"PC\operatore",
+        )
+
+        confirmed = confirm_preparation_delete_response(
+            db,
+            controller_id=controller,
+            unifi_ids=["v1"],
+            confirmed_at="2026-10-01T10:04:00+00:00",
+        )
+
+        assert confirmed == (voucher_id,)
+        row = db.connection.execute(
+            "SELECT present_on_controller FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["present_on_controller"] == 0
+        event = db.connection.execute(
+            """SELECT event_type, details_json
+               FROM voucher_events WHERE voucher_id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert event["event_type"] == "PREPARATION_DELETED"
+        details = json.loads(event["details_json"])
+        assert details["reason"] == "Errore preparazione"
+        assert details["confirmation_source"] == "delete_response"
+    finally:
+        db.close()
+
+
 def test_list_absence_stays_pending_until_uuid_absence_is_confirmed(tmp_path):
     db, controller = _db(tmp_path)
     try:
