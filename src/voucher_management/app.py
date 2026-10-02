@@ -855,6 +855,13 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 )
 
         def failed(exc: Exception) -> None:
+            retry = getattr(
+                self,
+                "_handle_controller_refresh_failure",
+                None,
+            )
+            if callable(retry) and bool(retry(exc)):
+                return
             callback = getattr(self, "_controller_operation_failed", None)
             if callback is not None:
                 callback()
