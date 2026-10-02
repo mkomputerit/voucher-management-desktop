@@ -521,6 +521,91 @@ def test_print_audit_uses_uuid_even_when_codes_are_ambiguous(tmp_path):
         db.close()
 
 
+def test_first_physical_print_from_unknown_state_is_countable_and_idempotent(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="unknown-before-print",
+            code="12345-67890",
+            imported_at="t",
+            last_synced_at="t",
+        )
+
+        kwargs = dict(
+            controller_id=controller,
+            audit_id="unknown-print-audit",
+            codes=["12345-67890"],
+            unifi_ids=["unknown-before-print"],
+            output_file="Voucher.pdf",
+            document_copies=1,
+            printed_at="2026-10-02T09:00:00+00:00",
+            windows_user="operator",
+        )
+        db.record_print_audit(**kwargs)
+        db.record_print_audit(**kwargs)
+
+        events = db.connection.execute(
+            """SELECT event_type, details_json
+               FROM voucher_events WHERE voucher_id=?""",
+            (voucher,),
+        ).fetchall()
+        assert len(events) == 1
+        assert events[0]["event_type"] == "PRINTED_FROM_UNKNOWN_STATE"
+        details = Database.decode_event_details(events[0]["details_json"])
+        assert details["prior_print_state"] == "UNKNOWN"
+        assert details["print_job_uuid"] == "unknown-print-audit"
+        assert db.print_summary(voucher).print_state == "PRINTED"
+    finally:
+        db.close()
+
+
+def test_first_physical_print_from_positive_not_printed_state_adds_no_unknown_event(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="known-unprinted",
+            code="98765-43210",
+            imported_at="t",
+            last_synced_at="t",
+        )
+        db.connection.execute(
+            "UPDATE vouchers SET print_state='NOT_PRINTED' WHERE id=?",
+            (voucher,),
+        )
+        db.connection.commit()
+
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="known-print-audit",
+            codes=["98765-43210"],
+            unifi_ids=["known-unprinted"],
+            output_file="Voucher.pdf",
+            document_copies=1,
+            printed_at="2026-10-02T09:05:00+00:00",
+            windows_user="operator",
+        )
+
+        assert db.connection.execute(
+            """SELECT COUNT(*) FROM voucher_events
+               WHERE voucher_id=? AND event_type='PRINTED_FROM_UNKNOWN_STATE'""",
+            (voucher,),
+        ).fetchone()[0] == 0
+    finally:
+        db.close()
+
+
 def test_record_print_audit_counts_repeated_labels_on_same_document(tmp_path):
     db = _db(tmp_path)
     try:
