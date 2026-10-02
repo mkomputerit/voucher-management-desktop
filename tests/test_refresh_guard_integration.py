@@ -24,6 +24,8 @@ def test_refresh_guard_clear_failure_warns_and_keeps_ui_usable(monkeypatch):
     fake = SimpleNamespace(
         client=object(),
         active_controller_id=None,
+        paths=SimpleNamespace(database="test.sqlite"),
+        vouchers=[],
         create_guard=Guard(),
         logger=SimpleNamespace(
             warning=lambda *args, **kwargs: logs.append((args, kwargs))
