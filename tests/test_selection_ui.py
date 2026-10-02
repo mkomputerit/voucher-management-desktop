@@ -273,6 +273,94 @@ def test_native_keyboard_navigation_cannot_change_print_highlighting():
 
 
 
+def test_workspace_print_state_keeps_unknown_out_of_to_print():
+    voucher = SimpleNamespace(id="unknown")
+    fake = SimpleNamespace(
+        _workspace_print_state_by_unifi_id={
+            "unknown": (True, "UNKNOWN"),
+            "printable": (True, "NOT_PRINTED"),
+        }
+    )
+
+    assert ModernVoucherApp._workspace_print_state(
+        fake,
+        voucher,
+        None,
+    ) == "NON DETERMINABILE"
+    assert ModernVoucherApp._workspace_print_state(
+        fake,
+        SimpleNamespace(id="printable"),
+        None,
+    ) == "DA STAMPARE"
+
+
+def test_home_metrics_exclude_unknown_print_and_count_first_multiuse_use():
+    fake = SimpleNamespace(
+        controller_snapshot_live=True,
+        vouchers=[
+            SimpleNamespace(
+                id="unknown",
+                status="VALID_MULTI",
+                used=0,
+                code_formatted="11111-11111",
+                recipient="Unknown print",
+                create_time=40,
+                end_time=0,
+            ),
+            SimpleNamespace(
+                id="printable",
+                status="VALID_MULTI",
+                used=0,
+                code_formatted="22222-22222",
+                recipient="Printable",
+                create_time=30,
+                end_time=0,
+            ),
+            SimpleNamespace(
+                id="multi-used",
+                status="USED_MULTIPLE",
+                used=1,
+                code_formatted="33333-33333",
+                recipient="Multiuse",
+                create_time=20,
+                end_time=0,
+            ),
+            SimpleNamespace(
+                id="expired",
+                status="EXPIRED",
+                used=0,
+                code_formatted="44444-44444",
+                recipient="Expired",
+                create_time=10,
+                end_time=0,
+            ),
+        ],
+        home_to_print_var=FakeVar(),
+        home_active_var=FakeVar(),
+        home_used_var=FakeVar(),
+        home_expired_var=FakeVar(),
+        home_unprinted_alert_var=FakeVar(),
+        home_security_alert_var=FakeVar(),
+        _is_expired=lambda voucher: voucher.status == "EXPIRED",
+        _workspace_print_state=lambda voucher, _stat: {
+            "unknown": "NON DETERMINABILE",
+            "printable": "DA STAMPARE",
+            "multi-used": "STAMPATO",
+            "expired": "SCADUTO",
+        }[voucher.id],
+        _refresh_home_activity=lambda: None,
+        _refresh_home_threshold_alerts=lambda: None,
+        _refresh_controller_workspace_status=lambda: None,
+    )
+
+    ModernVoucherApp._update_operator_summary(fake, {})
+
+    assert fake.home_to_print_var.value == "1"
+    assert fake.home_active_var.value == "3"
+    assert fake.home_used_var.value == "1"
+    assert fake.home_expired_var.value == "1"
+
+
 def test_unaligned_voucher_cannot_enter_print_selection_from_home():
     visible = SimpleNamespace(id="visible", status="VALID_MULTI")
     tree = HomeTree()
