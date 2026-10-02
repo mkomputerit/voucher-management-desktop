@@ -39,6 +39,14 @@ class VoucherCreationMixin:
                 parent=self,
             )
             return
+        if not bool(getattr(self, "controller_snapshot_live", False)):
+            messagebox.showwarning(
+                "Creazione sospesa",
+                "Prima di creare voucher serve una fotografia UniFi live e "
+                "completa. Eseguire Sincronizza e riprovare.",
+                parent=self,
+            )
+            return
         if self.create_guard.pending:
             messagebox.showwarning(
                 "Creazione sospesa",
