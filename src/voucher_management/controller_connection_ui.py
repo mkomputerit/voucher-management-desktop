@@ -25,6 +25,21 @@ from .unifi_api import (
 class ControllerConnectionMixin:
     """Non-layout controller connection workflow for the Windows UI."""
 
+    def _preferred_site_for_root(self, api_root: str) -> str | None:
+        """Return the saved Site UUID only when it belongs to this API root."""
+
+        settings = self.settings_store.load()
+        saved_root = str(settings.get("controller_api_root", "") or "").strip()
+        saved_site = str(settings.get("controller_site_id", "") or "").strip()
+        try:
+            normalized_saved = normalize_api_root(saved_root) if saved_root else ""
+            normalized_current = normalize_api_root(api_root)
+        except (UniFiApiError, ValueError):
+            return None
+        if normalized_saved == normalized_current and saved_site:
+            return saved_site
+        return None
+
     @staticmethod
     def _format_certificate_fingerprint(value: str) -> str:
         compact = value.replace(":", "").strip().upper()
@@ -198,6 +213,7 @@ class ControllerConnectionMixin:
             client = UniFiClient(
                 api_root,
                 trusted_cert_sha256=exc.fingerprint,
+                preferred_site_id=self._preferred_site_for_root(api_root),
             )
         except ValueError as error:
             self._connection_failed(error)
@@ -238,6 +254,7 @@ class ControllerConnectionMixin:
             client = UniFiClient(
                 api_root,
                 trusted_cert_sha256=exc.fingerprint,
+                preferred_site_id=self._preferred_site_for_root(api_root),
             )
         except ValueError as error:
             self._connection_failed(error)
