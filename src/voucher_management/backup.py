@@ -929,6 +929,7 @@ class BackupService:
         # A backup must never pre-authorize a controller target/certificate.
         # Force the operator through the normal trust flow after restore.
         settings["controller_api_root"] = ""
+        settings["controller_site_id"] = ""
         settings["controller_cert_sha256"] = ""
         SettingsStore(settings_path).save(settings)
 
