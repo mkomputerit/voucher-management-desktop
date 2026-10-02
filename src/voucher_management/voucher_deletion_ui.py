@@ -27,7 +27,16 @@ class VoucherDeletionMixin:
     """Non-layout deletion workflow for the Windows operator shell."""
 
     def delete_selected(self) -> None:
-        """Revalidate and delete selected vouchers without blocking Tk."""
+        """Delete the current operational selection."""
+
+        self._request_delete_vouchers(self.selected())
+
+    def _request_delete_vouchers(self, selected) -> None:
+        """Run the common safe-delete workflow for an explicit voucher set.
+
+        This internal entry point also serves the alignment dialog's narrow
+        invalid-external cleanup path. It never changes print selection policy.
+        """
 
         if not self.client:
             messagebox.showinfo(
@@ -37,7 +46,7 @@ class VoucherDeletionMixin:
             )
             return
 
-        selected = self.selected()
+        selected = list(selected)
         if not selected:
             messagebox.showinfo(
                 "Elimina da UniFi",
