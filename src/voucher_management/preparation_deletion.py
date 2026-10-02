@@ -289,6 +289,96 @@ def record_preparation_delete_requests_to_path(
         database.close()
 
 
+def confirm_preparation_delete_response(
+    database: Database,
+    *,
+    controller_id: int,
+    unifi_ids: list[str] | tuple[str, ...],
+    confirmed_at: str,
+    connection=None,
+) -> tuple[int, ...]:
+    """Finalize ordinary delete requests from a confirmed UniFi DELETE response."""
+
+    ids = tuple(
+        dict.fromkeys(
+            str(value).strip()
+            for value in unifi_ids
+            if str(value).strip()
+        )
+    )
+    if not ids:
+        return ()
+    stamp = str(confirmed_at or "").strip()
+    if not stamp:
+        raise ValueError("confirmed_at is required")
+
+    placeholders = ",".join("?" for _ in ids)
+
+    def write(db):
+        rows = db.execute(
+            f"""SELECT ve.id AS event_id, ve.voucher_id, ve.details_json, v.unifi_id
+                FROM voucher_events AS ve
+                JOIN vouchers AS v ON v.id=ve.voucher_id
+                WHERE v.controller_id=?
+                  AND v.unifi_id IN ({placeholders})
+                  AND ve.event_type='PREPARATION_DELETE_REQUESTED'
+                ORDER BY ve.id""",
+            (int(controller_id), *ids),
+        ).fetchall()
+        if len(rows) != len(ids):
+            raise RuntimeError(
+                "La risposta DELETE non corrisponde alle richieste di "
+                "cancellazione registrate localmente."
+            )
+
+        confirmed: list[int] = []
+        for row in rows:
+            voucher_id = int(row["voucher_id"])
+            db.execute(
+                """UPDATE voucher_events
+                   SET event_type='PREPARATION_DELETED',
+                       occurred_at=?,
+                       details_json=?
+                   WHERE id=?""",
+                (
+                    stamp,
+                    _merge_details(
+                        row["details_json"],
+                        confirmed_at=stamp,
+                        confirmation_source="delete_response",
+                    ),
+                    int(row["event_id"]),
+                ),
+            )
+            db.execute(
+                """UPDATE vouchers
+                   SET present_on_controller=0,
+                       missing_observation_count=0,
+                       missing_since=NULL
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+            confirmed.append(voucher_id)
+        return tuple(confirmed)
+
+    if connection is not None:
+        return write(connection)
+    with database.transaction() as db:
+        return write(db)
+
+
+def confirm_preparation_delete_response_to_path(
+    database_path: Path,
+    **kwargs,
+) -> tuple[int, ...]:
+    database = Database(Path(database_path))
+    try:
+        database.initialize()
+        return confirm_preparation_delete_response(database, **kwargs)
+    finally:
+        database.close()
+
+
 def reconcile_preparation_delete_requests(
     database: Database,
     *,
@@ -372,5 +462,7 @@ __all__ = [
     "preparation_delete_facts",
     "record_preparation_delete_requests",
     "record_preparation_delete_requests_to_path",
+    "confirm_preparation_delete_response",
+    "confirm_preparation_delete_response_to_path",
     "reconcile_preparation_delete_requests",
 ]
