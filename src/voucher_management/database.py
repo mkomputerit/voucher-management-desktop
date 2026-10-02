@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 PRINT_STATE_UNKNOWN = "UNKNOWN"
 PRINT_STATE_NOT_PRINTED = "NOT_PRINTED"
@@ -106,6 +106,9 @@ CREATE TABLE IF NOT EXISTS vouchers (
     download_limit_kbps INTEGER CHECK (download_limit_kbps IS NULL OR download_limit_kbps >= 0),
     upload_limit_kbps INTEGER CHECK (upload_limit_kbps IS NULL OR upload_limit_kbps >= 0),
     present_on_controller INTEGER NOT NULL DEFAULT 1 CHECK (present_on_controller IN (0, 1)),
+    missing_observation_count INTEGER NOT NULL DEFAULT 0
+        CHECK (missing_observation_count >= 0),
+    missing_since TEXT,
     last_seen_at TEXT,
     last_synced_at TEXT NOT NULL,
     assigned_to TEXT NOT NULL DEFAULT '',
@@ -424,6 +427,13 @@ CREATE INDEX IF NOT EXISTS idx_controllers_identity
 ON controllers(api_root, site_id, is_active);
 """
 
+
+MIGRATION_8_TO_9_SQL = """
+ALTER TABLE vouchers ADD COLUMN missing_observation_count INTEGER NOT NULL DEFAULT 0
+    CHECK (missing_observation_count >= 0);
+ALTER TABLE vouchers ADD COLUMN missing_since TEXT;
+"""
+
 @dataclass(frozen=True)
 class PrintAuditSummary:
     """Aggregated local print facts used by the duplicate-print warning."""
@@ -645,6 +655,41 @@ COMMIT;
 """
                 )
                 current = 8
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 8:
+            try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                parts = []
+                if "missing_observation_count" not in columns:
+                    parts.append(
+                        """ALTER TABLE vouchers
+ADD COLUMN missing_observation_count INTEGER NOT NULL DEFAULT 0
+CHECK (missing_observation_count >= 0);"""
+                    )
+                if "missing_since" not in columns:
+                    parts.append(
+                        "ALTER TABLE vouchers ADD COLUMN missing_since TEXT;"
+                    )
+                migration_sql = "\n".join(parts)
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + migration_sql
+                    + """
+PRAGMA user_version = 9;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '9');
+COMMIT;
+"""
+                )
+                current = 9
             except Exception:
                 self.connection.rollback()
                 raise
@@ -1167,7 +1212,10 @@ COMMIT;
                        expired=excluded.expired, data_limit_mb=excluded.data_limit_mb,
                        download_limit_kbps=excluded.download_limit_kbps,
                        upload_limit_kbps=excluded.upload_limit_kbps,
-                       present_on_controller=1, archived_at=NULL,
+                       present_on_controller=1,
+                       missing_observation_count=0,
+                       missing_since=NULL,
+                       archived_at=NULL,
                        origin=CASE
                            WHEN vouchers.origin='UNKNOWN' THEN 'CONTROLLER'
                            ELSE vouchers.origin
