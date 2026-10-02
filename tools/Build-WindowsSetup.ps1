@@ -18,6 +18,9 @@ if (-not (Test-Path -LiteralPath (Join-Path $source "VoucherManagement.exe") -Pa
 if (-not (Test-Path -LiteralPath (Join-Path $source "Install-VoucherManagement.ps1") -PathType Leaf)) {
     throw "Install-VoucherManagement.ps1 non presente nel payload portable."
 }
+if (-not (Test-Path -LiteralPath (Join-Path $source "Uninstall-VoucherManagement.ps1") -PathType Leaf)) {
+    throw "Uninstall-VoucherManagement.ps1 non presente nel payload portable."
+}
 if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
     throw "File versione non trovato: $versionPath"
 }
@@ -50,8 +53,16 @@ foreach ($reference in @($compression, $compressionFs)) {
 
 $bootstrapSource = Join-Path $PSScriptRoot "SetupBootstrapper.cs"
 $manifest = Join-Path $PSScriptRoot "SetupBootstrapper.manifest"
+$uninstallBootstrapSource = Join-Path $PSScriptRoot "UninstallBootstrapper.cs"
+$uninstallManifest = Join-Path $PSScriptRoot "UninstallBootstrapper.manifest"
 $icon = Join-Path $source "_internal\assets\VoucherManagement.ico"
-foreach ($required in @($bootstrapSource, $manifest, $icon)) {
+foreach ($required in @(
+    $bootstrapSource,
+    $manifest,
+    $uninstallBootstrapSource,
+    $uninstallManifest,
+    $icon
+)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "File Setup richiesto non trovato: $required"
     }
@@ -67,6 +78,47 @@ $tempRoot = Join-Path $tempBase ("voucher-management-setup-build-" + [Guid]::New
 New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 
 try {
+    $uninstallAssemblyInfo = Join-Path $tempRoot "UninstallAssemblyInfo.cs"
+    @"
+using System.Reflection;
+
+[assembly: AssemblyTitle("Voucher Management Uninstall")]
+[assembly: AssemblyDescription("Uninstaller for Voucher Management")]
+[assembly: AssemblyCompany("Voucher Management contributors")]
+[assembly: AssemblyProduct("Voucher Management")]
+[assembly: AssemblyCopyright("Copyright (c) 2026 Voucher Management contributors")]
+[assembly: AssemblyVersion("$version4")]
+[assembly: AssemblyFileVersion("$version4")]
+[assembly: AssemblyInformationalVersion("$version")]
+"@ | Set-Content -LiteralPath $uninstallAssemblyInfo -Encoding UTF8
+
+    $uninstallExe = Join-Path $source "VoucherManagement-Uninstall.exe"
+    $uninstallCompilerArgs = @(
+        "/nologo",
+        "/target:winexe",
+        "/optimize+",
+        "/platform:x64",
+        "/win32icon:$icon",
+        "/win32manifest:$uninstallManifest",
+        "/out:$uninstallExe",
+        $uninstallBootstrapSource,
+        $uninstallAssemblyInfo
+    )
+    & $csc @uninstallCompilerArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Compilazione Voucher Management Uninstall non riuscita."
+    }
+    if (-not (Test-Path -LiteralPath $uninstallExe -PathType Leaf)) {
+        throw "Il compilatore non ha prodotto l'uninstaller atteso."
+    }
+    $uninstallInfo = (Get-Item -LiteralPath $uninstallExe).VersionInfo
+    if ($uninstallInfo.ProductName -ne "Voucher Management") {
+        throw "ProductName dell'uninstaller non valido: $($uninstallInfo.ProductName)"
+    }
+    if ($uninstallInfo.ProductVersion -ne $version) {
+        throw "ProductVersion dell'uninstaller non valido: $($uninstallInfo.ProductVersion)"
+    }
+
     $payloadZip = Join-Path $tempRoot "VoucherManagement-Payload.zip"
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory(
