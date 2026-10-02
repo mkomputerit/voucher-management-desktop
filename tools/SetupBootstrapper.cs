@@ -27,14 +27,21 @@ namespace VoucherManagementSetup
                     "Voucher Management"
                 )
             );
+            string defaultDataRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "VoucherManagement"
+            );
+            bool explicitDataRoot =
+                options.ContainsKey("DataRoot") &&
+                !String.IsNullOrWhiteSpace(options["DataRoot"]);
             string dataRoot = GetOption(
                 options,
                 "DataRoot",
-                Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                    "VoucherManagement"
-                )
+                defaultDataRoot
             );
+            string dataRootDisplay = explicitDataRoot
+                ? dataRoot
+                : dataRoot + " (nuova installazione; in aggiornamento viene mantenuto il percorso esistente)";
 
             if (!quiet)
             {
@@ -42,7 +49,7 @@ namespace VoucherManagementSetup
                     "Voucher Management " + Application.ProductVersion + "\r\n\r\n" +
                     "Installazione condivisa per questa postazione.\r\n" +
                     "Programma: " + installRoot + "\r\n" +
-                    "Dati condivisi: " + dataRoot + "\r\n\r\n" +
+                    "Dati condivisi: " + dataRootDisplay + "\r\n\r\n" +
                     "Sono richiesti privilegi di amministratore. Continuare?",
                     "Voucher Management Setup",
                     MessageBoxButtons.YesNo,
@@ -106,8 +113,11 @@ namespace VoucherManagementSetup
                 psArgs.Append(Quote(payloadRoot));
                 psArgs.Append(" -InstallRoot ");
                 psArgs.Append(Quote(installRoot));
-                psArgs.Append(" -DataRoot ");
-                psArgs.Append(Quote(dataRoot));
+                if (explicitDataRoot)
+                {
+                    psArgs.Append(" -DataRoot ");
+                    psArgs.Append(Quote(dataRoot));
+                }
 
                 AppendOption(psArgs, options, "OperatorGroup", "-OperatorGroup");
                 AppendOption(psArgs, options, "OperatorUser", "-OperatorUser");
