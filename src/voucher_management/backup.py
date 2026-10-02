@@ -43,6 +43,19 @@ MAX_ARCHIVE_FILES = 10_000
 MAX_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_MANIFEST_BYTES = 64 * 1024
 SQLITE_MEMBER = "data/voucher_management.db"
+TRANSIENT_BACKUP_MEMBERS = frozenset(
+    {
+        "data/history.lock",
+        "data/application.instance.lock",
+        "data/pending_print_audit.json",
+        "data/pending_print_audit.json.tmp",
+        "data/pending_create_guard",
+        "data/pending_create_intent.json",
+        "data/pending_create_intent.json.tmp",
+        "data/pending_create_reporting.json",
+        "data/pending_create_reporting.json.tmp",
+    }
+)
 SQLITE_SIDECAR_MEMBERS = {
     "data/voucher_management.db-wal",
     "data/voucher_management.db-shm",
@@ -600,6 +613,8 @@ class BackupService:
                     "pending_print_audit.json",
                     "pending_print_audit.json.tmp",
                     "pending_create_guard",
+                    "pending_create_intent.json",
+                    "pending_create_intent.json.tmp",
                     "pending_create_reporting.json",
                     "pending_create_reporting.json.tmp",
                 }:
@@ -738,6 +753,12 @@ class BackupService:
                     raise BackupError("Il backup contiene troppi file")
 
                 names = {info.filename for info in infos}
+                transient = names.intersection(TRANSIENT_BACKUP_MEMBERS)
+                if transient:
+                    raise BackupError(
+                        "Il backup contiene stato operativo transitorio non "
+                        "ripristinabile in sicurezza"
+                    )
                 if self.MANIFEST not in names:
                     raise BackupError(
                         "Il file non è un backup Voucher Management valido"
