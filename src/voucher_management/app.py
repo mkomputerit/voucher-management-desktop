@@ -962,11 +962,17 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 return
             copies = dialog.result
 
+        site_id = (
+            self.database.controller_site_id(self.active_controller_id)
+            if self.active_controller_id is not None
+            else ""
+        )
         job = prepare_print_job(
             selected,
             self.paths.prints,
             unlimited_copies=copies,
             now=datetime.now(),
+            site_id=site_id,
         )
         settings = dict(self.settings)
         history = self.history
@@ -989,6 +995,11 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             self._preview(
                 outcome.output,
                 list(outcome.codes),
+                site_id=job.batch.site_id,
+                unifi_ids=[
+                    item.unifi_id
+                    for item in job.batch.vouchers
+                ],
             )
 
         def failed(exc: Exception) -> None:
@@ -1040,6 +1051,8 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self,
         codes: list[str],
         parent,
+        *,
+        unifi_ids: list[str] | None = None,
     ) -> bool:
         """Confirm physical duplicates using durable SQLite print facts."""
 
@@ -1053,10 +1066,23 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             return False
 
         try:
-            summaries = self.database.print_summaries_for_codes(
-                controller_id=self.active_controller_id,
-                codes=list(codes),
+            stable_ids = (
+                [str(value).strip() for value in unifi_ids]
+                if unifi_ids is not None
+                else []
             )
+            if stable_ids and len(stable_ids) == len(codes):
+                summaries = self.database.print_summaries_for_remote_ids(
+                    controller_id=self.active_controller_id,
+                    unifi_ids=stable_ids,
+                )
+                summary_mode = "uuid"
+            else:
+                summaries = self.database.print_summaries_for_codes(
+                    controller_id=self.active_controller_id,
+                    codes=list(codes),
+                )
+                summary_mode = "code"
         except Exception as exc:
             self.logger.warning(
                 "reprint_preflight_failed type=%s",
@@ -1072,12 +1098,17 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         warnings = []
         seen: set[str] = set()
-        for display_code in codes:
+        for index, display_code in enumerate(codes):
             canonical = str(display_code).strip().replace("-", "")
-            if not canonical or canonical in seen:
+            identity = (
+                stable_ids[index]
+                if summary_mode == "uuid"
+                else canonical
+            )
+            if not identity or identity in seen:
                 continue
-            seen.add(canonical)
-            warning = evaluate_reprint(summaries[canonical])
+            seen.add(identity)
+            warning = evaluate_reprint(summaries[identity])
             if warning.required:
                 warnings.append((str(display_code), warning))
 
@@ -1090,6 +1121,8 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         pending: dict,
         codes: list[str],
         pdf_path: Path,
+        *,
+        unifi_ids: list[str] | None = None,
     ) -> None:
         """Mirror a confirmed physical print into the 5.0 SQLite audit."""
 
@@ -1102,6 +1135,11 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             audit_id=str(pending["audit_id"]),
             codes=list(codes),
             output_file=Path(pdf_path).name,
+            unifi_ids=(
+                list(unifi_ids)
+                if unifi_ids is not None
+                else None
+            ),
             document_copies=int(pending["copies"]),
             printed_at=str(pending["submitted_at"]),
             windows_user=self._windows_operator_identity(),
@@ -1115,9 +1153,19 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         resolved only against voucher codes already present in SQLite.
         """
 
+        site_id = (
+            self.database.controller_site_id(self.active_controller_id)
+            if self.active_controller_id is not None
+            else ""
+        )
         details = self.history.resolve_pending_print(
             [voucher.code_formatted for voucher in self.vouchers],
             self.settings,
+            site_id=site_id,
+            candidate_unifi_ids=[
+                str(voucher.id)
+                for voucher in self.vouchers
+            ],
         )
         if details is None:
             return False
@@ -1134,6 +1182,11 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             },
             list(details.codes),
             Path(details.output_file),
+            unifi_ids=(
+                list(details.unifi_ids)
+                if details.unifi_ids
+                else None
+            ),
         )
         self.history.finalize_pending_print_audit(details.audit_id)
         return True
@@ -1149,19 +1202,41 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         )
         self.populate()
 
-    def _preview(self, path: Path, codes: list[str]):
+    def _preview(
+        self,
+        path: Path,
+        codes: list[str],
+        *,
+        site_id: str = "",
+        unifi_ids: list[str] | None = None,
+    ):
+        stable_ids = (
+            list(unifi_ids)
+            if unifi_ids is not None
+            else None
+        )
         PdfPreview(
             self,
             path,
             codes,
             self.history,
             self.settings,
+            site_id=site_id,
+            unifi_ids=stable_ids,
             on_print=self.populate,
-            on_audit=self._record_sqlite_print_audit,
+            on_audit=lambda pending, audit_codes, pdf_path: (
+                self._record_sqlite_print_audit(
+                    pending,
+                    audit_codes,
+                    pdf_path,
+                    unifi_ids=stable_ids,
+                )
+            ),
             on_submitted=lambda: self._deselect_printed_codes(codes),
             confirm_print=lambda parent: self._confirm_physical_reprint(
                 codes,
                 parent,
+                unifi_ids=stable_ids,
             ),
         )
 
@@ -1183,6 +1258,13 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 history=self.history,
                 settings=self.settings,
                 prints_root=self.paths.prints,
+                site_id=(
+                    self.database.controller_site_id(
+                        self.active_controller_id
+                    )
+                    if self.active_controller_id is not None
+                    else ""
+                ),
             )
         except HistoryError as exc:
             messagebox.showerror(
@@ -1226,6 +1308,18 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             self._preview(
                 resolved.path,
                 list(resolved.linked_codes),
+                site_id=(
+                    self.database.controller_site_id(
+                        self.active_controller_id
+                    )
+                    if self.active_controller_id is not None
+                    else ""
+                ),
+                unifi_ids=(
+                    list(resolved.linked_voucher_ids)
+                    if resolved.linked_voucher_ids
+                    else None
+                ),
             )
         except Exception as exc:
             self.logger.error(
