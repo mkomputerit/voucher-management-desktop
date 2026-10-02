@@ -142,6 +142,7 @@ def _detail_headers(dataset: ReportDataset) -> list[str]:
             "Ristampe",
             "Operatori",
             "Data cancellazione",
+            "Origine cancellazione",
             "Motivo cancellazione",
             "Stato",
         ]
@@ -179,6 +180,7 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
             str(row.reprint_jobs),
             ", ".join(row.print_operators) or "—",
             _display_time(row.preparation_deleted_at),
+            row.controller_deletion_source or "—",
             row.preparation_delete_reason or "—",
             row.status,
         ]
@@ -262,6 +264,7 @@ def render_report_pdf(
                 row.unifi_id,
                 row.recipient,
                 row.local_notes,
+                row.controller_deletion_source,
                 row.preparation_delete_reason,
                 row.status,
                 ", ".join(row.print_operators),
