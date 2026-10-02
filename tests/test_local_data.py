@@ -12,7 +12,11 @@ from voucher_management.local_data import (
     apply_local_voucher_patch,
 )
 import voucher_management.local_data_ui as local_data_ui
-from voucher_management.local_data_ui import LocalDataMixin, selected_workspace_vouchers
+from voucher_management.local_data_ui import (
+    LocalDataMixin,
+    local_data_selection_candidates,
+    selected_workspace_vouchers,
+)
 
 
 NOW = "2026-10-01T09:00:00+00:00"
@@ -304,48 +308,81 @@ class _LocalDataHarness(LocalDataMixin):
     pass
 
 
-def test_notes_action_rejects_multiple_workspace_selection(monkeypatch):
-    one = SimpleNamespace(id="one")
-    two = SimpleNamespace(id="two")
-    app = _LocalDataHarness()
-    app.checked_ids = {"one", "two"}
-    app.vouchers = (one, two)
+def test_local_metadata_candidates_include_expired_rows():
+    active = SimpleNamespace(id="active", status="VALID_MULTI")
+    expired = SimpleNamespace(id="expired", status="EXPIRED")
 
-    messages = []
+    assert local_data_selection_candidates(
+        (active, expired)
+    ) == (active, expired)
+
+
+def test_nominality_action_uses_independent_selector_and_allows_multiple(monkeypatch):
+    active = SimpleNamespace(id="active", status="VALID_MULTI")
+    expired = SimpleNamespace(id="expired", status="EXPIRED")
+    app = _LocalDataHarness()
+    app.checked_ids = {"active"}
+    app.vouchers = (active, expired)
+
+    selections = []
     opened = []
+
+    class Selector:
+        def __init__(self, app_obj, candidates, *, title, multiple):
+            selections.append((tuple(candidates), title, multiple))
+            self.result = (active, expired)
+
     monkeypatch.setattr(
-        local_data_ui.messagebox,
-        "showinfo",
-        lambda *args, **kwargs: messages.append((args, kwargs)),
+        local_data_ui,
+        "LocalMetadataSelectionDialog",
+        Selector,
     )
     monkeypatch.setattr(
         local_data_ui,
-        "NotesDialog",
+        "NominalityDialog",
         lambda *args, **kwargs: opened.append((args, kwargs)),
     )
 
-    app.edit_selected_notes()
+    app.edit_selected_nominality()
 
-    assert opened == []
-    assert len(messages) == 1
-    assert "un solo voucher" in messages[0][0][1]
-
-
-def test_notes_action_opens_for_exactly_one_selected_voucher(monkeypatch):
-    one = SimpleNamespace(id="one")
-    two = SimpleNamespace(id="two")
-    app = _LocalDataHarness()
-    app.checked_ids = {"two"}
-    app.vouchers = (one, two)
-
-    opened = []
-    monkeypatch.setattr(
-        local_data_ui,
-        "NotesDialog",
-        lambda *args, **kwargs: opened.append((args, kwargs)),
-    )
-
-    app.edit_selected_notes()
-
+    assert selections == [
+        ((active, expired), "Nominalità voucher", True)
+    ]
     assert len(opened) == 1
-    assert opened[0][0][1] == (two,)
+    assert opened[0][0][1] == (active, expired)
+
+
+def test_notes_action_uses_independent_single_selector(monkeypatch):
+    active = SimpleNamespace(id="active", status="VALID_MULTI")
+    expired = SimpleNamespace(id="expired", status="EXPIRED")
+    app = _LocalDataHarness()
+    app.checked_ids = {"active"}
+    app.vouchers = (active, expired)
+
+    selections = []
+    opened = []
+
+    class Selector:
+        def __init__(self, app_obj, candidates, *, title, multiple):
+            selections.append((tuple(candidates), title, multiple))
+            self.result = (expired,)
+
+    monkeypatch.setattr(
+        local_data_ui,
+        "LocalMetadataSelectionDialog",
+        Selector,
+    )
+    monkeypatch.setattr(
+        local_data_ui,
+        "NotesDialog",
+        lambda *args, **kwargs: opened.append((args, kwargs)),
+    )
+
+    app.edit_selected_notes()
+
+    assert selections == [
+        ((active, expired), "Note voucher", False)
+    ]
+    assert len(opened) == 1
+    assert opened[0][0][1] == (expired,)
+
