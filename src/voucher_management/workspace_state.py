@@ -34,6 +34,9 @@ def build_controller_workspace_status(
     controller_name: str = "",
     last_successful_sync_at: str = "",
     busy_label: str = "",
+    retrying: bool = False,
+    retry_attempt: int = 0,
+    retry_total: int = 0,
     failed: bool = False,
     stale: bool = False,
     archive_failed: bool = False,
@@ -42,14 +45,25 @@ def build_controller_workspace_status(
 
     name = str(controller_name or "").strip() or "Controller"
     busy = str(busy_label or "").strip()
+    last_sync = _format_sync_time(last_successful_sync_at)
+    if retrying:
+        attempt = max(1, int(retry_attempt or 0))
+        total = max(attempt, int(retry_total or 0))
+        return ControllerWorkspaceStatus(
+            key="retrying",
+            title="Riconnessione automatica…",
+            detail=(
+                f"Tentativo {attempt}/{total}. I dati Home restano sospesi "
+                f"finché la controller non risponde. Ultimo aggiornamento: "
+                f"{last_sync}."
+            ),
+        )
     if busy:
         return ControllerWorkspaceStatus(
             key="syncing",
             title="Sincronizzazione in corso…",
             detail="Attendi il completamento dell'operazione con il controller.",
         )
-
-    last_sync = _format_sync_time(last_successful_sync_at)
     if failed:
         return ControllerWorkspaceStatus(
             key="error",
