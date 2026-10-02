@@ -223,7 +223,7 @@ def test_reason_length_is_bounded_before_request_is_recorded(tmp_path):
         db.close()
 
 
-def test_absent_fresh_snapshot_confirms_delete_and_preserves_reason(tmp_path):
+def test_list_absence_stays_pending_until_uuid_absence_is_confirmed(tmp_path):
     db, controller = _db(tmp_path)
     try:
         voucher_id = _row(db, controller, "v1")
@@ -243,6 +243,21 @@ def test_absent_fresh_snapshot_confirms_delete_and_preserves_reason(tmp_path):
             observed_at="2026-10-01T10:05:00+00:00",
         )
 
+        assert deleted == ()
+        assert not_applied == ()
+        assert db.connection.execute(
+            """SELECT event_type FROM voucher_events WHERE voucher_id=?""",
+            (voucher_id,),
+        ).fetchone()["event_type"] == "PREPARATION_DELETE_REQUESTED"
+
+        deleted, not_applied = reconcile_preparation_delete_requests(
+            db,
+            controller_id=controller,
+            present_unifi_ids=set(),
+            confirmed_absent_ids=frozenset({"v1"}),
+            observed_at="2026-10-01T10:06:00+00:00",
+        )
+
         assert deleted == (voucher_id,)
         assert not_applied == ()
         event = db.connection.execute(
@@ -254,9 +269,9 @@ def test_absent_fresh_snapshot_confirms_delete_and_preserves_reason(tmp_path):
         details = json.loads(event["details_json"])
         assert details["reason"] == "Destinatario errato"
         assert details["requested_at"] == NOW
-        assert details["confirmed_at"] == "2026-10-01T10:05:00+00:00"
+        assert details["confirmed_at"] == "2026-10-01T10:06:00+00:00"
         assert details["workflow"] == "preparation_error"
-        assert details["confirmation_source"] == "fresh_snapshot_absent"
+        assert details["confirmation_source"] == "direct_uuid_not_found"
     finally:
         db.close()
 
@@ -319,6 +334,7 @@ def test_complete_sync_automatically_reconciles_pending_preparation_delete(tmp_p
             db,
             controller_id=controller,
             vouchers=[],
+            confirmed_absent_ids=frozenset({"v1"}),
             observed_at="2026-10-01T10:10:00+00:00",
             sync_uuid="delete-reconcile",
         )
