@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from voucher_management.app import VoucherApp
 from voucher_management.database import PrintAuditSummary
 from voucher_management.unifi_api import UniFiTransportError
@@ -213,6 +215,97 @@ def test_delete_ui_revalidation_is_deferred_to_network_worker(monkeypatch):
     result = tasks[0]["worker"]()
     assert result == ("fresh",)
     assert calls == [(client, selected)]
+
+
+def test_ordinary_delete_rechecks_live_usage_after_operator_confirmation(monkeypatch):
+    from voucher_management import voucher_deletion_ui as deletion_ui
+
+    client = object()
+    initial = [
+        SimpleNamespace(
+            id="voucher-1",
+            code_formatted="11111-22222",
+            used=0,
+            status="VALID_ONE",
+        )
+    ]
+    became_used = [
+        SimpleNamespace(
+            id="voucher-1",
+            code_formatted="11111-22222",
+            used=1,
+            status="USED_MULTIPLE",
+        )
+    ]
+    tasks = []
+    mutations = []
+    fact = SimpleNamespace(
+        print_state="NOT_PRINTED",
+        alignment_completed=True,
+        invalid_external_cleanup_allowed=False,
+    )
+    fake = SimpleNamespace(
+        active_controller_id=7,
+        database=SimpleNamespace(
+            historically_used_remote_ids=lambda **kwargs: frozenset(),
+        ),
+        paths=SimpleNamespace(database="test.sqlite"),
+        vouchers=list(initial),
+        checked_ids=set(),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+        _history_stats_for=lambda current: {},
+        _windows_operator_identity=lambda: r"PC\\operator",
+        _run_network_task=lambda label, worker, success, error: (
+            tasks.append(
+                {
+                    "label": label,
+                    "worker": worker,
+                    "success": success,
+                    "error": error,
+                }
+            )
+            or True
+        ),
+    )
+
+    monkeypatch.setattr(
+        deletion_ui,
+        "preparation_delete_facts",
+        lambda *args, **kwargs: {"voucher-1": fact},
+    )
+    monkeypatch.setattr(
+        deletion_ui.simpledialog,
+        "askstring",
+        lambda *args, **kwargs: "Errore di preparazione",
+    )
+    monkeypatch.setattr(
+        deletion_ui.messagebox,
+        "askyesno",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        deletion_ui,
+        "refresh_delete_candidates",
+        lambda current_client, current: list(became_used),
+    )
+    monkeypatch.setattr(
+        deletion_ui,
+        "record_preparation_delete_requests_to_path",
+        lambda *args, **kwargs: mutations.append("audit"),
+    )
+    monkeypatch.setattr(
+        deletion_ui,
+        "delete_vouchers_and_refresh",
+        lambda *args, **kwargs: mutations.append("delete"),
+    )
+
+    VoucherDeletionMixin._continue_delete_selected(fake, client, initial)
+
+    assert len(tasks) == 1
+    assert tasks[0]["label"] == "Eliminazione voucher…"
+    with pytest.raises(RuntimeError, match="no longer satisfies"):
+        tasks[0]["worker"]()
+    assert mutations == []
 
 
 def test_connection_and_maintenance_mixins_do_not_define_main_window_layout():
