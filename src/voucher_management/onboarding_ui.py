@@ -424,7 +424,9 @@ class FirstRunWizard(tk.Toplevel):
                 "1. Creato ma mai stampato: avviso operativo calcolato dalla "
                 "data di creazione UniFi.\n"
                 "2. Stampato ma mai utilizzato: revisione di sicurezza calcolata "
-                "dall'ultima stampa; una ristampa fa ripartire il conteggio."
+                "dall'ultima stampa; una ristampa fa ripartire il conteggio. "
+                "Se una stampa storica è certa ma la data non è determinabile, "
+                "il voucher viene proposto subito per la revisione."
             ),
             wraplength=650,
             justify="left",
