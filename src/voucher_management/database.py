@@ -1614,13 +1614,30 @@ COMMIT;
                         SELECT MAX(ve.occurred_at)
                         FROM voucher_events AS ve
                         WHERE ve.voucher_id=v.id
-                          AND ve.event_type='PREPARATION_DELETED'
+                          AND ve.event_type IN (
+                              'PREPARATION_DELETED',
+                              'CONTROLLER_DELETED'
+                          )
                     ), '') AS preparation_deleted_at,
+                    COALESCE((
+                        SELECT ve.event_type
+                        FROM voucher_events AS ve
+                        WHERE ve.voucher_id=v.id
+                          AND ve.event_type IN (
+                              'PREPARATION_DELETED',
+                              'CONTROLLER_DELETED'
+                          )
+                        ORDER BY ve.occurred_at DESC, ve.id DESC
+                        LIMIT 1
+                    ), '') AS controller_delete_event_type,
                     COALESCE((
                         SELECT ve.details_json
                         FROM voucher_events AS ve
                         WHERE ve.voucher_id=v.id
-                          AND ve.event_type='PREPARATION_DELETED'
+                          AND ve.event_type IN (
+                              'PREPARATION_DELETED',
+                              'CONTROLLER_DELETED'
+                          )
                         ORDER BY ve.occurred_at DESC, ve.id DESC
                         LIMIT 1
                     ), '') AS preparation_delete_details,
