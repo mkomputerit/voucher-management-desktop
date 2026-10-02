@@ -11,6 +11,7 @@ from voucher_management.database import (
     PRINT_STATE_UNKNOWN,
 )
 from voucher_management.preparation_deletion import (
+    confirm_preparation_delete_response,
     preparation_delete_facts,
     record_preparation_delete_requests,
     reconcile_preparation_delete_requests,
