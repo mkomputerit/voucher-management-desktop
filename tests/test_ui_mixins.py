@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from voucher_management.app import VoucherApp
+from voucher_management.database import PrintAuditSummary
 from voucher_management.unifi_api import UniFiTransportError
 from voucher_management.controller_connection_ui import ControllerConnectionMixin
 from voucher_management.data_maintenance_ui import DataMaintenanceMixin
@@ -47,6 +48,122 @@ def test_ui_workflows_are_composed_from_focused_mixins():
     )
     assert ModernVoucherApp.connect is ControllerConnectionMixin.connect
     assert ModernVoucherApp.delete_selected is VoucherDeletionMixin.delete_selected
+
+
+def test_unknown_print_state_requires_explicit_operator_confirmation(monkeypatch):
+    from voucher_management import app as app_module
+
+    prompts = []
+    fake = SimpleNamespace(
+        active_controller_id=7,
+        database=SimpleNamespace(
+            print_summaries_for_remote_ids=lambda **kwargs: {
+                "voucher-1": PrintAuditSummary(
+                    0,
+                    0,
+                    "",
+                    "",
+                    print_state="UNKNOWN",
+                )
+            },
+            usage_state_for_remote_ids=lambda **kwargs: {
+                "voucher-1": False
+            },
+        ),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "askyesno",
+        lambda *args, **kwargs: (
+            prompts.append((args, kwargs)) or True
+        ),
+    )
+
+    allowed = VoucherApp._confirm_physical_reprint(
+        fake,
+        ["11111-22222"],
+        object(),
+        unifi_ids=["voucher-1"],
+    )
+
+    assert allowed is True
+    assert len(prompts) == 1
+    assert prompts[0][0][0] == "Stampa non determinabile"
+    assert "fuori da Voucher Management" in prompts[0][0][1]
+    assert "stampa verificata" in prompts[0][0][1]
+
+
+def test_unknown_print_state_can_be_cancelled_without_printing(monkeypatch):
+    from voucher_management import app as app_module
+
+    fake = SimpleNamespace(
+        active_controller_id=7,
+        database=SimpleNamespace(
+            print_summaries_for_remote_ids=lambda **kwargs: {
+                "voucher-1": PrintAuditSummary(
+                    0,
+                    0,
+                    "",
+                    "",
+                    print_state="UNKNOWN",
+                )
+            },
+            usage_state_for_remote_ids=lambda **kwargs: {
+                "voucher-1": False
+            },
+        ),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "askyesno",
+        lambda *args, **kwargs: False,
+    )
+
+    assert VoucherApp._confirm_physical_reprint(
+        fake,
+        ["11111-22222"],
+        object(),
+        unifi_ids=["voucher-1"],
+    ) is False
+
+
+def test_positive_not_printed_state_does_not_add_unknown_warning(monkeypatch):
+    from voucher_management import app as app_module
+
+    fake = SimpleNamespace(
+        active_controller_id=7,
+        database=SimpleNamespace(
+            print_summaries_for_remote_ids=lambda **kwargs: {
+                "voucher-1": PrintAuditSummary(
+                    0,
+                    0,
+                    "",
+                    "",
+                    print_state="NOT_PRINTED",
+                )
+            },
+            usage_state_for_remote_ids=lambda **kwargs: {
+                "voucher-1": False
+            },
+        ),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+    monkeypatch.setattr(
+        app_module.messagebox,
+        "askyesno",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected unknown-print prompt")
+        ),
+    )
+
+    assert VoucherApp._confirm_physical_reprint(
+        fake,
+        ["11111-22222"],
+        object(),
+        unifi_ids=["voucher-1"],
+    ) is True
 
 
 def test_delete_ui_revalidation_is_deferred_to_network_worker(monkeypatch):
