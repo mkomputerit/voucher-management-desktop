@@ -9,6 +9,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$OperatorGroupDescription = "Operatori autorizzati a Voucher Management"
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -111,8 +112,11 @@ function Ensure-OperatorGroup {
     $group = Get-LocalGroup -Name $Name -ErrorAction SilentlyContinue
     $created = $false
     if (-not $group) {
-        $group = New-LocalGroup -Name $Name -Description "Operatori autorizzati a Voucher Management"
+        $group = New-LocalGroup -Name $Name -Description $script:OperatorGroupDescription
         $created = $true
+    }
+    elseif ([string]$group.Description -ne $script:OperatorGroupDescription) {
+        throw "Esiste già un gruppo con questo nome ma non appartiene a Voucher Management."
     }
 
     try {
