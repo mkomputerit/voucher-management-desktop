@@ -218,16 +218,23 @@ def reconcile_preparation_delete_requests(
     *,
     controller_id: int,
     present_unifi_ids: set[str] | frozenset[str],
+    confirmed_absent_ids: set[str] | frozenset[str] = frozenset(),
     observed_at: str,
     connection=None,
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Resolve pending requests using one complete successful controller snapshot.
+    """Resolve pending requests only from positive presence or confirmed absence.
 
-    Absence confirms that the credential is no longer on UniFi.  Presence proves
-    the requested ordinary delete did not apply, allowing a later explicit retry.
+    A list omission alone is not enough to prove deletion. Presence proves the
+    requested ordinary delete did not apply; absence is accepted only after the
+    synchronization layer has confirmed the voucher UUID is not found directly.
     """
 
     present = {str(value).strip() for value in present_unifi_ids if str(value).strip()}
+    confirmed_absent = {
+        str(value).strip()
+        for value in confirmed_absent_ids
+        if str(value).strip()
+    }
     stamp = str(observed_at or "").strip()
     if not stamp:
         raise ValueError("observed_at is required")
@@ -246,14 +253,18 @@ def reconcile_preparation_delete_requests(
         not_applied: list[int] = []
         for row in rows:
             voucher_id = int(row["voucher_id"])
-            if str(row["unifi_id"]) in present:
+            remote_id = str(row["unifi_id"])
+            if remote_id in present:
                 event_type = "PREPARATION_DELETE_NOT_APPLIED"
                 source = "fresh_snapshot_present"
                 not_applied.append(voucher_id)
-            else:
+            elif remote_id in confirmed_absent:
                 event_type = "PREPARATION_DELETED"
-                source = "fresh_snapshot_absent"
+                source = "direct_uuid_not_found"
                 deleted.append(voucher_id)
+            else:
+                # A transient list omission keeps the durable request pending.
+                continue
             db.execute(
                 """UPDATE voucher_events
                    SET event_type=?,
