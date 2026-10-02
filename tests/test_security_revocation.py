@@ -98,6 +98,57 @@ def test_printed_unused_candidate_requires_observation_after_print(tmp_path):
         db.close()
 
 
+def test_legacy_printed_without_date_is_immediate_security_review_candidate(tmp_path):
+    db, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller)
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET print_state='PRINTED'
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+        set_security_revoke_days(db, days=3650, now=NOW)
+
+        candidates = security_revocation_candidates(
+            db,
+            now=NOW,
+            controller_id=controller,
+        )
+
+        assert [item.voucher_id for item in candidates] == [voucher_id]
+        candidate = candidates[0]
+        assert candidate.print_date_known is False
+        assert candidate.last_printed_at == ""
+    finally:
+        db.close()
+
+
+def test_legacy_printed_without_date_is_still_excluded_after_positive_use(tmp_path):
+    db, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(db, controller)
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET print_state='PRINTED',
+                       ever_used=1,
+                       authorized_guest_count=0
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+        set_security_revoke_days(db, days=1, now=NOW)
+
+        assert security_revocation_candidates(
+            db,
+            now=NOW,
+            controller_id=controller,
+        ) == ()
+    finally:
+        db.close()
+
+
 def test_candidate_uses_unifi_name_even_if_deprecated_local_recipient_exists(tmp_path):
     db, controller = _database(tmp_path)
     try:
