@@ -18,6 +18,43 @@ function Assert-Administrator {
     }
 }
 
+function Resolve-ManagedChildPath {
+    param(
+        [string]$Path,
+        [string]$RequiredParent,
+        [string]$Label
+    )
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd("\\")
+    $parent = [IO.Path]::GetFullPath($RequiredParent).TrimEnd("\\")
+    $prefix = $parent + "\\"
+    if (
+        $full -ieq $parent -or
+        -not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+    ) {
+        throw "$Label deve essere una sottocartella di: $parent"
+    }
+    return $full
+}
+
+function Assert-PathsDoNotOverlap {
+    param(
+        [string]$First,
+        [string]$Second,
+        [string]$Message
+    )
+    $a = [IO.Path]::GetFullPath($First).TrimEnd("\\")
+    $b = [IO.Path]::GetFullPath($Second).TrimEnd("\\")
+    $aPrefix = $a + "\\"
+    $bPrefix = $b + "\\"
+    if (
+        $a -ieq $b -or
+        $aPrefix.StartsWith($bPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $bPrefix.StartsWith($aPrefix, [StringComparison]::OrdinalIgnoreCase)
+    ) {
+        throw $Message
+    }
+}
+
 function Resolve-InteractiveUser {
     param([string]$ExplicitUser)
     if ($ExplicitUser) { return $ExplicitUser }
@@ -104,7 +141,12 @@ function Set-SharedDataAcl {
 Assert-Administrator
 
 $source = [IO.Path]::GetFullPath($SourcePath)
-$destination = [IO.Path]::GetFullPath($InstallRoot)
+$destination = Resolve-ManagedChildPath -Path $InstallRoot -RequiredParent $env:ProgramFiles -Label "La cartella di installazione"
+$dataDestination = Resolve-ManagedChildPath -Path $DataRoot -RequiredParent $env:ProgramData -Label "La cartella dati condivisa"
+Assert-PathsDoNotOverlap -First $destination -Second $dataDestination -Message "Programma e dati condivisi non possono usare cartelle sovrapposte."
+Assert-PathsDoNotOverlap -First $source -Second $dataDestination -Message "La sorgente di installazione e i dati condivisi non possono sovrapporsi."
+$InstallRoot = $destination
+$DataRoot = $dataDestination
 if (-not (Test-Path -LiteralPath (Join-Path $source "VoucherManagement.exe") -PathType Leaf)) {
     throw "VoucherManagement.exe non trovato nella cartella sorgente: $source"
 }
