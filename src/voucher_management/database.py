@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+from uuid import uuid4
 
 SCHEMA_VERSION = 9
 
@@ -1619,6 +1620,42 @@ COMMIT;
                     (voucher_id,),
                 ).fetchone()
                 sequence = int(row["sequence"]) + 1
+                state_row = db.execute(
+                    "SELECT print_state FROM vouchers WHERE id=?",
+                    (voucher_id,),
+                ).fetchone()
+                prior_print_state = (
+                    str(
+                        state_row["print_state"]
+                        if state_row is not None
+                        else PRINT_STATE_UNKNOWN
+                    )
+                    .strip()
+                    .upper()
+                )
+                if (
+                    sequence == 1
+                    and prior_print_state == PRINT_STATE_UNKNOWN
+                ):
+                    db.execute(
+                        """INSERT INTO voucher_events(
+                               event_uuid, voucher_id, event_type, occurred_at,
+                               source, windows_user, details_json
+                           ) VALUES (?, ?, 'PRINTED_FROM_UNKNOWN_STATE', ?,
+                                     'OPERATOR', ?, ?)""",
+                        (
+                            str(uuid4()),
+                            voucher_id,
+                            normalized_time,
+                            normalized_user,
+                            self.encode_event_details(
+                                {
+                                    "prior_print_state": PRINT_STATE_UNKNOWN,
+                                    "print_job_uuid": normalized_audit_id,
+                                }
+                            ),
+                        ),
+                    )
                 db.execute(
                     """INSERT INTO voucher_prints
                        (print_job_id, voucher_id, printed_at, windows_user,
