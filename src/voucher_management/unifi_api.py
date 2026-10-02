@@ -36,6 +36,10 @@ class UniFiApiError(RuntimeError):
     """Raised when the documented controller API cannot complete an operation."""
 
 
+class UniFiVoucherNotFound(UniFiApiError):
+    """Raised when a voucher UUID is definitively absent from UniFi."""
+
+
 class UniFiMutationUncertain(UniFiApiError):
     """Raised when a non-idempotent request may have reached the controller."""
 
@@ -306,6 +310,7 @@ class UniFiClient:
         *,
         expected: tuple[int, ...] = (200,),
         not_found_message: str | None = None,
+        not_found_error: type[UniFiApiError] | None = None,
         uncertain_operation: str | None = None,
     ) -> dict:
         method_upper = method.upper()
@@ -348,10 +353,12 @@ class UniFiClient:
                     "API key UniFi senza permessi sufficienti per questa operazione"
                 ) from exc
             if exc.code == 404:
-                raise UniFiApiError(
+                message = (
                     not_found_message
                     or "Endpoint UniFi non disponibile: verificare l'URL API in Network > Integrations"
-                ) from exc
+                )
+                error_type = not_found_error or UniFiApiError
+                raise error_type(message) from exc
             if mutating and (exc.code == 408 or exc.code >= 500):
                 raise UniFiMutationUncertain(uncertain_operation) from exc
             raise UniFiApiError(f"Errore HTTP UniFi {exc.code}") from exc
@@ -674,9 +681,9 @@ class UniFiClient:
             "GET",
             f"/sites/{encoded_site}/hotspot/vouchers/{encoded_voucher}",
             not_found_message=(
-                "Il voucher non è più presente sul controller UniFi. "
-                "Aggiornare l'elenco prima di riprovare."
+                "Il voucher non è più presente sul controller UniFi."
             ),
+            not_found_error=UniFiVoucherNotFound,
         )
         return self._voucher_from_json(result)
 
