@@ -34,7 +34,11 @@ _PRINT_VALUES = {
 
 
 def selected_workspace_vouchers(app) -> tuple:
-    """Return exactly the vouchers selected in the existing Voucher table."""
+    """Return the current operational print selection.
+
+    Kept for compatibility with callers/tests. Local metadata actions do not
+    rely on this selection because it intentionally excludes expired vouchers.
+    """
 
     selected = set(getattr(app, "checked_ids", set()))
     return tuple(
@@ -45,24 +49,144 @@ def selected_workspace_vouchers(app) -> tuple:
     )
 
 
-def _local_ids(app, vouchers) -> tuple[int, ...]:
-    controller_id = getattr(app, "active_controller_id", None)
-    if controller_id is None:
-        raise RuntimeError("Nessuna controller attiva.")
-    ids: list[int] = []
-    for voucher in vouchers:
-        row = app.database.connection.execute(
-            """SELECT id FROM vouchers
-               WHERE controller_id=? AND unifi_id=? AND archived_at IS NULL""",
-            (int(controller_id), str(voucher.id)),
-        ).fetchone()
-        if row is None:
-            raise RuntimeError(
-                "Uno dei voucher selezionati non è presente nello storico locale. "
-                "Eseguire Sincronizza e riprovare."
+def local_data_selection_candidates(vouchers) -> tuple:
+    """Return rows eligible for local-only metadata correction.
+
+    Nominality and notes are reporting metadata, not print/delete authority.
+    Therefore expired vouchers remain selectable here even though operational
+    print/delete selection deliberately excludes them.
+    """
+
+    return tuple(vouchers)
+
+
+class LocalMetadataSelectionDialog(tk.Toplevel):
+    """Select local-metadata targets independently from print/delete state."""
+
+    def __init__(
+        self,
+        app,
+        vouchers,
+        *,
+        title: str,
+        multiple: bool,
+    ):
+        super().__init__(app)
+        self.app = app
+        self.vouchers = local_data_selection_candidates(vouchers)
+        self.result = None
+        self.multiple = bool(multiple)
+        self.title(title)
+        self.transient(app)
+        self.grab_set()
+        self.geometry("820x500")
+        self.minsize(700, 420)
+
+        shell = ttk.Frame(self, padding=18)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(
+            shell,
+            text=title,
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            shell,
+            text=(
+                "Questa selezione è separata da stampa ed eliminazione. "
+                "Sono inclusi anche i voucher scaduti perché nominalità e "
+                "note locali servono alla reportistica storica."
+            ),
+            style="Muted.TLabel",
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", pady=(5, 12))
+
+        columns = ("voucher", "description", "status")
+        self.tree = ttk.Treeview(
+            shell,
+            columns=columns,
+            show="headings",
+            selectmode="extended" if self.multiple else "browse",
+        )
+        self.tree.heading("voucher", text="Voucher")
+        self.tree.heading("description", text="Destinatario UniFi")
+        self.tree.heading("status", text="Stato")
+        self.tree.column("voucher", width=180)
+        self.tree.column("description", width=380)
+        self.tree.column("status", width=140, anchor="center")
+        self.tree.pack(fill="both", expand=True)
+
+        preselected = {
+            str(value)
+            for value in getattr(app, "checked_ids", set())
+        }
+        selected_iids: list[str] = []
+        for voucher in self.vouchers:
+            iid = str(voucher.id)
+            expired = str(
+                getattr(voucher, "status", "") or ""
+            ).strip().upper() == "EXPIRED"
+            self.tree.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(
+                    str(getattr(voucher, "code_formatted", "") or ""),
+                    str(getattr(voucher, "recipient", "") or "") or "—",
+                    "Scaduto" if expired else "Attivo",
+                ),
             )
-        ids.append(int(row["id"]))
-    return tuple(ids)
+            if iid in preselected:
+                selected_iids.append(iid)
+
+        if selected_iids:
+            if self.multiple:
+                self.tree.selection_set(selected_iids)
+            else:
+                self.tree.selection_set(selected_iids[:1])
+                self.tree.focus(selected_iids[0])
+
+        actions = ttk.Frame(shell)
+        actions.pack(fill="x", pady=(12, 0))
+        ttk.Button(
+            actions,
+            text="Annulla",
+            command=self.destroy,
+        ).pack(side="right")
+        ttk.Button(
+            actions,
+            text="Continua",
+            style="Accent.TButton",
+            command=self._accept,
+        ).pack(side="right", padx=(0, 8))
+
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.wait_window(self)
+
+    def _accept(self) -> None:
+        selected = set(self.tree.selection())
+        if not selected:
+            messagebox.showinfo(
+                self.title(),
+                "Selezionare almeno un voucher.",
+                parent=self,
+            )
+            return
+        result = tuple(
+            voucher
+            for voucher in self.vouchers
+            if str(voucher.id) in selected
+        )
+        if not self.multiple and len(result) != 1:
+            messagebox.showinfo(
+                self.title(),
+                "Selezionare un solo voucher.",
+                parent=self,
+            )
+            return
+        self.result = result
+        self.destroy()
 
 
 class NominalityDialog(tk.Toplevel):
@@ -594,33 +718,45 @@ class AlignmentDialog(tk.Toplevel):
 class LocalDataMixin:
     """Explicit local actions exposed by the Voucher workspace."""
 
-    def _require_workspace_selection(self, title: str) -> tuple:
-        vouchers = selected_workspace_vouchers(self)
-        if not vouchers:
+    def _select_local_metadata_vouchers(
+        self,
+        *,
+        title: str,
+        multiple: bool,
+    ) -> tuple:
+        candidates = local_data_selection_candidates(
+            getattr(self, "vouchers", ())
+        )
+        if not candidates:
             messagebox.showinfo(
                 title,
-                "Selezionare almeno un voucher nell'elenco.",
+                "Non ci sono voucher disponibili per la controller corrente.",
                 parent=self,
             )
-        return vouchers
+            return ()
+        selector = LocalMetadataSelectionDialog(
+            self,
+            candidates,
+            title=title,
+            multiple=multiple,
+        )
+        return tuple(selector.result or ())
 
     def edit_selected_nominality(self) -> None:
-        vouchers = self._require_workspace_selection("Nominalità")
+        vouchers = self._select_local_metadata_vouchers(
+            title="Nominalità voucher",
+            multiple=True,
+        )
         if vouchers:
             NominalityDialog(self, vouchers)
 
     def edit_selected_notes(self) -> None:
-        vouchers = self._require_workspace_selection("Note voucher")
-        if not vouchers:
-            return
-        if len(vouchers) != 1:
-            messagebox.showinfo(
-                "Note voucher",
-                "Le note locali possono essere modificate su un solo voucher alla volta.",
-                parent=self,
-            )
-            return
-        NotesDialog(self, vouchers)
+        vouchers = self._select_local_metadata_vouchers(
+            title="Note voucher",
+            multiple=False,
+        )
+        if vouchers:
+            NotesDialog(self, vouchers)
 
     def align_pending_vouchers(self) -> None:
         if getattr(self, "active_controller_id", None) is None:
