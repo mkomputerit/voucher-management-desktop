@@ -10,6 +10,7 @@ from tkinter import messagebox, simpledialog
 from .create_reporting_recovery import reconcile_pending_create_reporting_to_path
 from .preparation_deletion import (
     MAX_PREPARATION_DELETE_REASON,
+    confirm_preparation_delete_response_to_path,
     preparation_delete_facts,
     record_preparation_delete_requests_to_path,
 )
@@ -315,8 +316,23 @@ class VoucherDeletionMixin:
                 cached,
                 current,
             )
+            delete_confirmed_at = datetime.now(timezone.utc).isoformat()
+            try:
+                confirm_preparation_delete_response_to_path(
+                    database_path,
+                    controller_id=int(controller_id),
+                    unifi_ids=[str(voucher.id) for voucher in current],
+                    confirmed_at=delete_confirmed_at,
+                )
+            except Exception as exc:
+                outcome = replace(
+                    outcome,
+                    local_persistence_error=exc,
+                )
+
             if (
                 outcome.refresh_error is None
+                and outcome.local_persistence_error is None
                 and controller_id is not None
                 and database_path is not None
             ):
@@ -324,7 +340,16 @@ class VoucherDeletionMixin:
                     persist_refresh_snapshot_to_path(
                         database_path,
                         controller_id=controller_id,
-                        vouchers=list(outcome.vouchers),
+                        vouchers=[
+                            voucher
+                            for voucher in outcome.vouchers
+                            if str(voucher.id) not in {
+                                str(item.id) for item in current
+                            }
+                        ],
+                        confirmed_absent_ids=frozenset(
+                            str(voucher.id) for voucher in current
+                        ),
                         observed_at=datetime.now(timezone.utc).isoformat(),
                     )
                     marker_path = getattr(
