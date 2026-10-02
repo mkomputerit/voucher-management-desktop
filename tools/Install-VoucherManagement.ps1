@@ -2,14 +2,16 @@
 param(
     [string]$SourcePath = $PSScriptRoot,
     [string]$InstallRoot = (Join-Path $env:ProgramFiles "Voucher Management"),
-    [string]$DataRoot = (Join-Path $env:ProgramData "VoucherManagement"),
-    [string]$OperatorGroup = "Voucher Management Operators",
+    [string]$DataRoot,
+    [string]$OperatorGroup,
     [string]$OperatorUser,
     [switch]$SkipShortcut
 )
 
 $ErrorActionPreference = "Stop"
 $OperatorGroupDescription = "Operatori autorizzati a Voucher Management"
+$DefaultOperatorGroup = "Voucher Management Operators"
+$DefaultDataRoot = (Join-Path $env:ProgramData "VoucherManagement")
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -225,6 +227,40 @@ Assert-Administrator
 
 $source = [IO.Path]::GetFullPath($SourcePath)
 $destination = Resolve-ManagedChildPath -Path $InstallRoot -RequiredParent $env:ProgramFiles -Label "La cartella di installazione"
+
+# Preserve installer-owned deployment choices across upgrades when the caller
+# does not explicitly replace them. This prevents a later Setup.exe from
+# silently switching a custom ProgramData root or operator group back to the
+# defaults and making existing data appear to have disappeared.
+$previousMarker = $null
+$previousMarkerPath = Join-Path $destination "voucher-management-deployment.json"
+if (Test-Path -LiteralPath $previousMarkerPath -PathType Leaf) {
+    try {
+        $previousMarker = Get-Content -LiteralPath $previousMarkerPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw "Marker di deployment esistente non leggibile: aggiornamento annullato."
+    }
+    if ($previousMarker.format -ne 1 -or $previousMarker.mode -ne "shared_programdata") {
+        throw "Marker di deployment esistente non valido: aggiornamento annullato."
+    }
+}
+
+if (-not $DataRoot) {
+    $DataRoot = if ($previousMarker -and $previousMarker.data_root) {
+        [string]$previousMarker.data_root
+    } else {
+        $script:DefaultDataRoot
+    }
+}
+if (-not $OperatorGroup) {
+    $OperatorGroup = if ($previousMarker -and $previousMarker.operator_group_name) {
+        [string]$previousMarker.operator_group_name
+    } else {
+        $script:DefaultOperatorGroup
+    }
+}
+
 $dataDestination = Resolve-ManagedChildPath -Path $DataRoot -RequiredParent $env:ProgramData -Label "La cartella dati condivisa"
 Assert-PathsDoNotOverlap -First $destination -Second $dataDestination -Message "Programma e dati condivisi non possono usare cartelle sovrapposte."
 Assert-PathsDoNotOverlap -First $source -Second $dataDestination -Message "La sorgente di installazione e i dati condivisi non possono sovrapporsi."
@@ -256,6 +292,12 @@ if ($running) {
 
 $operator = Resolve-InteractiveUser -ExplicitUser $OperatorUser
 $group = Ensure-OperatorGroup -Name $OperatorGroup -Member $operator
+if ($previousMarker -and $previousMarker.operator_group_sid) {
+    $expectedPreviousSid = ([string]$previousMarker.operator_group_sid).Trim()
+    if ($expectedPreviousSid -and [string]$group.SID.Value -ine $expectedPreviousSid) {
+        throw "Il SID del gruppo operatori non corrisponde al deployment esistente."
+    }
+}
 
 # Secure the shared data tree before making any installed executable advertise
 # shared mode. If ACL preparation fails, the previous application installation
@@ -279,6 +321,7 @@ try {
         mode = "shared_programdata"
         data_root = $DataRoot
         operator_group_sid = [string]$group.SID.Value
+        operator_group_name = [string]$group.Name
     } | ConvertTo-Json -Compress
     $utf8NoBom = [Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllText(
