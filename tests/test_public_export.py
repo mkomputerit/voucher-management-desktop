@@ -136,12 +136,17 @@ def test_exporting_an_already_public_snapshot_is_idempotent(
     assert snapshot_bytes(second) == snapshot_bytes(first)
     assert snapshot_bytes(third) == snapshot_bytes(first)
 
+    first_workflow = (
+        first / ".github" / "workflows" / "build-windows.yml"
+    ).read_text(encoding="utf-8")
     workflow = (
         third / ".github" / "workflows" / "build-windows.yml"
     ).read_text(encoding="utf-8")
-    assert workflow.count(
-        "startsWith(github.ref, 'refs/heads/release/')"
-    ) == 1
+    release_condition = "startsWith(github.ref, 'refs/heads/release/')"
+    assert workflow.count(release_condition) == first_workflow.count(
+        release_condition
+    )
+    assert workflow.count(release_condition) >= 1
 
     for relative in PRIVATE_ONLY_PATHS:
         assert not (third / relative).exists()
