@@ -167,8 +167,8 @@ def align_vouchers(
             ]
             if positive_print_ids:
                 raise ValueError(
-                    "Lo stato stampa richiesto contraddice una prova positiva "
-                    "di stampa già presente nello storico."
+                    "Lo stato stampa richiesto contraddice una stampa verificata "
+                    "o altra prova positiva di stampa già presente nello storico."
                 )
 
         controller_origin_without_verified_print = [
