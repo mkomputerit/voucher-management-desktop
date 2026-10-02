@@ -61,10 +61,12 @@ class SecurityRevocationDialog(tk.Toplevel):
             shell,
             text=(
                 "Individua voucher già stampati che non risultano mai osservati "
-                "come utilizzati e che sono rimasti inutilizzati oltre la soglia "
-                "scelta. Prima di ogni eliminazione il voucher viene riletto "
-                "direttamente dalla controller UniFi. Il codice e lo storico "
-                "locale restano conservati integralmente dopo la revoca."
+                "come utilizzati e che hanno superato la soglia scelta. Se una "
+                "stampa storica è certa ma la sua data non è determinabile, il "
+                "voucher viene mostrato subito perché non è possibile calcolarne "
+                "l'età di sicurezza. Prima di ogni eliminazione il voucher viene "
+                "riletto direttamente dalla controller UniFi. Il codice e lo "
+                "storico locale restano conservati integralmente dopo la revoca."
             ),
             style="Muted.TLabel",
             wraplength=900,
@@ -195,7 +197,11 @@ class SecurityRevocationDialog(tk.Toplevel):
                 values=(
                     candidate.controller_name,
                     candidate.recipient or "—",
-                    _display_time(candidate.last_printed_at),
+                    (
+                        _display_time(candidate.last_printed_at)
+                        if candidate.print_date_known
+                        else "Non determinabile"
+                    ),
                     _display_time(candidate.last_seen_at),
                     _display_time(candidate.last_synced_at),
                 ),
@@ -209,9 +215,18 @@ class SecurityRevocationDialog(tk.Toplevel):
             f" • {len(pending)} revoche da riconciliare"
             if pending else ""
         )
+        unknown_print_date = sum(
+            not candidate.print_date_known
+            for candidate in candidates
+        )
+        unknown_suffix = (
+            f" • {unknown_print_date} con data stampa non determinabile"
+            if unknown_print_date
+            else ""
+        )
         self.status.set(
-            f"{len(candidates)} candidati alla verifica live{suffix}. "
-            "Nessuna revoca è automatica."
+            f"{len(candidates)} candidati alla verifica live{suffix}"
+            f"{unknown_suffix}. Nessuna revoca è automatica."
         )
         if candidates and self.app.client is not None:
             self.revoke_button.state(["!disabled"])
