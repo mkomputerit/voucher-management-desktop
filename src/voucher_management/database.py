@@ -1392,6 +1392,36 @@ COMMIT;
             result[code] = self.print_summary(int(rows[0]["id"]))
         return result
 
+    def print_summaries_for_remote_ids(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str],
+    ) -> dict[str, PrintAuditSummary]:
+        """Return print facts keyed by stable UniFi voucher UUID."""
+
+        normalized = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        result: dict[str, PrintAuditSummary] = {}
+        for remote_id in normalized:
+            rows = self.connection.execute(
+                """SELECT id FROM vouchers
+                   WHERE controller_id=? AND unifi_id=?
+                   ORDER BY id""",
+                (int(controller_id), remote_id),
+            ).fetchall()
+            if len(rows) != 1:
+                raise RuntimeError(
+                    "Voucher UUID is missing or ambiguous in the local database"
+                )
+            result[remote_id] = self.print_summary(int(rows[0]["id"]))
+        return result
+
     def record_print_audit(
         self,
         *,
@@ -1399,6 +1429,7 @@ COMMIT;
         audit_id: str,
         codes: list[str],
         output_file: str,
+        unifi_ids: list[str] | None = None,
         document_copies: int,
         printed_at: str,
         windows_user: str,
@@ -1422,37 +1453,68 @@ COMMIT;
         if document_copies < 1:
             raise ValueError("document_copies must be positive")
 
-        # PDF/history use the human-readable 12345-67890 form while UniFi
-        # may persist the same code without the separator. Resolve by canonical
-        # digits so print audit does not depend on presentation formatting.
-        counts = Counter(
+        normalized_codes = [
             str(code).strip().replace("-", "")
             for code in codes
             if str(code).strip()
-        )
-        if not counts:
+        ]
+        if not normalized_codes:
             raise ValueError("at least one voucher code is required")
 
-        with self.transaction() as db:
-            resolved: dict[str, int] = {}
-            for code in counts:
-                rows = db.execute(
-                    """SELECT id FROM vouchers
-                       WHERE controller_id=? AND REPLACE(code, '-', '')=?
-                       ORDER BY id""",
-                    (controller_id, code),
-                ).fetchall()
-                if len(rows) != 1:
-                    raise RuntimeError(
-                        "Voucher code is missing or ambiguous in the local database"
-                    )
-                resolved[code] = int(rows[0]["id"])
+        normalized_remote_ids: list[str] | None = None
+        if unifi_ids is not None:
+            normalized_remote_ids = [
+                str(value).strip()
+                for value in unifi_ids
+            ]
+            if (
+                len(normalized_remote_ids) != len(codes)
+                or any(not value for value in normalized_remote_ids)
+            ):
+                raise ValueError(
+                    "unifi_ids must identify every printed voucher label"
+                )
 
-            expected_prints = {
-                voucher_id: labels * document_copies
-                for code, labels in counts.items()
-                for voucher_id in (resolved[code],)
-            }
+        with self.transaction() as db:
+            expected_prints: dict[int, int] = {}
+            if normalized_remote_ids is not None:
+                counts_by_remote = Counter(normalized_remote_ids)
+                for remote_id, labels in counts_by_remote.items():
+                    rows = db.execute(
+                        """SELECT id FROM vouchers
+                           WHERE controller_id=? AND unifi_id=?
+                           ORDER BY id""",
+                        (int(controller_id), remote_id),
+                    ).fetchall()
+                    if len(rows) != 1:
+                        raise RuntimeError(
+                            "Voucher UUID is missing or ambiguous in the local database"
+                        )
+                    expected_prints[int(rows[0]["id"])] = (
+                        labels * document_copies
+                    )
+            else:
+                # Legacy callers can still resolve by canonical display code.
+                counts = Counter(normalized_codes)
+                resolved: dict[str, int] = {}
+                for code in counts:
+                    rows = db.execute(
+                        """SELECT id FROM vouchers
+                           WHERE controller_id=? AND REPLACE(code, '-', '')=?
+                           ORDER BY id""",
+                        (controller_id, code),
+                    ).fetchall()
+                    if len(rows) != 1:
+                        raise RuntimeError(
+                            "Voucher code is missing or ambiguous in the local database"
+                        )
+                    resolved[code] = int(rows[0]["id"])
+
+                expected_prints = {
+                    voucher_id: labels * document_copies
+                    for code, labels in counts.items()
+                    for voucher_id in (resolved[code],)
+                }
             existing = db.execute(
                 "SELECT * FROM print_jobs WHERE print_job_uuid=?",
                 (normalized_audit_id,),
