@@ -70,11 +70,12 @@ class PendingPrintAudit:
 
 @dataclass(frozen=True)
 class ResolvedPendingPrint:
-    """Pending print reconstructed from HMAC records and known voucher codes."""
+    """Pending print reconstructed from HMAC records and known voucher identity."""
 
     state: str
     audit_id: str
     codes: tuple[str, ...]
+    unifi_ids: tuple[str, ...]
     output_file: str
     document_copies: int
     submitted_at: str
@@ -717,6 +718,9 @@ class HistoryService:
         self,
         candidate_codes: list[str],
         settings: dict,
+        *,
+        site_id: str = "",
+        candidate_unifi_ids: list[str] | None = None,
     ) -> ResolvedPendingPrint | None:
         """Resolve HMAC-only pending rows against independently known codes.
 
@@ -731,7 +735,18 @@ class HistoryService:
 
         secret = self._secret(settings)
         digest_to_code: dict[str, str] = {}
-        for code in candidate_codes:
+        stable_to_identity: dict[str, tuple[str, str]] = {}
+        normalized_ids = (
+            [str(value).strip() for value in candidate_unifi_ids]
+            if candidate_unifi_ids is not None
+            else []
+        )
+        if candidate_unifi_ids is not None and len(normalized_ids) != len(candidate_codes):
+            raise HistoryError(
+                "Identità voucher incoerenti nella risoluzione della stampa pendente"
+            )
+
+        for index, code in enumerate(candidate_codes):
             normalized = str(code).strip()
             if not normalized:
                 continue
@@ -743,11 +758,18 @@ class HistoryService:
                 )
             digest_to_code[digest] = normalized
 
+            if normalized_ids:
+                remote_id = normalized_ids[index]
+                stable = self._stable_digest(site_id, remote_id, secret)
+                if stable:
+                    stable_to_identity[stable] = (normalized, remote_id)
+
         first = pending.records[0]
         output_file = str(first["output_file"])
         document_copies = int(first["document_copies"])
         submitted_at = str(first["timestamp"])
         resolved_codes: list[str] = []
+        resolved_unifi_ids: list[str] = []
 
         for record in pending.records:
             if (
@@ -758,25 +780,38 @@ class HistoryService:
                 raise HistoryError(
                     "Registrazione stampa pendente con metadati incoerenti"
                 )
-            code = digest_to_code.get(str(record["voucher_id"]))
-            if code is None:
-                raise HistoryError(
-                    "Impossibile associare un voucher della stampa pendente "
-                    "all'archivio locale"
-                )
+            stable_value = str(record.get("voucher_ref", "") or "")
+            remote_id = ""
+            if stable_value:
+                match = stable_to_identity.get(stable_value)
+                if match is None:
+                    raise HistoryError(
+                        "Impossibile associare l'UUID della stampa pendente "
+                        "all'archivio locale"
+                    )
+                code, remote_id = match
+            else:
+                code = digest_to_code.get(str(record["voucher_id"]))
+                if code is None:
+                    raise HistoryError(
+                        "Impossibile associare un voucher della stampa pendente "
+                        "all'archivio locale"
+                    )
             physical_copies = int(record["physical_copies"])
             if physical_copies % document_copies:
                 raise HistoryError(
                     "Registrazione stampa pendente con conteggio copie incoerente"
                 )
-            resolved_codes.extend(
-                [code] * (physical_copies // document_copies)
-            )
+            labels = physical_copies // document_copies
+            resolved_codes.extend([code] * labels)
+            if remote_id:
+                resolved_unifi_ids.extend([remote_id] * labels)
 
         return ResolvedPendingPrint(
             state=pending.state,
             audit_id=pending.audit_id,
             codes=tuple(resolved_codes),
+            unifi_ids=tuple(resolved_unifi_ids),
             output_file=output_file,
             document_copies=document_copies,
             submitted_at=submitted_at,
@@ -894,6 +929,8 @@ class HistoryService:
         *,
         audit_id: str,
         submitted_at: str,
+        site_id: str = "",
+        unifi_ids: list[str] | None = None,
     ) -> list[dict]:
         secret = self._secret(settings)
         if document_copies < 1:
@@ -913,10 +950,31 @@ class HistoryService:
         if not timestamp:
             raise ValueError("Timestamp audit stampa non valido")
 
-        counts = Counter(codes)
+        normalized_ids = (
+            [str(value).strip() for value in unifi_ids]
+            if unifi_ids is not None
+            else []
+        )
+        if unifi_ids is not None and (
+            len(normalized_ids) != len(codes)
+            or any(not value for value in normalized_ids)
+        ):
+            raise ValueError(
+                "unifi_ids must identify every printed voucher label"
+            )
+
+        identities = [
+            (
+                str(code),
+                normalized_ids[index] if normalized_ids else "",
+            )
+            for index, code in enumerate(codes)
+        ]
+        counts = Counter(identities)
         output_name = Path(output_path).name
-        return [
-            {
+        records: list[dict] = []
+        for (code, remote_id), labels in counts.items():
+            record = {
                 "event": "print",
                 "voucher_id": self._digest(code, secret),
                 "timestamp": timestamp,
@@ -925,8 +983,11 @@ class HistoryService:
                 "physical_copies": labels * document_copies,
                 "print_job_id": audit_id,
             }
-            for code, labels in counts.items()
-        ]
+            stable = self._stable_digest(site_id, remote_id, secret)
+            if stable:
+                record["voucher_ref"] = stable
+            records.append(record)
+        return records
 
     def prepare_print_audit(
         self,
@@ -937,6 +998,8 @@ class HistoryService:
         *,
         audit_id: str,
         submitted_at: str,
+        site_id: str = "",
+        unifi_ids: list[str] | None = None,
     ) -> None:
         """Persist print intent before entering the OS printer submission."""
 
@@ -948,6 +1011,8 @@ class HistoryService:
             settings,
             audit_id=audit_id,
             submitted_at=submitted_at,
+            site_id=site_id,
+            unifi_ids=unifi_ids,
         )
         self._persist_pending_print(
             records,
@@ -1089,6 +1154,8 @@ class HistoryService:
         audit_id: str | None = None,
         submitted_at: str | None = None,
         clear_pending: bool = True,
+        site_id: str = "",
+        unifi_ids: list[str] | None = None,
     ) -> None:
         """Record a print already known to have been submitted to Windows.
 
@@ -1113,6 +1180,8 @@ class HistoryService:
             settings,
             audit_id=normalized_audit_id,
             submitted_at=timestamp,
+            site_id=site_id,
+            unifi_ids=unifi_ids,
         )
         self._persist_pending_print(
             records,
