@@ -128,24 +128,27 @@ class VoucherDeletionMixin:
             )
             return
 
+        local_print_states = {
+            remote_id: fact.print_state
+            for remote_id, fact in local_facts.items()
+        }
+        aligned_ids = frozenset(
+            remote_id
+            for remote_id, fact in local_facts.items()
+            if fact.alignment_completed
+        )
+        exceptionally_deletable_ids = frozenset(
+            remote_id
+            for remote_id, fact in local_facts.items()
+            if fact.invalid_external_cleanup_allowed
+        )
         blocked = evaluate_delete_candidates(
             current,
             stats,
             historically_used_ids=historically_used,
-            local_print_states={
-                remote_id: fact.print_state
-                for remote_id, fact in local_facts.items()
-            },
-            aligned_ids=frozenset(
-                remote_id
-                for remote_id, fact in local_facts.items()
-                if fact.alignment_completed
-            ),
-            exceptionally_deletable_ids=frozenset(
-                remote_id
-                for remote_id, fact in local_facts.items()
-                if fact.invalid_external_cleanup_allowed
-            ),
+            local_print_states=local_print_states,
+            aligned_ids=aligned_ids,
+            exceptionally_deletable_ids=exceptionally_deletable_ids,
         )
         if blocked:
             reasons = {item.policy.reason for item in blocked}
@@ -303,7 +306,26 @@ class VoucherDeletionMixin:
         class _PreparationAuditFailure(RuntimeError):
             pass
 
+        class _PreparationRevalidationFailure(RuntimeError):
+            pass
+
         def failed(exc: Exception) -> None:
+            if isinstance(exc, _PreparationRevalidationFailure):
+                self.logger.warning(
+                    "preparation_delete_final_revalidation_failed cause=%s",
+                    type(exc.__cause__).__name__
+                    if exc.__cause__ is not None
+                    else "policy_changed",
+                )
+                messagebox.showwarning(
+                    "Eliminazione annullata",
+                    "Lo stato aggiornato di uno o più voucher non consente più "
+                    "la cancellazione, oppure non è stato possibile verificarlo "
+                    "immediatamente prima della DELETE. Nessun comando DELETE "
+                    "è stato inviato a UniFi. Aggiornare l'elenco e riprovare.",
+                    parent=self,
+                )
+                return
             if isinstance(exc, _PreparationAuditFailure):
                 self.logger.error(
                     "preparation_delete_audit_failed cause=%s",
@@ -326,11 +348,41 @@ class VoucherDeletionMixin:
         operator = self._windows_operator_identity()
 
         def worker():
+            # The operator may spend several seconds in the reason/confirmation
+            # dialogs. Re-read the selected UUIDs at the mutation boundary so a
+            # voucher that became used/expired in that interval can never be
+            # deleted under the preparation-error workflow.
+            try:
+                final_current = list(
+                    refresh_delete_candidates(
+                        client,
+                        current,
+                    )
+                )
+                final_blocked = evaluate_delete_candidates(
+                    final_current,
+                    stats,
+                    historically_used_ids=historically_used,
+                    local_print_states=local_print_states,
+                    aligned_ids=aligned_ids,
+                    exceptionally_deletable_ids=exceptionally_deletable_ids,
+                )
+                if final_blocked:
+                    raise _PreparationRevalidationFailure(
+                        "voucher no longer satisfies delete policy"
+                    )
+            except _PreparationRevalidationFailure:
+                raise
+            except Exception as exc:
+                raise _PreparationRevalidationFailure(
+                    "final delete revalidation failed"
+                ) from exc
+
             try:
                 record_preparation_delete_requests_to_path(
                     database_path,
                     controller_id=int(controller_id),
-                    unifi_ids=[str(voucher.id) for voucher in current],
+                    unifi_ids=[str(voucher.id) for voucher in final_current],
                     reason=reason,
                     requested_at=requested_at,
                     windows_user=operator,
@@ -343,14 +395,14 @@ class VoucherDeletionMixin:
             outcome = delete_vouchers_and_refresh(
                 client,
                 cached,
-                current,
+                final_current,
             )
             delete_confirmed_at = datetime.now(timezone.utc).isoformat()
             try:
                 confirm_preparation_delete_response_to_path(
                     database_path,
                     controller_id=int(controller_id),
-                    unifi_ids=[str(voucher.id) for voucher in current],
+                    unifi_ids=[str(voucher.id) for voucher in final_current],
                     confirmed_at=delete_confirmed_at,
                 )
             except Exception as exc:
@@ -377,7 +429,7 @@ class VoucherDeletionMixin:
                             }
                         ],
                         confirmed_absent_ids=frozenset(
-                            str(voucher.id) for voucher in current
+                            str(voucher.id) for voucher in final_current
                         ),
                         observed_at=datetime.now(timezone.utc).isoformat(),
                     )
