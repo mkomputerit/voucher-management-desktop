@@ -1096,6 +1096,26 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             )
             return False
 
+        usage_states = {}
+        if summary_mode == "uuid":
+            try:
+                usage_states = self.database.usage_state_for_remote_ids(
+                    controller_id=self.active_controller_id,
+                    unifi_ids=stable_ids,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "reprint_usage_preflight_failed type=%s",
+                    type(exc).__name__,
+                )
+                messagebox.showerror(
+                    "Stampa",
+                    "Impossibile verificare in modo sicuro l'utilizzo storico "
+                    "dei voucher. La stampa viene sospesa.",
+                    parent=parent,
+                )
+                return False
+
         warnings = []
         seen: set[str] = set()
         for index, display_code in enumerate(codes):
@@ -1108,7 +1128,14 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             if not identity or identity in seen:
                 continue
             seen.add(identity)
-            warning = evaluate_reprint(summaries[identity])
+            warning = evaluate_reprint(
+                summaries[identity],
+                ever_used=(
+                    usage_states.get(identity)
+                    if summary_mode == "uuid"
+                    else None
+                ),
+            )
             if warning.required:
                 warnings.append((str(display_code), warning))
 
