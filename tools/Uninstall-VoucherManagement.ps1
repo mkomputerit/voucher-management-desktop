@@ -15,9 +15,9 @@ function Resolve-ManagedChildPath {
         [string]$RequiredParent,
         [string]$Label
     )
-    $full = [IO.Path]::GetFullPath($Path).TrimEnd("\\")
-    $parent = [IO.Path]::GetFullPath($RequiredParent).TrimEnd("\\")
-    $prefix = $parent + "\\"
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd("\")
+    $parent = [IO.Path]::GetFullPath($RequiredParent).TrimEnd("\")
+    $prefix = $parent + "\"
     if (
         $full -ieq $parent -or
         -not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
