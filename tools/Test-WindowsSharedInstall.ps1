@@ -58,8 +58,9 @@ try {
     New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
     $oldInstallSentinel = Join-Path $installRoot "old-install.txt"
     Set-Content -LiteralPath $oldInstallSentinel -Value "old" -Encoding ascii
-    $invalidDataRoot = Join-Path $root "invalid-data-root"
-    Set-Content -LiteralPath $invalidDataRoot -Value "not-a-directory" -Encoding ascii
+    $invalidDataParent = Join-Path $root "invalid-data-parent"
+    Set-Content -LiteralPath $invalidDataParent -Value "not-a-directory" -Encoding ascii
+    $invalidDataRoot = Join-Path $invalidDataParent "child"
     $failedAsExpected = $false
     try {
         $failedArgs = @{
