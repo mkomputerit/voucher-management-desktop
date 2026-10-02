@@ -206,13 +206,17 @@ def persist_connection_snapshot_to_path(
     site_name: str,
     vouchers: list[ApiVoucher],
     observed_at: str,
+    site_id: str = "",
 ) -> PersistedControllerSnapshot:
     """Persist connection identity/snapshot on a worker-owned SQLite handle."""
 
     database = Database(Path(database_path))
     try:
         database.initialize()
-        existing_id = database.find_controller_by_api_root(api_root)
+        existing_id = database.find_controller_by_identity(
+            api_root=api_root,
+            site_id=site_id,
+        )
         persisted_name = str(requested_name or "").strip()
         if not persisted_name and existing_id is not None:
             persisted_name = database.controller_name(existing_id) or ""
@@ -224,6 +228,7 @@ def persist_connection_snapshot_to_path(
             api_root=api_root,
             observed_at=observed_at,
             cert_sha256=cert_sha256,
+            site_id=site_id,
         )
         persist_successful_snapshot(
             database,
