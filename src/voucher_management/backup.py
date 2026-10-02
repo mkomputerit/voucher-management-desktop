@@ -136,6 +136,40 @@ class BackupService:
         finally:
             connection.close()
 
+    @staticmethod
+    def _assert_no_pending_remote_mutation_in_sqlite(payload: bytes) -> None:
+        """Reject portable snapshots that contain an unresolved remote DELETE."""
+
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.deserialize(payload)
+            table = connection.execute(
+                """SELECT 1 FROM sqlite_master
+                   WHERE type='table' AND name='voucher_events'"""
+            ).fetchone()
+            if table is None:
+                return
+            pending = connection.execute(
+                """SELECT 1 FROM voucher_events
+                   WHERE event_type IN (
+                       'PREPARATION_DELETE_REQUESTED',
+                       'SECURITY_REVOKE_REQUESTED'
+                   )
+                   LIMIT 1"""
+            ).fetchone()
+        except (sqlite3.DatabaseError, sqlite3.OperationalError) as exc:
+            raise BackupError(
+                "Impossibile verificare lo stato operativo dello snapshot SQLite"
+            ) from exc
+        finally:
+            connection.close()
+
+        if pending is not None:
+            raise BackupError(
+                "Il backup contiene stato operativo transitorio UniFi non "
+                "ripristinabile in sicurezza"
+            )
+
     def _sqlite_snapshot_bytes(self) -> tuple[bytes, int, str] | None:
         """Create a transactionally consistent snapshot with SQLite backup().
 
@@ -289,7 +323,7 @@ class BackupService:
         except (sqlite3.DatabaseError, sqlite3.OperationalError) as exc:
             raise BackupError(
                 "Impossibile verificare in sicurezza eventuali operazioni "
-                "remote da riconciliare prima del ripristino."
+                "remote da riconciliare prima di creare o ripristinare un backup."
             ) from exc
         finally:
             if connection is not None:
@@ -298,8 +332,8 @@ class BackupService:
         if pending is not None:
             raise BackupError(
                 "Esiste una cancellazione o revoca UniFi con esito ancora da "
-                "riconciliare. Sincronizzare la controller prima di ripristinare "
-                "un backup."
+                "riconciliare. Sincronizzare la controller prima di creare o "
+                "ripristinare un backup."
             )
 
     @staticmethod
@@ -525,6 +559,7 @@ class BackupService:
         destination = Path(destination)
         self._assert_no_pending_print_audit()
         self._assert_no_pending_create()
+        self._assert_no_pending_remote_mutation()
         if password is None:
             return self._create_zip(destination)
 
@@ -853,6 +888,7 @@ class BackupService:
                         raise BackupError(
                             "Versione schema SQLite del backup non coerente"
                         )
+                    self._assert_no_pending_remote_mutation_in_sqlite(payload)
                 elif has_sqlite:
                     # Early 5.0 beta archives copied the live .db directly.
                     # They cannot prove that committed WAL pages were captured,
