@@ -82,6 +82,7 @@ class ExistingPdfResolution:
 
     path: Path
     linked_codes: tuple[str, ...]
+    linked_voucher_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -287,6 +288,7 @@ def resolve_existing_pdf(
     history,
     settings: Mapping[str, object],
     prints_root: Path,
+    site_id: str = "",
     finder: Callable[[Path, str], Sequence[Path]] = find_file_by_exact_name,
 ) -> ExistingPdfResolution:
     """Resolve and verify the archived PDF linked to one selected voucher."""
@@ -316,19 +318,42 @@ def resolve_existing_pdf(
             path=path,
         )
 
-    linked_codes = tuple(
-        history.codes_for_output(
-            [item.code_formatted for item in all_vouchers],
-            path,
-            settings,
+    if hasattr(history, "voucher_links_for_output"):
+        links = tuple(
+            history.voucher_links_for_output(
+                [
+                    (str(item.id), item.code_formatted)
+                    for item in all_vouchers
+                ],
+                site_id,
+                path,
+                settings,
+            )
         )
-    )
-    if voucher.code_formatted not in linked_codes:
-        raise ExistingPdfResolutionError("linkage_mismatch")
+        linked_voucher_ids = tuple(item[0] for item in links)
+        linked_codes = tuple(item[1] for item in links)
+        if str(voucher.id) not in linked_voucher_ids:
+            raise ExistingPdfResolutionError("linkage_mismatch")
+    else:
+        linked_codes = tuple(
+            history.codes_for_output(
+                [item.code_formatted for item in all_vouchers],
+                path,
+                settings,
+            )
+        )
+        linked_voucher_ids = tuple(
+            str(item.id)
+            for item in all_vouchers
+            if item.code_formatted in linked_codes
+        )
+        if voucher.code_formatted not in linked_codes:
+            raise ExistingPdfResolutionError("linkage_mismatch")
 
     return ExistingPdfResolution(
         path=path,
         linked_codes=linked_codes,
+        linked_voucher_ids=linked_voucher_ids,
     )
 
 
