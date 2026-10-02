@@ -529,7 +529,7 @@ def record_security_revocations(
     """Record a security revocation outcome without minimizing local data.
 
     confirmation_source distinguishes a directly confirmed DELETE from a later
-    full-snapshot reconciliation that only proves the voucher is absent.
+    direct UUID lookup that proves the voucher is absent.
     """
 
     stamp = _normalize_now(revoked_at).isoformat()
@@ -537,7 +537,7 @@ def record_security_revocations(
     if not operator:
         raise ValueError("windows user is required")
     source = str(confirmation_source or "").strip()
-    if source not in {"delete_response", "fresh_snapshot_absent"}:
+    if source not in {"delete_response", "direct_uuid_not_found"}:
         raise ValueError("unsupported security revocation confirmation source")
     event_source = "OPERATOR" if source == "delete_response" else "SYSTEM"
     requested = tuple(dict.fromkeys(int(value) for value in voucher_ids))
@@ -584,8 +584,9 @@ def record_security_revocations(
                     "reason": "printed_unused_threshold",
                     "confirmation_source": source,
                     "remote_delete_confirmed": source == "delete_response",
-                    "fresh_snapshot_confirmed_absent": (
-                        source == "fresh_snapshot_absent"
+                    "fresh_snapshot_confirmed_absent": False,
+                    "direct_uuid_confirmed_absent": (
+                        source == "direct_uuid_not_found"
                     ),
                     "credential_preserved_locally": True,
                 }
