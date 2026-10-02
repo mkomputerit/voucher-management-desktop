@@ -276,6 +276,103 @@ def test_get_or_create_controller_reuses_api_root_without_credentials(tmp_path):
         db.close()
 
 
+def test_controller_identity_is_scoped_by_unifi_site_uuid(tmp_path):
+    db = _db(tmp_path)
+    try:
+        first = db.get_or_create_controller(
+            name="Site A",
+            api_root="https://controller.example",
+            site_id="site-a",
+            observed_at="2026-10-02T07:00:00+00:00",
+        )
+        same = db.get_or_create_controller(
+            name="Site A renamed",
+            api_root="https://controller.example",
+            site_id="site-a",
+            observed_at="2026-10-02T07:05:00+00:00",
+        )
+        second = db.get_or_create_controller(
+            name="Site B",
+            api_root="https://controller.example",
+            site_id="site-b",
+            observed_at="2026-10-02T07:10:00+00:00",
+        )
+
+        assert same == first
+        assert second != first
+        rows = db.connection.execute(
+            "SELECT id, site_id, name FROM controllers ORDER BY id"
+        ).fetchall()
+        assert [(row["site_id"], row["name"]) for row in rows] == [
+            ("site-a", "Site A renamed"),
+            ("site-b", "Site B"),
+        ]
+    finally:
+        db.close()
+
+
+def test_first_verified_site_adopts_pre_v8_controller_identity(tmp_path):
+    db = _db(tmp_path)
+    try:
+        legacy = db.create_controller(
+            name="Legacy profile",
+            api_root="https://controller.example",
+            created_at="2026-10-01T07:00:00+00:00",
+        )
+        adopted = db.get_or_create_controller(
+            name="Reception",
+            api_root="https://controller.example",
+            site_id="site-uuid",
+            observed_at="2026-10-02T07:00:00+00:00",
+        )
+
+        assert adopted == legacy
+        row = db.connection.execute(
+            "SELECT site_id, name FROM controllers WHERE id=?",
+            (legacy,),
+        ).fetchone()
+        assert row["site_id"] == "site-uuid"
+        assert row["name"] == "Reception"
+    finally:
+        db.close()
+
+
+def test_schema_seven_upgrade_adds_unifi_site_identity(tmp_path):
+    path = tmp_path / "schema-seven-site.db"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="Existing",
+        api_root="https://controller.example",
+        created_at="2026-10-01T07:00:00+00:00",
+    )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("DROP INDEX IF EXISTS idx_controllers_identity")
+    raw.execute("ALTER TABLE controllers DROP COLUMN site_id")
+    raw.execute("PRAGMA user_version = 7")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '7')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        row = migrated.connection.execute(
+            "SELECT site_id FROM controllers WHERE id=?",
+            (controller,),
+        ).fetchone()
+        assert row["site_id"] == ""
+        assert migrated.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0] == SCHEMA_VERSION
+    finally:
+        migrated.close()
+
+
 def test_controller_can_be_renamed_without_touching_connection_identity(tmp_path):
     db = _db(tmp_path)
     try:
