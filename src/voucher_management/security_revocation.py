@@ -388,20 +388,25 @@ def reconcile_pending_security_revocations(
     *,
     controller_id: int,
     live_voucher_ids: set[str] | frozenset[str],
+    confirmed_absent_ids: set[str] | frozenset[str] = frozenset(),
     observed_at: str,
     windows_user: str,
     connection=None,
 ) -> tuple[int, ...]:
-    """Confirm pending revocations that are absent from a fresh full snapshot.
+    """Reconcile pending revocations from presence or direct UUID absence.
 
-    This function must only be called after a successful, complete UniFi voucher
-    list operation. Absence from that snapshot confirms that the credential no
-    longer exists remotely. Presence proves the previous uncertain DELETE was
-    not applied, so the pending marker is closed without replay and a later
-    operator-reviewed attempt may start again from a fresh GET.
+    A complete list omission is deliberately insufficient: VPN/API anomalies
+    must not convert an uncertain DELETE into a confirmed revocation. Presence
+    closes the attempt as not applied; absence is confirmed only when the
+    synchronization layer has obtained a direct voucher-UUID not-found result.
     """
 
     live_ids = {str(value).strip() for value in live_voucher_ids if str(value).strip()}
+    confirmed_absent = {
+        str(value).strip()
+        for value in confirmed_absent_ids
+        if str(value).strip()
+    }
     query_db = connection if connection is not None else database.connection
     pending = query_db.execute(
         """SELECT DISTINCT v.id, v.unifi_id
@@ -421,7 +426,7 @@ def reconcile_pending_security_revocations(
     confirmed = [
         int(row["id"])
         for row in pending
-        if str(row["unifi_id"] or "").strip() not in live_ids
+        if str(row["unifi_id"] or "").strip() in confirmed_absent
     ]
     still_present = [
         int(row["id"])
@@ -481,7 +486,7 @@ def reconcile_pending_security_revocations(
         voucher_ids=confirmed,
         revoked_at=observed_at,
         windows_user=windows_user,
-        confirmation_source="fresh_snapshot_absent",
+        confirmation_source="direct_uuid_not_found",
         connection=connection,
     )
 
@@ -491,6 +496,7 @@ def reconcile_pending_security_revocations_to_path(
     *,
     controller_id: int,
     live_voucher_ids: set[str] | frozenset[str],
+    confirmed_absent_ids: set[str] | frozenset[str] = frozenset(),
     observed_at: str,
     windows_user: str,
 ) -> tuple[int, ...]:
@@ -503,6 +509,7 @@ def reconcile_pending_security_revocations_to_path(
             database,
             controller_id=controller_id,
             live_voucher_ids=live_voucher_ids,
+            confirmed_absent_ids=confirmed_absent_ids,
             observed_at=observed_at,
             windows_user=windows_user,
         )
