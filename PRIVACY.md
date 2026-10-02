@@ -13,11 +13,17 @@ The application may process:
 
 Authentication secrets must not be written to application logs, settings, print history or backups.
 
-A local `pending_create_guard` may temporarily exist when a voucher-create
-request has an uncertain remote result. It contains only a fixed state marker:
-no API key, controller address, voucher code, recipient or creation parameters.
-It is excluded from portable backups and is removed only after a definitive
-result or a successful operator-triggered controller refresh.
+Voucher creation uses two privacy-safe crash barriers before a non-idempotent
+POST can be sent. `pending_create_guard` is only a fixed anti-repeat marker.
+`pending_create_intent.json` contains the verified Site identity, the baseline
+voucher UUID set and non-secret creation parameters needed for later
+correlation; the recipient is represented only by an HMAC. Neither file stores
+the API key, controller address, voucher code or recipient plaintext. If UniFi
+confirmed the create but local reporting persistence is incomplete,
+`pending_create_reporting.json` stores only confirmed voucher UUIDs and the
+local classification needed for idempotent recovery. Backup/restore is blocked
+while an unresolved create intent exists so moving local state backwards cannot
+erase an ambiguous remote mutation.
 
 Print history deliberately stores the recipient label in clear text together
 with audit metadata so an operator can identify who a generated voucher sheet
@@ -46,12 +52,14 @@ the flag. Existing vouchers for which that choice was never recorded remain
 Administrative report exports use two privacy levels. **Riepilogo storico** is
 aggregate-only and does not include per-voucher recipient data, UniFi
 descriptions, local notes or Windows print-operator identities. Detailed PDF/CSV
-reports do not expose the clear voucher code for administrative purposes, but
-may include the immutable UniFi voucher ID, controller name, local recipient,
-UniFi description, local notes, timestamps, nominal classification and Windows
-operator identities associated with printing. These detailed exports are
-therefore sensitive local operational data and should be stored and shared with
-the same access controls used for the application database and backups.
+reports do not expose the clear voucher code for routine administrative
+purposes, but may include the immutable UniFi voucher UUID, controller name,
+controller-owned description/destinatario, local notes, timestamps, nominal
+classification and Windows operator identities associated with printing.
+Voucher Management does not maintain a second editable local recipient field.
+These detailed exports are therefore sensitive local operational data and
+should be stored and shared with the same access controls used for the
+application database and backups.
 
 If a physical print was submitted but its audit write has not completed, a
 local `pending_print_audit.json` file temporarily stores only HMAC voucher
@@ -95,9 +103,10 @@ may be proposed for revocation. Immediately before deletion Voucher Management
 reads that voucher again from UniFi and refuses the operation if the live state
 is no longer eligible. After revocation the complete local historical record,
 including the voucher code and local metadata, remains available for audit and
-reporting. The audit distinguishes a DELETE confirmed by its response from an
-outcome later reconciled only because a complete fresh controller snapshot
-confirmed the voucher absent.
+reporting. A DELETE confirmed by UniFi is persisted immediately. If the DELETE
+outcome is uncertain, later reconciliation does not treat a missing list row as
+proof: absence is accepted only after the direct voucher-UUID lookup returns the
+typed not-found result.
 
 Pre-SQLite legacy ZIP import is an explicit historical-recovery operation.
 Verified legacy PDF-generation or print evidence is retained as document/print
