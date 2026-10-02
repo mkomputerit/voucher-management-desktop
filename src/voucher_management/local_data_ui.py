@@ -504,6 +504,12 @@ class AlignmentDialog(tk.Toplevel):
             command=self._save,
         )
         self.save_button.pack(side="right", padx=(0, 8))
+        self.delete_invalid_button = ttk.Button(
+            actions,
+            text="Elimina non validi…",
+            command=self._delete_invalid_selected,
+        )
+        self.delete_invalid_button.pack(side="left")
         self._refresh()
 
     def _refresh(self) -> None:
@@ -544,6 +550,9 @@ class AlignmentDialog(tk.Toplevel):
             else "Nessun voucher da allineare."
         )
         self.save_button.state(["!disabled"] if candidates else ["disabled"])
+        self.delete_invalid_button.state(
+            ["!disabled"] if candidates else ["disabled"]
+        )
         self.nominal.set("")
         self.print_state.set("")
         self.nominal_combo.configure(state="readonly")
@@ -591,6 +600,75 @@ class AlignmentDialog(tk.Toplevel):
         else:
             self.print_state.set("")
             self.print_combo.configure(state="readonly")
+
+    def _delete_invalid_selected(self) -> None:
+        """Use the reviewed delete workflow for external blank-name vouchers."""
+
+        selected = [
+            self._candidates[value]
+            for value in self.tree.selection()
+            if value in self._candidates
+        ]
+        if not selected:
+            messagebox.showinfo(
+                "Elimina voucher non valido",
+                "Selezionare almeno un voucher da allineare.",
+                parent=self,
+            )
+            return
+
+        invalid = [
+            item
+            for item in selected
+            if str(item.origin or "").strip().upper() == "CONTROLLER"
+            and not str(item.name or "").strip()
+        ]
+        if len(invalid) != len(selected):
+            messagebox.showinfo(
+                "Elimina voucher non valido",
+                "Questo percorso è riservato ai voucher trovati sulla controller "
+                "senza destinatario/descrizione UniFi. Gli altri voucher devono "
+                "essere allineati normalmente.",
+                parent=self,
+            )
+            return
+
+        remote_ids = {str(item.unifi_id) for item in invalid}
+        live = [
+            voucher
+            for voucher in getattr(self.app, "vouchers", ())
+            if str(getattr(voucher, "id", "")) in remote_ids
+        ]
+        if len(live) != len(remote_ids):
+            messagebox.showwarning(
+                "Elimina voucher non valido",
+                "Uno o più voucher non sono presenti nella fotografia live. "
+                "Eseguire Sincronizza e riprovare.",
+                parent=self,
+            )
+            return
+
+        request_delete = getattr(
+            self.app,
+            "_request_delete_vouchers",
+            None,
+        )
+        if not callable(request_delete):
+            messagebox.showerror(
+                "Elimina voucher non valido",
+                "Il workflow di cancellazione sicura non è disponibile.",
+                parent=self,
+            )
+            return
+
+        # Release the alignment grab before the shared deletion workflow opens
+        # its own reason/confirmation dialogs.
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
+        request_delete(live)
 
     def _save(self) -> None:
         selected = tuple(self.tree.selection())
