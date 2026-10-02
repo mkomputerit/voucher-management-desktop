@@ -131,6 +131,11 @@ class VoucherDeletionMixin:
                 for remote_id, fact in local_facts.items()
                 if fact.alignment_completed
             ),
+            exceptionally_deletable_ids=frozenset(
+                remote_id
+                for remote_id, fact in local_facts.items()
+                if fact.invalid_external_cleanup_allowed
+            ),
         )
         if blocked:
             reasons = {item.policy.reason for item in blocked}
@@ -166,11 +171,22 @@ class VoucherDeletionMixin:
             )
             return
 
+        has_invalid_external = any(
+            fact.invalid_external_cleanup_allowed
+            for fact in local_facts.values()
+        )
         reason = simpledialog.askstring(
             "Motivazione cancellazione",
             (
-                "Indicare obbligatoriamente il motivo della correzione di "
-                "preparazione. La motivazione resterà nello storico locale."
+                "Indicare obbligatoriamente il motivo della cancellazione. "
+                + (
+                    "La selezione include un voucher creato fuori dal software "
+                    "senza destinatario UniFi; la stampa resta Non determinabile, "
+                    "ma la rimozione è consentita come correzione controllata. "
+                    if has_invalid_external
+                    else "La cancellazione è una correzione di preparazione. "
+                )
+                + "La motivazione resterà nello storico locale."
             ),
             parent=self,
         )
