@@ -147,6 +147,98 @@ def test_request_fails_closed_without_positive_preparation_state(
         db.close()
 
 
+def test_external_blank_name_can_be_deleted_as_controlled_exception(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="external-blank",
+            code="EXTERNAL-BLANK",
+            name="",
+            imported_at=NOW,
+            duration_minutes=60,
+            authorized_guest_limit=1,
+            authorized_guest_count=0,
+            expired=False,
+            last_synced_at=NOW,
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET origin='CONTROLLER',
+                       print_state=?,
+                       alignment_completed_at=NULL,
+                       ever_used=0,
+                       usage_observed=1,
+                       present_on_controller=1
+                   WHERE id=?""",
+                (PRINT_STATE_UNKNOWN, voucher_id),
+            )
+
+        facts = preparation_delete_facts(
+            db,
+            controller_id=controller,
+            unifi_ids=["external-blank"],
+        )
+        assert facts["external-blank"].invalid_external_cleanup_allowed is True
+
+        recorded = record_preparation_delete_requests(
+            db,
+            controller_id=controller,
+            unifi_ids=["external-blank"],
+            reason="Voucher nominale senza destinatario UniFi",
+            requested_at=NOW,
+            windows_user="operator",
+        )
+        assert recorded == (voucher_id,)
+        event = db.connection.execute(
+            """SELECT details_json
+               FROM voucher_events
+               WHERE voucher_id=? AND event_type='PREPARATION_DELETE_REQUESTED'""",
+            (voucher_id,),
+        ).fetchone()
+        details = json.loads(event["details_json"])
+        assert details["workflow"] == "invalid_external_missing_recipient"
+    finally:
+        db.close()
+
+
+def test_external_blank_name_exception_still_requires_positive_unused_observation(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="external-unknown-usage",
+            code="EXTERNAL-UNKNOWN",
+            name="",
+            imported_at=NOW,
+            last_synced_at=NOW,
+        )
+        with db.transaction() as tx:
+            tx.execute(
+                """UPDATE vouchers
+                   SET origin='CONTROLLER',
+                       print_state=?,
+                       alignment_completed_at=NULL,
+                       usage_observed=0,
+                       ever_used=0
+                   WHERE id=?""",
+                (PRINT_STATE_UNKNOWN, voucher_id),
+            )
+
+        with pytest.raises(RuntimeError):
+            record_preparation_delete_requests(
+                db,
+                controller_id=controller,
+                unifi_ids=["external-unknown-usage"],
+                reason="Pulizia",
+                requested_at=NOW,
+                windows_user="operator",
+            )
+    finally:
+        db.close()
+
+
 def test_verified_print_evidence_blocks_delete_even_if_state_is_corrupted(tmp_path):
     db, controller = _db(tmp_path)
     try:
