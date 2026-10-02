@@ -233,6 +233,7 @@ def test_uncertain_create_keeps_guard_and_blocks_second_create(monkeypatch, tmp_
     filter_var = SimpleNamespace(set=lambda value: None)
     fake = SimpleNamespace(
         client=SimpleNamespace(site_id="site-a"),
+        controller_snapshot_live=True,
         create_guard=guard,
         vouchers=[],
         checked_ids={"old"},
@@ -419,6 +420,7 @@ def test_create_task_rejection_surfaces_guard_cleanup_failure(monkeypatch, tmp_p
 
     fake = SimpleNamespace(
         client=SimpleNamespace(site_id="site-a"),
+        controller_snapshot_live=True,
         create_guard=Guard(),
         vouchers=[],
         active_controller_id=7,
