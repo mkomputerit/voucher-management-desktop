@@ -21,6 +21,32 @@ function Assert-Administrator {
     }
 }
 
+function Assert-NoReparsePointsInTree {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return
+    }
+
+    $pending = New-Object 'System.Collections.Generic.Stack[string]'
+    $pending.Push([IO.Path]::GetFullPath($Path))
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        foreach ($item in Get-ChildItem -LiteralPath $current -Force) {
+            if (
+                ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+            ) {
+                throw "$Label contiene un junction, link o altro reparse point: $($item.FullName)"
+            }
+            if ($item.PSIsContainer) {
+                $pending.Push($item.FullName)
+            }
+        }
+    }
+}
+
 function Resolve-ManagedChildPath {
     param(
         [string]$Path,
@@ -174,6 +200,7 @@ function Set-SharedDataAcl {
     ) {
         throw "La cartella dati condivisa è diventata un reparse point."
     }
+    Assert-NoReparsePointsInTree -Path $Path -Label "La cartella dati condivisa"
 
     # /grant:r only replaces grants for principals explicitly named in the
     # command. Reset first so stale explicit ACEs from manual/older installs
