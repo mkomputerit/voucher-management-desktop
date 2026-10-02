@@ -18,6 +18,7 @@ namespace VoucherManagementSetup
         {
             Dictionary<string, string> options = ParseOptions(args);
             bool quiet = HasFlag(args, "quiet") || HasFlag(args, "verysilent");
+            string logPath = GetOption(options, "LogPath", String.Empty);
             string installRoot = GetOption(
                 options,
                 "InstallRoot",
@@ -149,6 +150,10 @@ namespace VoucherManagementSetup
                     );
                 }
 
+                WriteDiagnosticLog(
+                    logPath,
+                    "SUCCESS\r\n" + standardOutput
+                );
                 if (!quiet)
                 {
                     MessageBox.Show(
@@ -164,6 +169,7 @@ namespace VoucherManagementSetup
             }
             catch (Exception ex)
             {
+                WriteDiagnosticLog(logPath, "ERROR\r\n" + ex.ToString());
                 if (!quiet)
                 {
                     MessageBox.Show(
@@ -287,6 +293,32 @@ namespace VoucherManagementSetup
                 );
             }
             return "\"" + value + "\"";
+        }
+
+        private static void WriteDiagnosticLog(string path, string value)
+        {
+            if (String.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+            try
+            {
+                string fullPath = Path.GetFullPath(path);
+                string parent = Path.GetDirectoryName(fullPath);
+                if (!String.IsNullOrWhiteSpace(parent))
+                {
+                    Directory.CreateDirectory(parent);
+                }
+                File.WriteAllText(
+                    fullPath,
+                    value ?? String.Empty,
+                    new UTF8Encoding(false)
+                );
+            }
+            catch
+            {
+                // Diagnostics must never change the installer outcome.
+            }
         }
 
         private static string LimitText(string value, int maximum)
