@@ -501,6 +501,7 @@ def evaluate_delete_candidates(
     historically_used_ids: frozenset[str],
     local_print_states: Mapping[str, str],
     aligned_ids: frozenset[str],
+    exceptionally_deletable_ids: frozenset[str] = frozenset(),
 ) -> list[DeleteBlock]:
     """Return every voucher blocked by controller or durable local lifecycle facts.
 
@@ -514,6 +515,11 @@ def evaluate_delete_candidates(
         remote_id = str(voucher.id)
         if remote_id in historically_used_ids:
             result = DeletePolicyResult(False, "in_use")
+        elif remote_id in exceptionally_deletable_ids:
+            result = evaluate_delete_policy(
+                voucher,
+                stats_by_code.get(voucher.code_formatted),
+            )
         elif remote_id not in aligned_ids:
             result = DeletePolicyResult(False, "not_aligned")
         else:
