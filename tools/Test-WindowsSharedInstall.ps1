@@ -55,6 +55,70 @@ function Assert-Rights {
 try {
     New-Item -ItemType Directory -Force -Path $root | Out-Null
 
+    # Elevated install/uninstall paths are destructive boundaries. Reject
+    # caller-controlled roots outside Program Files / ProgramData before any
+    # ACL reset, application swap or recursive deletion can happen.
+    $unsafeInstallRoot = Join-Path $root "unsafe-install"
+    $unsafeDataRoot = Join-Path $root "unsafe-data"
+
+    $unsafeInstallRejected = $false
+    try {
+        $unsafeInstallArgs = @{
+            SourcePath = $SourcePath
+            InstallRoot = $unsafeInstallRoot
+            DataRoot = $dataRoot
+            OperatorGroup = $groupName
+            OperatorUser = $operatorUser
+            SkipShortcut = $true
+        }
+        & $installer @unsafeInstallArgs
+    }
+    catch {
+        $unsafeInstallRejected = $true
+    }
+    if (-not $unsafeInstallRejected) {
+        throw "L'installer ha accettato una cartella programma fuori da Program Files."
+    }
+
+    $unsafeDataRejected = $false
+    try {
+        $unsafeDataArgs = @{
+            SourcePath = $SourcePath
+            InstallRoot = $installRoot
+            DataRoot = $unsafeDataRoot
+            OperatorGroup = $groupName
+            OperatorUser = $operatorUser
+            SkipShortcut = $true
+        }
+        & $installer @unsafeDataArgs
+    }
+    catch {
+        $unsafeDataRejected = $true
+    }
+    if (-not $unsafeDataRejected) {
+        throw "L'installer ha accettato una cartella dati fuori da ProgramData."
+    }
+
+    New-Item -ItemType Directory -Force -Path $unsafeInstallRoot | Out-Null
+    $unsafeSentinel = Join-Path $unsafeInstallRoot "must-survive.txt"
+    Set-Content -LiteralPath $unsafeSentinel -Value "preserve" -Encoding ascii
+    $unsafeUninstallRejected = $false
+    try {
+        $unsafeUninstallArgs = @{
+            InstallRoot = $unsafeInstallRoot
+            DataRoot = $dataRoot
+            OperatorGroup = $groupName
+            SkipShortcut = $true
+        }
+        & $uninstaller @unsafeUninstallArgs
+    }
+    catch {
+        $unsafeUninstallRejected = $true
+    }
+    if (-not $unsafeUninstallRejected -or -not (Test-Path -LiteralPath $unsafeSentinel)) {
+        throw "Il disinstaller non ha protetto una cartella programma fuori da Program Files."
+    }
+
     # A failure before the staged application swap must never destroy the
     # previously installed version or leave a shared-deployment marker behind.
     New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
