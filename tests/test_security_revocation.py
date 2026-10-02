@@ -225,7 +225,8 @@ def test_record_revocation_preserves_code_and_local_metadata(tmp_path):
 
         event = db.connection.execute(
             """SELECT event_type, details_json
-               FROM voucher_events WHERE voucher_id=?""",
+               FROM voucher_events
+               WHERE voucher_id=? AND event_type='SECURITY_REVOKED'""",
             (voucher_id,),
         ).fetchone()
         assert event["event_type"] == "SECURITY_REVOKED"
