@@ -61,7 +61,9 @@
 - Add two independent operator-defined thresholds with no invented defaults:
   **created but never printed** for operational review and **printed but without
   positive-use evidence** for security review. A reprint restarts the latter
-  from the latest verified physical print.
+  from the latest verified physical print; a positive legacy PRINTED fact whose
+  print date is not determinable is surfaced immediately for review because its
+  security age cannot be calculated.
 - Keep multi-use semantics simple: a voucher belongs to **Utilizzati** from the
   first positive authorization, while the n/quota value remains the quantitative
   reference. No separate business state is created for “quota exhausted”.
