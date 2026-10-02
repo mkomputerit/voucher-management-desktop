@@ -213,7 +213,7 @@ def test_create_dialog_validation_error_stays_in_ui(monkeypatch):
     assert shown[0][0][0] == "Voucher"
 
 
-def test_uncertain_create_keeps_guard_and_blocks_second_create(monkeypatch):
+def test_uncertain_create_keeps_guard_and_blocks_second_create(monkeypatch, tmp_path):
     tasks = []
     shown = []
 
@@ -232,13 +232,25 @@ def test_uncertain_create_keeps_guard_and_blocks_second_create(monkeypatch):
     guard = Guard()
     filter_var = SimpleNamespace(set=lambda value: None)
     fake = SimpleNamespace(
-        client=object(),
+        client=SimpleNamespace(site_id="site-a"),
         create_guard=guard,
         vouchers=[],
         checked_ids={"old"},
         filter_var=filter_var,
         populate=lambda: None,
-        logger=SimpleNamespace(warning=lambda *args: None),
+        active_controller_id=7,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_intent=tmp_path / "pending_create_intent.json",
+        ),
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
+        history=SimpleNamespace(
+            correlation_digest=lambda *args, **kwargs: "a" * 64,
+        ),
+        settings={},
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
         _run_network_task=capture_runner(tasks),
         _show_network_error=lambda *args, **kwargs: None,
     )
@@ -246,7 +258,17 @@ def test_uncertain_create_keeps_guard_and_blocks_second_create(monkeypatch):
         creation_ui,
         "CreateDialog",
         lambda parent: SimpleNamespace(
-            result={"recipient": "Guest", "quantity": 1}
+            result={
+                "recipient": "Guest",
+                "quantity": 1,
+                "expire_number": 24,
+                "expire_unit": 60,
+                "quota": 1,
+                "data_mb": None,
+                "down_mbps": None,
+                "up_mbps": None,
+                "is_nominal": False,
+            }
         ),
     )
     outcome = SimpleNamespace(
@@ -307,14 +329,25 @@ def test_confirmed_create_is_not_reported_failed_when_local_reporting_persistenc
     guard = Guard()
     created = SimpleNamespace(id="created-1")
     fake = SimpleNamespace(
-        client=object(),
+        client=SimpleNamespace(site_id="site-a"),
         create_guard=guard,
         vouchers=[],
         checked_ids=set(),
         filter_var=SimpleNamespace(set=lambda value: None),
         populate=lambda: None,
         active_controller_id=7,
-        paths=SimpleNamespace(database=tmp_path / "db.sqlite"),
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_intent=tmp_path / "pending_create_intent.json",
+            pending_create_reporting=tmp_path / "pending_create_reporting.json",
+        ),
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
+        history=SimpleNamespace(
+            correlation_digest=lambda *args, **kwargs: "b" * 64,
+        ),
+        settings={},
         logger=SimpleNamespace(
             warning=lambda *args, **kwargs: None,
             error=lambda *args, **kwargs: None,
@@ -329,6 +362,12 @@ def test_confirmed_create_is_not_reported_failed_when_local_reporting_persistenc
             result={
                 "recipient": "Pinco Pallino",
                 "quantity": 1,
+                "expire_number": 24,
+                "expire_unit": 60,
+                "quota": 1,
+                "data_mb": None,
+                "down_mbps": None,
+                "up_mbps": None,
                 "is_nominal": True,
             }
         ),
@@ -365,7 +404,7 @@ def test_confirmed_create_is_not_reported_failed_when_local_reporting_persistenc
     assert "Non ripetere la creazione" in warnings[-1][0][1]
 
 
-def test_create_task_rejection_surfaces_guard_cleanup_failure(monkeypatch):
+def test_create_task_rejection_surfaces_guard_cleanup_failure(monkeypatch, tmp_path):
     warnings = []
     logs = []
 
@@ -379,9 +418,21 @@ def test_create_task_rejection_surfaces_guard_cleanup_failure(monkeypatch):
             raise creation_ui.CreateMutationGuardError("cannot clear")
 
     fake = SimpleNamespace(
-        client=object(),
+        client=SimpleNamespace(site_id="site-a"),
         create_guard=Guard(),
         vouchers=[],
+        active_controller_id=7,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_intent=tmp_path / "pending_create_intent.json",
+        ),
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
+        history=SimpleNamespace(
+            correlation_digest=lambda *args, **kwargs: "c" * 64,
+        ),
+        settings={},
         logger=SimpleNamespace(
             warning=lambda *args, **kwargs: logs.append(args),
         ),
@@ -391,7 +442,17 @@ def test_create_task_rejection_surfaces_guard_cleanup_failure(monkeypatch):
         creation_ui,
         "CreateDialog",
         lambda parent: SimpleNamespace(
-            result={"recipient": "Guest", "quantity": 1}
+            result={
+                "recipient": "Guest",
+                "quantity": 1,
+                "expire_number": 24,
+                "expire_unit": 60,
+                "quota": 1,
+                "data_mb": None,
+                "down_mbps": None,
+                "up_mbps": None,
+                "is_nominal": False,
+            }
         ),
     )
     monkeypatch.setattr(
@@ -408,7 +469,7 @@ def test_create_task_rejection_surfaces_guard_cleanup_failure(monkeypatch):
     assert "non è stato possibile rimuovere il blocco" in warnings[-1][0][1]
 
 
-def test_manual_refresh_clears_pending_create_guard(monkeypatch):
+def test_manual_refresh_clears_pending_create_guard(monkeypatch, tmp_path):
     tasks = []
 
     class Guard:
@@ -424,7 +485,9 @@ def test_manual_refresh_clears_pending_create_guard(monkeypatch):
         client=client,
         create_guard=guard,
         vouchers=[],
-        logger=SimpleNamespace(warning=lambda *args: None),
+        active_controller_id=None,
+        paths=SimpleNamespace(database=tmp_path / "db.sqlite"),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
         populate=lambda: None,
         _run_network_task=capture_runner(tasks),
         _show_network_error=lambda *args, **kwargs: None,
