@@ -11,6 +11,29 @@ $ErrorActionPreference = "Stop"
 $OperatorGroupDescription = "Operatori autorizzati a Voucher Management"
 $DefaultOperatorGroup = "Voucher Management Operators"
 $DefaultDataRoot = (Join-Path $env:ProgramData "VoucherManagement")
+$UninstallRegistryPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VoucherManagement"
+
+function Remove-WindowsUninstallEntry {
+    param([string]$InstallRoot)
+
+    if (-not (Test-Path -LiteralPath $script:UninstallRegistryPath)) {
+        return
+    }
+    try {
+        $entry = Get-ItemProperty -LiteralPath $script:UninstallRegistryPath -ErrorAction Stop
+        $registered = [string]$entry.InstallLocation
+        if (
+            $registered -and
+            [IO.Path]::GetFullPath($registered).TrimEnd("\") -ieq
+            [IO.Path]::GetFullPath($InstallRoot).TrimEnd("\")
+        ) {
+            Remove-Item -LiteralPath $script:UninstallRegistryPath -Recurse -Force
+        }
+    }
+    catch {
+        throw "Impossibile rimuovere la registrazione Windows della disinstallazione."
+    }
+}
 
 function Assert-NoReparsePointsInTree {
     param(
@@ -152,12 +175,6 @@ if ($RemoveData) {
     }
 }
 
-if (-not $SkipShortcut) {
-    $shortcutPath = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Voucher Management.lnk"
-    if (Test-Path -LiteralPath $shortcutPath) {
-        Remove-Item -LiteralPath $shortcutPath -Force
-    }
-}
 $running = Get-Process -Name "VoucherManagement" -ErrorAction SilentlyContinue
 if ($running) {
     throw "Chiudere Voucher Management prima della disinstallazione."
@@ -170,10 +187,9 @@ $selfInsideInstall = $scriptFull.StartsWith(
     [StringComparison]::OrdinalIgnoreCase
 )
 
-if (-not $selfInsideInstall -and (Test-Path -LiteralPath $InstallRoot)) {
-    Remove-Item -LiteralPath $InstallRoot -Recurse -Force
-}
-
+# Complete optional destructive data cleanup before removing the installed
+# program. If data cleanup fails, the application remains installed and the
+# operator can retry instead of ending in a half-uninstalled state.
 if ($RemoveData) {
     if (Test-Path -LiteralPath $DataRoot) {
         # Re-check the destructive boundary immediately before icacls so a
@@ -205,7 +221,19 @@ if ($RemoveData) {
     Write-Host "Dati condivisi conservati in: $DataRoot"
 }
 
-if ($selfInsideInstall -and (Test-Path -LiteralPath $InstallRoot)) {
+if (-not $SkipShortcut) {
+    $shortcutPath = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Voucher Management.lnk"
+    if (Test-Path -LiteralPath $shortcutPath) {
+        Remove-Item -LiteralPath $shortcutPath -Force
+    }
+}
+
+Remove-WindowsUninstallEntry -InstallRoot $InstallRoot
+
+if (-not $selfInsideInstall -and (Test-Path -LiteralPath $InstallRoot)) {
+    Remove-Item -LiteralPath $InstallRoot -Recurse -Force
+}
+elseif ($selfInsideInstall -and (Test-Path -LiteralPath $InstallRoot)) {
     $escaped = $InstallRoot.Replace('"', '""')
     $command = "timeout /t 2 /nobreak >nul & rmdir /s /q ""$escaped"""
     Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/c", $command -WindowStyle Hidden
