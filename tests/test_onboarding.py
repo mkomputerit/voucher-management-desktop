@@ -18,6 +18,7 @@ from voucher_management.onboarding import (
 )
 from voucher_management.modern_app import ModernVoucherApp
 from voucher_management.onboarding_ui import (
+    FirstRunWizard,
     schedule_first_run_onboarding,
     startup_onboarding_state,
 )
@@ -367,6 +368,27 @@ def test_legacy_evidence_helper_fails_closed_on_managed_files(tmp_path):
     (paths.logos / "logo.png").write_bytes(b"synthetic")
 
     assert legacy_installation_has_evidence(paths, dict(DEFAULT_SETTINGS)) is True
+
+
+def test_first_run_restore_delegates_to_reviewed_restore_workflow():
+    calls = []
+    wizard = type(
+        "WizardStub",
+        (),
+        {
+            "app": type(
+                "AppStub",
+                (),
+                {
+                    "restore_backup": lambda self, **kwargs: calls.append(kwargs),
+                },
+            )(),
+        },
+    )()
+
+    FirstRunWizard._restore_existing_backup(wizard)
+
+    assert calls == [{"parent": wizard}]
 
 
 def test_scheduler_runs_wizard_only_for_required_first_run(tmp_path):
