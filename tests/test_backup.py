@@ -69,6 +69,40 @@ class BackupServiceTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def _seed_pending_remote_mutation(self, event_type: str) -> None:
+        database = Database(self.paths.data / "voucher_management.db")
+        database.initialize()
+        try:
+            controller = database.create_controller(
+                name="Pending",
+                api_root="https://pending.example",
+                created_at="2026-10-01T08:00:00+00:00",
+            )
+            voucher_id = database.upsert_voucher(
+                controller_id=controller,
+                unifi_id=f"pending-{event_type.lower()}",
+                code="1122334455",
+                name="Guest",
+                created_at="2026-09-01T08:00:00+00:00",
+                imported_at="2026-10-01T08:00:00+00:00",
+                last_synced_at="2026-10-01T08:00:00+00:00",
+            )
+            database.connection.execute(
+                """INSERT INTO voucher_events(
+                       event_uuid, voucher_id, event_type, occurred_at,
+                       source, windows_user, details_json
+                   ) VALUES (?, ?, ?, ?, 'OPERATOR', 'PC\\operator', '{}')""",
+                (
+                    f"pending-{event_type.lower()}",
+                    voucher_id,
+                    event_type,
+                    "2026-10-01T09:00:00+00:00",
+                ),
+            )
+            database.connection.commit()
+        finally:
+            database.close()
+
     def test_roundtrip_restores_complete_application_data(self):
         backup = Path(self.temp.name) / "backup.zip"
         self.service.create(backup)
@@ -702,6 +736,69 @@ class BackupServiceTests(unittest.TestCase):
 
         self.assertFalse(backup.exists())
 
+
+    def test_backup_is_blocked_while_security_delete_is_unresolved(self):
+        self._seed_pending_remote_mutation("SECURITY_REVOKE_REQUESTED")
+        backup = Path(self.temp.name) / "security-pending.zip"
+
+        with self.assertRaisesRegex(BackupError, "cancellazione o revoca"):
+            self.service.create(backup)
+
+        self.assertFalse(backup.exists())
+
+    def test_backup_is_blocked_while_preparation_delete_is_unresolved(self):
+        self._seed_pending_remote_mutation("PREPARATION_DELETE_REQUESTED")
+        backup = Path(self.temp.name) / "preparation-pending.zip"
+
+        with self.assertRaisesRegex(BackupError, "cancellazione o revoca"):
+            self.service.create(backup)
+
+        self.assertFalse(backup.exists())
+
+    def test_validation_rejects_remote_mutation_state_inside_sqlite_snapshot(self):
+        database = Database(self.paths.data / "voucher_management.db")
+        database.initialize()
+        database.close()
+
+        clean = Path(self.temp.name) / "clean-with-db.zip"
+        self.service.create(clean)
+        self._seed_pending_remote_mutation("SECURITY_REVOKE_REQUESTED")
+
+        snapshot = self.service._sqlite_snapshot_bytes()
+        self.assertIsNotNone(snapshot)
+        sqlite_payload, user_version, digest = snapshot
+
+        with zipfile.ZipFile(clean, "r") as source:
+            payloads = {
+                info.filename: source.read(info.filename)
+                for info in source.infolist()
+            }
+
+        manifest = json.loads(
+            payloads[self.service.MANIFEST].decode("utf-8")
+        )
+        manifest["sqlite_snapshot"]["sha256"] = digest
+        manifest["sqlite_snapshot"]["user_version"] = user_version
+        payloads["data/voucher_management.db"] = sqlite_payload
+        payloads[self.service.MANIFEST] = json.dumps(
+            manifest,
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+        crafted = Path(self.temp.name) / "crafted-pending-delete.zip"
+        with zipfile.ZipFile(
+            crafted,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as archive:
+            for name, payload in payloads.items():
+                archive.writestr(name, payload)
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "stato operativo transitorio UniFi",
+        ):
+            self.service.validate(crafted)
 
     def test_restore_is_blocked_while_security_delete_is_unresolved(self):
         backup = Path(self.temp.name) / "before-security-pending.zip"
