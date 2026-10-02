@@ -222,6 +222,11 @@ class BackupService:
             "pending_create",
             self.paths.data / "pending_create_guard",
         )
+        intent_pending = getattr(
+            self.paths,
+            "pending_create_intent",
+            self.paths.data / "pending_create_intent.json",
+        )
         reporting_pending = getattr(
             self.paths,
             "pending_create_reporting",
@@ -231,6 +236,12 @@ class BackupService:
             raise BackupError(
                 "Esiste una creazione voucher con esito ancora da verificare. "
                 "Sincronizzare l'elenco prima di creare o ripristinare un backup."
+            )
+        if Path(intent_pending).exists():
+            raise BackupError(
+                "Esiste una richiesta di creazione UniFi con esito incerto "
+                "ancora da associare o chiudere. Sincronizzare e completare "
+                "la decisione prima di creare o ripristinare un backup."
             )
         if Path(reporting_pending).exists():
             raise BackupError(
