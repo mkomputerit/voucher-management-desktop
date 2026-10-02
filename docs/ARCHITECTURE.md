@@ -276,10 +276,12 @@ recipient or print history.
 
 Printed vouchers are handled by the separate security-revocation workflow.
 Printed vouchers left without positive-use evidence beyond the configured
-threshold are proposed for review, never revoked automatically. Each candidate
-is read directly by UUID immediately before DELETE. The local voucher code,
-recipient/description, nominality, notes and complete audit are preserved after
-revocation.
+threshold are proposed for review, never revoked automatically. A positive
+legacy PRINTED fact with no determinable print date is proposed immediately:
+without a date the application cannot calculate how long the materialized
+credential may have been circulating. Each candidate is read directly by UUID
+immediately before DELETE. The local voucher code, recipient/description,
+nominality, notes and complete audit are preserved after revocation.
 
 A list omission is never sufficient by itself to prove that a voucher has been
 deleted. The first omission is recorded only as an internal suspicion; after a
