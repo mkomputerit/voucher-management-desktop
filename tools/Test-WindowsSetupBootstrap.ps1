@@ -85,6 +85,30 @@ try {
         throw "Il Setup non ha registrato il DataRoot installato nel marker."
     }
 
+    $uninstallExe = Join-Path $installRoot "VoucherManagement-Uninstall.exe"
+    if (-not (Test-Path -LiteralPath $uninstallExe -PathType Leaf)) {
+        throw "Il Setup non ha installato l'uninstaller elevato."
+    }
+    $uninstallInfo = (Get-Item -LiteralPath $uninstallExe).VersionInfo
+    if ($uninstallInfo.ProductName -ne "Voucher Management") {
+        throw "ProductName dell'uninstaller installato non valido."
+    }
+
+    $uninstallRegistryPath = "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\VoucherManagement"
+    if (-not (Test-Path -LiteralPath $uninstallRegistryPath)) {
+        throw "Il Setup non ha registrato Voucher Management in App installate."
+    }
+    $uninstallEntry = Get-ItemProperty -LiteralPath $uninstallRegistryPath
+    if ([IO.Path]::GetFullPath([string]$uninstallEntry.InstallLocation) -ine [IO.Path]::GetFullPath($installRoot)) {
+        throw "InstallLocation della voce di disinstallazione non valido."
+    }
+    if ([string]$uninstallEntry.DisplayName -ne "Voucher Management") {
+        throw "DisplayName della voce di disinstallazione non valido."
+    }
+    if ([string]$uninstallEntry.UninstallString -notlike "*VoucherManagement-Uninstall.exe*") {
+        throw "UninstallString non punta al bootstrapper elevato."
+    }
+
     $sumPath = Join-Path $installRoot "SHA256SUMS.txt"
     if (-not (Test-Path -LiteralPath $sumPath -PathType Leaf)) {
         throw "Checksum applicazione non installato."
@@ -157,14 +181,11 @@ try {
     if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
         throw "Disinstaller PowerShell non installato."
     }
-    $uninstallArgs = @{
-        InstallRoot = $installRoot
-        DataRoot = $dataRoot
-        OperatorGroup = $groupName
-        RemoveData = $true
-        SkipShortcut = $true
+
+    $uninstallProcess = Start-Process -FilePath $uninstallExe -ArgumentList '"/quiet"', '"/RemoveData"' -Wait -PassThru
+    if ($uninstallProcess.ExitCode -ne 0) {
+        throw "Bootstrapper di disinstallazione terminato con codice $($uninstallProcess.ExitCode)."
     }
-    & $uninstaller @uninstallArgs
 
     $deadline = [DateTime]::UtcNow.AddSeconds(8)
     while ((Test-Path -LiteralPath $installRoot) -and [DateTime]::UtcNow -lt $deadline) {
@@ -176,10 +197,14 @@ try {
     if (Get-LocalGroup -Name $groupName -ErrorAction SilentlyContinue) {
         throw "La pulizia di test non ha rimosso il gruppo operatori."
     }
+    if (Test-Path -LiteralPath $uninstallRegistryPath) {
+        throw "La disinstallazione non ha rimosso la voce da App installate."
+    }
 
     Write-Host "Windows Setup bootstrapper integration test OK"
 }
 finally {
+    Remove-Item -LiteralPath "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\VoucherManagement" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $dataRoot -Recurse -Force -ErrorAction SilentlyContinue
