@@ -225,6 +225,60 @@ def test_list_vouchers_follows_offset_pagination(monkeypatch):
     assert "offset=1&limit=1000" in paths[1]
 
 
+def test_list_vouchers_rejects_count_mismatch(monkeypatch):
+    client = connected_client()
+    malformed = page([voucher_json()])
+    malformed["count"] = 2
+    monkeypatch.setattr(client, "_request", lambda *a, **k: malformed)
+
+    with pytest.raises(UniFiApiError, match="count non corrisponde"):
+        client.list_vouchers()
+
+
+def test_list_vouchers_rejects_changed_total_during_pagination(monkeypatch):
+    client = connected_client()
+    first = voucher_json(
+        voucher_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        code="1111122222",
+    )
+    second = voucher_json(
+        voucher_id="ffffffff-1111-2222-3333-444444444444",
+        code="3333344444",
+    )
+
+    def fake_request(method, path, payload=None, expected=(200,), **kwargs):
+        if "offset=0" in path:
+            return page([first], offset=0, total=2)
+        return page([second], offset=1, total=3)
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    with pytest.raises(UniFiApiError, match="totalCount cambiato"):
+        client.list_vouchers()
+
+
+def test_list_vouchers_rejects_duplicate_uuid_across_pages(monkeypatch):
+    client = connected_client()
+    first = voucher_json(
+        voucher_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        code="1111122222",
+    )
+    duplicate = voucher_json(
+        voucher_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        code="3333344444",
+    )
+
+    def fake_request(method, path, payload=None, expected=(200,), **kwargs):
+        if "offset=0" in path:
+            return page([first], offset=0, total=2)
+        return page([duplicate], offset=1, total=2)
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    with pytest.raises(UniFiApiError, match="UUID duplicato"):
+        client.list_vouchers()
+
+
 def test_create_payload_maps_all_documented_limits(monkeypatch):
     client = connected_client()
     calls = []
@@ -327,6 +381,35 @@ def test_delete_multiple_uses_individual_uuid_endpoints(monkeypatch):
         ("DELETE", f"/sites/{SITE_ID}/hotspot/vouchers/{ids[0]}"),
         ("DELETE", f"/sites/{SITE_ID}/hotspot/vouchers/{ids[1]}"),
     ]
+
+
+def test_delete_transport_failure_is_uncertain_and_not_safe_to_replay():
+    client = connected_client()
+
+    class FailingOpener:
+        def open(self, request, timeout=None):
+            raise URLError(TimeoutError("synthetic timeout"))
+
+    client.opener = FailingOpener()
+
+    with pytest.raises(UniFiMutationUncertain, match="non ripeterla"):
+        client.delete_vouchers(
+            ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]
+        )
+
+
+def test_delete_malformed_success_body_is_uncertain(monkeypatch):
+    client = connected_client()
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda *args, **kwargs: {},
+    )
+
+    with pytest.raises(UniFiMutationUncertain):
+        client.delete_vouchers(
+            ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]
+        )
 
 
 def test_delete_reports_partial_completion(monkeypatch):
