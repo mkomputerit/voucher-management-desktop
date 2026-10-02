@@ -229,12 +229,14 @@ def prepare_print_job(
     *,
     unlimited_copies: int = 1,
     now: datetime,
+    site_id: str = "",
 ) -> PrintJob:
     """Resolve selected vouchers to one deterministic PDF-generation job."""
 
     batch = build_print_batch(
         selected,
         unlimited_copies=unlimited_copies,
+        site_id=site_id,
     )
     output = build_voucher_pdf_path(
         Path(prints_root),
@@ -254,12 +256,17 @@ def execute_print_job(
     """Render and audit one print job without any Tk dependency."""
 
     render_pdf(job.batch, job.output, settings)
-    reprint = bool(
-        history.find_duplicates(
+    if hasattr(history, "find_duplicates_for_batch"):
+        duplicates = history.find_duplicates_for_batch(
+            job.batch,
+            settings,
+        )
+    else:
+        duplicates = history.find_duplicates(
             job.batch.codes,
             settings,
         )
-    )
+    reprint = bool(duplicates)
     history.record_batch(
         job.batch,
         job.output,
@@ -538,6 +545,7 @@ def build_print_batch(
     selected: Sequence[ApiVoucher],
     *,
     unlimited_copies: int = 1,
+    site_id: str = "",
 ) -> VoucherBatch:
     """Build controller-independent print records from selected vouchers."""
 
@@ -573,6 +581,7 @@ def build_print_batch(
                 code=voucher.code_formatted,
                 duration_minutes=voucher.duration_minutes,
                 recipient=voucher.recipient or "Guest",
+                unifi_id=str(voucher.id),
             )
             for _ in range(repeat)
         )
@@ -581,4 +590,5 @@ def build_print_batch(
         source_path=Path("CONTROLLER_API"),
         vouchers=records,
         recipient=records[0].recipient if records else "",
+        site_id=str(site_id or "").strip(),
     )
