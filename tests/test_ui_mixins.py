@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from voucher_management.app import VoucherApp
+from voucher_management.unifi_api import UniFiTransportError
 from voucher_management.controller_connection_ui import ControllerConnectionMixin
 from voucher_management.data_maintenance_ui import DataMaintenanceMixin
 from voucher_management.modern_app import (
@@ -150,6 +151,78 @@ def test_controller_status_color_keys_are_semantically_distinct():
     assert _controller_status_color_key("unconfigured") == "orange"
     assert _controller_status_color_key("error") == "red"
     assert _controller_status_color_key("syncing") == "blue"
+    assert _controller_status_color_key("retrying") == "orange"
+
+
+def test_transport_failure_schedules_finite_auto_retry_before_red():
+    scheduled = []
+    populated = []
+    statuses = []
+    errors = []
+    fake = SimpleNamespace(
+        client=object(),
+        controller_snapshot_live=True,
+        _controller_retrying=False,
+        _controller_retry_attempt=0,
+        _controller_retry_after=None,
+        _controller_retry_dot_after="existing-animation",
+        _controller_retry_dot_phase=False,
+        _controller_status_failed=False,
+        _controller_status_stale=False,
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            info=lambda *args, **kwargs: None,
+        ),
+        after=lambda delay, callback: (
+            scheduled.append((delay, callback))
+            or f"after-{len(scheduled)}"
+        ),
+        after_cancel=lambda handle: None,
+        _refresh_controller_workspace_status=lambda: statuses.append(True),
+        populate=lambda: populated.append(True),
+        _animate_retry_dot=lambda: None,
+        _stop_retry_dot_animation=lambda: None,
+        _show_network_error=lambda *args, **kwargs: errors.append((args, kwargs)),
+        refresh=lambda: None,
+    )
+    fake._cancel_controller_retry_after = (
+        lambda: ModernVoucherApp._cancel_controller_retry_after(fake)
+    )
+    fake._reset_controller_retry_state = (
+        lambda: ModernVoucherApp._reset_controller_retry_state(fake)
+    )
+
+    assert ModernVoucherApp._handle_controller_refresh_failure(
+        fake,
+        UniFiTransportError("offline"),
+    ) is True
+    assert fake.controller_snapshot_live is False
+    assert fake._controller_retrying is True
+    assert fake._controller_retry_attempt == 1
+    assert scheduled[0][0] == 5_000
+    assert errors == []
+
+    fake._controller_retry_attempt = len(
+        ModernVoucherApp._CONTROLLER_RETRY_DELAYS_MS
+    )
+    assert ModernVoucherApp._handle_controller_refresh_failure(
+        fake,
+        UniFiTransportError("still offline"),
+    ) is True
+    assert fake._controller_retrying is False
+    assert fake._controller_status_failed is True
+    assert errors
+    assert "tentativi automatici" in errors[-1][1]["prefix"].lower()
+
+
+def test_non_transport_failure_is_not_auto_retried():
+    fake = SimpleNamespace(
+        client=object(),
+    )
+    assert ModernVoucherApp._handle_controller_refresh_failure(
+        fake,
+        RuntimeError("invalid payload"),
+    ) is False
 
 
 def test_sidebar_icon_size_tracks_windows_tk_scaling():
