@@ -448,6 +448,53 @@ def test_record_print_audit_is_idempotent_and_sequences_reprints(tmp_path):
         db.close()
 
 
+def test_print_audit_uses_uuid_even_when_codes_are_ambiguous(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            site_id="site-a",
+            created_at="t",
+        )
+        first = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="uuid-first",
+            code="DUPLICATE",
+            imported_at="t",
+            last_synced_at="t",
+        )
+        second = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="uuid-second",
+            code="DUPLICATE",
+            imported_at="t",
+            last_synced_at="t",
+        )
+
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="uuid-print",
+            codes=["DUPLICATE"],
+            unifi_ids=["uuid-second"],
+            output_file="Voucher.pdf",
+            document_copies=1,
+            printed_at="2026-10-02T08:00:00+00:00",
+            windows_user="operator",
+        )
+
+        assert db.print_summary(first).print_jobs == 0
+        assert db.print_summary(second).print_jobs == 1
+        summaries = db.print_summaries_for_remote_ids(
+            controller_id=controller,
+            unifi_ids=["uuid-first", "uuid-second"],
+        )
+        assert summaries["uuid-first"].print_jobs == 0
+        assert summaries["uuid-second"].print_jobs == 1
+    finally:
+        db.close()
+
+
 def test_record_print_audit_counts_repeated_labels_on_same_document(tmp_path):
     db = _db(tmp_path)
     try:
