@@ -236,6 +236,36 @@ def persist_successful_snapshot(
                     (observed_at, old["id"]),
                 )
                 changes.append((old["id"], "present_on_controller", 1, 0))
+
+                managed_intent = tx.execute(
+                    """SELECT 1
+                       FROM voucher_events
+                       WHERE voucher_id=?
+                         AND event_type IN (
+                             'PREPARATION_DELETE_REQUESTED',
+                             'SECURITY_REVOKE_REQUESTED'
+                         )
+                       LIMIT 1""",
+                    (old["id"],),
+                ).fetchone()
+                if managed_intent is None:
+                    tx.execute(
+                        """INSERT INTO voucher_events(
+                               event_uuid, voucher_id, event_type, occurred_at,
+                               source, windows_user, details_json
+                           ) VALUES (?, ?, 'CONTROLLER_DELETED', ?, 'UNIFI', NULL, ?)""",
+                        (
+                            str(uuid4()),
+                            old["id"],
+                            observed_at,
+                            Database.encode_event_details(
+                                {
+                                    "confirmation_source": "direct_uuid_not_found",
+                                    "operator_reason_available": False,
+                                }
+                            ),
+                        ),
+                    )
                 continue
 
             previous_missing = int(
