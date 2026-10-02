@@ -77,10 +77,11 @@ GitHub Actions on GitHub-hosted runner
 tests + privacy checks + deterministic dependency lock
         |
         v
-PyInstaller unsigned release artifact
+PyInstaller application + .NET Framework Setup bootstrapper
+(unsigned release artifacts)
         |
         v
-SHA-256 checksum generation and verification
+SHA-256 checksum generation and verification for portable and Setup
         |
         v
 publication
