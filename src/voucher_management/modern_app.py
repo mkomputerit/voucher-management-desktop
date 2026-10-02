@@ -45,6 +45,7 @@ from .backup_options_ui import default_backup_directory, validate_backup_directo
 from .controller_connection_ui import ControllerConnectionMixin
 from .voucher_deletion_ui import VoucherDeletionMixin
 from .workspace_state import build_controller_workspace_status
+from .unifi_api import UniFiTransportError
 from .workspace_overview import load_recent_workspace_activity
 
 
@@ -193,6 +194,7 @@ def _controller_status_color_key(status_key: str) -> str:
     return {
         "connected": "green",
         "syncing": "blue",
+        "retrying": "orange",
         "error": "red",
         "stale": "orange",
         "local": "orange",
@@ -217,6 +219,12 @@ def _controller_status_style_names(
             "SidebarBusy.TLabel",
             "BusyDot.TLabel",
             "SidebarBusyDot.TLabel",
+        ),
+        "retrying": (
+            "Warning.Status.TLabel",
+            "SidebarWarning.TLabel",
+            "WarningDot.TLabel",
+            "SidebarWarningDot.TLabel",
         ),
         "error": (
             "Error.Status.TLabel",
@@ -1015,6 +1023,11 @@ class ModernVoucherApp(
         self._controller_status_stale = False
         self._archive_status_failed = False
         self._controller_busy_label = ""
+        self._controller_retrying = False
+        self._controller_retry_attempt = 0
+        self._controller_retry_after = None
+        self._controller_retry_dot_after = None
+        self._controller_retry_dot_phase = False
         self.workspace_title_var = tk.StringVar(value="Home")
         self.workspace_subtitle_var = tk.StringVar(
             value="Panoramica generale e accesso rapido alle funzioni principali"
@@ -2586,6 +2599,9 @@ class ModernVoucherApp(
             controller_name=name,
             last_successful_sync_at=last_sync,
             busy_label=self._controller_busy_label,
+            retrying=bool(getattr(self, "_controller_retrying", False)),
+            retry_attempt=int(getattr(self, "_controller_retry_attempt", 0) or 0),
+            retry_total=len(self._CONTROLLER_RETRY_DELAYS_MS),
             failed=self._controller_status_failed,
             stale=self._controller_status_stale,
             archive_failed=self._archive_status_failed,
@@ -2629,7 +2645,9 @@ class ModernVoucherApp(
             if dot is not None:
                 self._paint_status_dot(dot, status.key)
 
-        if status.key in {"connected", "stale"} and self.client is not None:
+        if status.key == "retrying":
+            self.home_sync_action_var.set("Riconnessione…")
+        elif status.key in {"connected", "stale"} and self.client is not None:
             self.home_sync_action_var.set("Sincronizza")
         elif status.key == "unconfigured":
             self.home_sync_action_var.set("Configura controller")
@@ -2648,7 +2666,12 @@ class ModernVoucherApp(
         if self._background_results is not None:
             self.bell()
             return
-        if self.client is not None and not self._controller_status_failed:
+        if bool(getattr(self, "_controller_retrying", False)):
+            self.bell()
+            return
+        if self.client is not None:
+            if self._controller_status_failed:
+                self._reset_controller_retry_state()
             self.refresh()
             return
         saved = self.settings_store.load()
@@ -2678,7 +2701,145 @@ class ModernVoucherApp(
             self, api_root=api_root, controller_name=name, last_sync=last_sync,
         )
 
+    _CONTROLLER_RETRY_DELAYS_MS = (5_000, 15_000, 30_000)
+
+    def _cancel_controller_retry_after(self) -> None:
+        handle = getattr(self, "_controller_retry_after", None)
+        if handle is not None:
+            try:
+                self.after_cancel(handle)
+            except (AttributeError, tk.TclError):
+                pass
+        self._controller_retry_after = None
+
+    def _stop_retry_dot_animation(self) -> None:
+        handle = getattr(self, "_controller_retry_dot_after", None)
+        if handle is not None:
+            try:
+                self.after_cancel(handle)
+            except (AttributeError, tk.TclError):
+                pass
+        self._controller_retry_dot_after = None
+        self._controller_retry_dot_phase = False
+        for dot_name in (
+            "home_status_dot",
+            "settings_status_dot",
+            "sidebar_status_dot",
+        ):
+            dot = getattr(self, dot_name, None)
+            if dot is not None:
+                try:
+                    dot.coords("status-dot", 2, 2, 12, 12)
+                except (AttributeError, tk.TclError):
+                    pass
+
+    def _animate_retry_dot(self) -> None:
+        if not bool(getattr(self, "_controller_retrying", False)):
+            self._stop_retry_dot_animation()
+            return
+        self._controller_retry_dot_phase = not bool(
+            getattr(self, "_controller_retry_dot_phase", False)
+        )
+        coords = (
+            (3, 3, 11, 11)
+            if self._controller_retry_dot_phase
+            else (1, 1, 13, 13)
+        )
+        for dot_name in (
+            "home_status_dot",
+            "settings_status_dot",
+            "sidebar_status_dot",
+        ):
+            dot = getattr(self, dot_name, None)
+            if dot is not None:
+                try:
+                    dot.coords("status-dot", *coords)
+                except (AttributeError, tk.TclError):
+                    pass
+        try:
+            self._controller_retry_dot_after = self.after(
+                550,
+                self._animate_retry_dot,
+            )
+        except (AttributeError, tk.TclError):
+            self._controller_retry_dot_after = None
+
+    def _reset_controller_retry_state(self) -> None:
+        self._cancel_controller_retry_after()
+        self._controller_retrying = False
+        self._controller_retry_attempt = 0
+        self._stop_retry_dot_animation()
+
+    def _handle_controller_refresh_failure(self, exc: Exception) -> bool:
+        """Automatically retry only transport loss from a live session."""
+
+        if not isinstance(exc, UniFiTransportError) or self.client is None:
+            return False
+
+        self.controller_snapshot_live = False
+        delays = self._CONTROLLER_RETRY_DELAYS_MS
+        attempt = int(getattr(self, "_controller_retry_attempt", 0) or 0)
+        if attempt >= len(delays):
+            self._reset_controller_retry_state()
+            self._controller_status_failed = True
+            self._controller_status_stale = False
+            self._refresh_controller_workspace_status()
+            populate = getattr(self, "populate", None)
+            if callable(populate):
+                populate()
+            self.logger.warning(
+                "controller_auto_retry_exhausted attempts=%s",
+                len(delays),
+            )
+            self._show_network_error(
+                "Sincronizzazione",
+                exc,
+                prefix=(
+                    "I tentativi automatici di riconnessione sono terminati. "
+                    "La spia è rossa: usare Riconnetti per avviare manualmente "
+                    "un nuovo tentativo.\n\n"
+                ),
+            )
+            return True
+
+        self._controller_retrying = True
+        self._controller_status_failed = False
+        self._controller_status_stale = True
+        self._controller_retry_attempt = attempt + 1
+        delay_ms = delays[attempt]
+        self._refresh_controller_workspace_status()
+        populate = getattr(self, "populate", None)
+        if callable(populate):
+            populate()
+
+        self._cancel_controller_retry_after()
+        if getattr(self, "_controller_retry_dot_after", None) is None:
+            self._animate_retry_dot()
+
+        def retry() -> None:
+            self._controller_retry_after = None
+            if (
+                not bool(getattr(self, "_controller_retrying", False))
+                or self.client is None
+            ):
+                return
+            self.logger.info(
+                "controller_auto_retry attempt=%s total=%s",
+                self._controller_retry_attempt,
+                len(delays),
+            )
+            self.refresh()
+
+        try:
+            self._controller_retry_after = self.after(delay_ms, retry)
+        except (AttributeError, tk.TclError):
+            self._controller_retry_after = None
+            self._reset_controller_retry_state()
+            return False
+        return True
+
     def _controller_operation_failed(self) -> None:
+        self._reset_controller_retry_state()
         self._controller_status_failed = True
         self._controller_status_stale = False
         self.controller_snapshot_live = False
@@ -2688,6 +2849,7 @@ class ModernVoucherApp(
             populate()
 
     def _controller_operation_stale(self, *, archive_failed: bool = False) -> None:
+        self._reset_controller_retry_state()
         self._controller_status_failed = False
         self._controller_status_stale = True
         if archive_failed:
@@ -2695,6 +2857,7 @@ class ModernVoucherApp(
         self._refresh_controller_workspace_status()
 
     def _controller_operation_succeeded(self) -> None:
+        self._reset_controller_retry_state()
         self._controller_status_failed = False
         self._controller_status_stale = False
         self._archive_status_failed = False
