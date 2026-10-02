@@ -640,6 +640,51 @@ class BackupServiceTests(unittest.TestCase):
 
         self.assertFalse(backup.exists())
 
+    def test_backup_is_blocked_while_create_intent_is_unresolved(self):
+        pending = self.paths.user_root / "data" / "pending_create_intent.json"
+        pending.write_text(
+            '{"format":1,"controller_id":1,"site_id":"site-1"}\n',
+            encoding="utf-8",
+        )
+        backup = Path(self.temp.name) / "backup.zip"
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "richiesta di creazione UniFi con esito incerto",
+        ):
+            self.service.create(backup)
+
+        self.assertFalse(backup.exists())
+
+    def test_validation_rejects_transient_recovery_state_in_archive(self):
+        backup = Path(self.temp.name) / "clean.zip"
+        self.service.create(backup)
+        crafted = Path(self.temp.name) / "crafted-transient.zip"
+
+        with zipfile.ZipFile(backup, "r") as source:
+            payloads = {
+                info.filename: source.read(info.filename)
+                for info in source.infolist()
+            }
+        payloads["data/pending_create_intent.json"] = (
+            b'{"format":1,"controller_id":1}\n'
+        )
+
+        with zipfile.ZipFile(
+            crafted,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as archive:
+            for name, payload in payloads.items():
+                archive.writestr(name, payload)
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "stato operativo transitorio",
+        ):
+            self.service.validate(crafted)
+
+
     def test_backup_is_blocked_while_create_reporting_reconciliation_is_pending(self):
         pending = self.paths.user_root / "data" / "pending_create_reporting.json"
         pending.write_text(
