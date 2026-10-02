@@ -24,6 +24,19 @@ function Resolve-ManagedChildPath {
     ) {
         throw "$Label deve essere una sottocartella di: $parent"
     }
+    $directParent = [IO.Path]::GetDirectoryName($full).TrimEnd("\")
+    if ($directParent -ine $parent) {
+        throw "$Label deve essere una sottocartella diretta di: $parent"
+    }
+    if (Test-Path -LiteralPath $full) {
+        $item = Get-Item -LiteralPath $full -Force
+        if (
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne
+            [IO.FileAttributes]::Normal
+        ) {
+            throw "$Label non può essere un junction, link o altro reparse point."
+        }
+    }
     return $full
 }
 
