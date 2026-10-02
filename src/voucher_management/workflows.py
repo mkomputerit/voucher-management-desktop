@@ -22,6 +22,7 @@ from .unifi_api import (
     UniFiApiError,
     UniFiClient,
     UniFiMutationUncertain,
+    UniFiVoucherNotFound,
 )
 from .utils import find_file_by_exact_name
 
@@ -81,6 +82,16 @@ class ExistingPdfResolution:
 
     path: Path
     linked_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SnapshotAbsenceOutcome:
+    """Result of direct checks for repeatedly omitted voucher UUIDs."""
+
+    vouchers: tuple[ApiVoucher, ...]
+    confirmed_absent_ids: frozenset[str]
+    unresolved_ids: frozenset[str]
+    recovered_ids: frozenset[str]
 
 
 class ExistingPdfResolutionError(RuntimeError):
@@ -318,6 +329,51 @@ def refresh_vouchers(client: UniFiClient) -> list[ApiVoucher]:
     """Fetch the current controller voucher list."""
 
     return client.list_vouchers()
+
+
+def verify_snapshot_absences(
+    client: UniFiClient,
+    snapshot: Sequence[ApiVoucher],
+    candidate_ids: Sequence[str],
+) -> SnapshotAbsenceOutcome:
+    """Directly verify UUIDs omitted by repeated complete list snapshots.
+
+    Positive GET results are merged back into the working snapshot. A typed
+    voucher 404 is the only evidence accepted as confirmed absence. Transport
+    failures remain unresolved and are never converted into deletion facts.
+    """
+
+    by_id = {
+        str(voucher.id): voucher
+        for voucher in snapshot
+    }
+    confirmed: set[str] = set()
+    unresolved: set[str] = set()
+    recovered: set[str] = set()
+
+    for value in candidate_ids:
+        remote_id = str(value or "").strip()
+        if not remote_id or remote_id in by_id:
+            continue
+        try:
+            live = client.get_voucher(remote_id)
+        except UniFiVoucherNotFound:
+            confirmed.add(remote_id)
+        except UniFiApiError:
+            unresolved.add(remote_id)
+        else:
+            if str(live.id).strip() != remote_id:
+                unresolved.add(remote_id)
+                continue
+            by_id[remote_id] = live
+            recovered.add(remote_id)
+
+    return SnapshotAbsenceOutcome(
+        vouchers=tuple(by_id.values()),
+        confirmed_absent_ids=frozenset(confirmed),
+        unresolved_ids=frozenset(unresolved),
+        recovered_ids=frozenset(recovered),
+    )
 
 
 def create_vouchers_and_refresh(
