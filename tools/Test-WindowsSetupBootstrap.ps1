@@ -43,17 +43,28 @@ function Get-AllowRightsBySid {
 try {
     New-Item -ItemType Directory -Force -Path $root | Out-Null
 
+    $logPath = Join-Path $root "setup-diagnostic.log"
     $arguments = @(
-        "/quiet",
-        "/InstallRoot=$installRoot",
-        "/DataRoot=$dataRoot",
-        "/OperatorGroup=$groupName",
-        "/OperatorUser=$operatorUser",
-        "/SkipShortcut"
-    )
+        '"/quiet"',
+        ('"/InstallRoot={0}"' -f $installRoot),
+        ('"/DataRoot={0}"' -f $dataRoot),
+        ('"/OperatorGroup={0}"' -f $groupName),
+        ('"/OperatorUser={0}"' -f $operatorUser),
+        ('"/LogPath={0}"' -f $logPath),
+        '"/SkipShortcut"'
+    ) -join " "
     $process = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
     if ($process.ExitCode -ne 0) {
-        throw "Setup bootstrapper terminato con codice $($process.ExitCode)."
+        $diagnostic = (
+            Get-Content -LiteralPath $logPath -Raw -ErrorAction SilentlyContinue
+        )
+        if (-not $diagnostic) {
+            $diagnostic = "Nessun log diagnostico prodotto dal Setup."
+        }
+        throw (
+            "Setup bootstrapper terminato con codice $($process.ExitCode). " +
+            $diagnostic
+        )
     }
 
     $installedExe = Join-Path $installRoot "VoucherManagement.exe"
