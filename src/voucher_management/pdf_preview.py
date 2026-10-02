@@ -46,6 +46,7 @@ class PdfPreview(tk.Toplevel):
         settings: dict,
         site_id: str = "",
         unifi_ids: list[str] | None = None,
+        allow_physical_print: bool = True,
         on_print=None,
         on_audit=None,
         on_submitted=None,
@@ -66,6 +67,7 @@ class PdfPreview(tk.Toplevel):
             raise ValueError("Identità voucher non coerenti con il PDF")
         self.history = history
         self.settings = settings
+        self.allow_physical_print = bool(allow_physical_print)
         self.on_print = on_print
         # Optional application-level audit (SQLite in 5.0). It runs on the Tk
         # thread after the crash-safe HMAC audit succeeds, so the SQLite
@@ -158,14 +160,38 @@ class PdfPreview(tk.Toplevel):
             padx=(8, 0),
         )
         self.register_print_button.grid_remove()
-        ttk.Label(
-            bottom,
-            text=(
-                "Nei nuovi PDF, il destinatario resta sul voucher dopo il ritaglio "
-                "ed è visibile all'ospite. Controlla l'anteprima prima di stampare."
-            ),
-            wraplength=680,
-        ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        if not self.allow_physical_print:
+            self.print_button.grid_remove()
+            ttk.Label(
+                bottom,
+                text=(
+                    "PDF storico in sola consultazione. Per ristampare un voucher "
+                    "selezionalo nell'elenco e usa “Stampa selezionati”."
+                ),
+                wraplength=680,
+            ).grid(
+                row=1,
+                column=0,
+                columnspan=6,
+                sticky="w",
+                pady=(8, 0),
+            )
+        else:
+            ttk.Label(
+                bottom,
+                text=(
+                    "Nei nuovi PDF, il destinatario resta sul voucher dopo il "
+                    "ritaglio ed è visibile all'ospite. Controlla l'anteprima "
+                    "prima di stampare."
+                ),
+                wraplength=680,
+            ).grid(
+                row=1,
+                column=0,
+                columnspan=6,
+                sticky="w",
+                pady=(8, 0),
+            )
 
     def _maximize_window(self):
         """Maximise on Windows without entering borderless/full-screen mode."""
@@ -317,6 +343,14 @@ class PdfPreview(tk.Toplevel):
     def print_document(self):
         """Submit/rasterise on the shared worker without blocking Tk."""
 
+        if not self.allow_physical_print:
+            messagebox.showinfo(
+                "PDF storico",
+                "Questo PDF è disponibile in sola consultazione. "
+                "Per ristampare usa “Stampa selezionati” dall'elenco voucher.",
+                parent=self,
+            )
+            return
         if self._printing:
             return
         printer = self.printer_var.get().strip()
