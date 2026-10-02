@@ -134,6 +134,63 @@ def test_connect_validates_info_and_single_site(monkeypatch):
     assert calls == [("GET", "/info"), ("GET", "/sites?offset=0&limit=200")]
 
 
+def test_connect_uses_persisted_preferred_site_among_multiple_sites(monkeypatch):
+    client = UniFiClient(
+        "controller.example.invalid",
+        preferred_site_id=SITE_ID,
+    )
+
+    def fake_request(method, path, payload=None, expected=(200,), **kwargs):
+        if path == "/info":
+            return {"applicationVersion": "10.6.106"}
+        return {
+            "offset": 0,
+            "limit": 200,
+            "count": 2,
+            "totalCount": 2,
+            "data": [
+                {"id": "66666666-7777-8888-9999-000000000000", "name": "Other"},
+                {"id": SITE_ID, "name": "Reception"},
+            ],
+        }
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    result = client.connect("temporary-key")
+
+    assert result["siteId"] == SITE_ID
+    assert result["siteName"] == "Reception"
+    assert client.site_id == SITE_ID
+
+
+def test_connect_fails_closed_when_persisted_site_disappears(monkeypatch):
+    client = UniFiClient(
+        "controller.example.invalid",
+        preferred_site_id=SITE_ID,
+    )
+
+    def fake_request(method, path, payload=None, expected=(200,), **kwargs):
+        if path == "/info":
+            return {"applicationVersion": "10.6.106"}
+        return {
+            "offset": 0,
+            "limit": 200,
+            "count": 1,
+            "totalCount": 1,
+            "data": [
+                {
+                    "id": "66666666-7777-8888-9999-000000000000",
+                    "name": "Replacement",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    with pytest.raises(UniFiApiError, match="Site ID configurato"):
+        client.connect("temporary-key")
+
+    assert client.connected is False
+
+
 def test_connect_refuses_to_guess_between_multiple_sites(monkeypatch):
     client = UniFiClient("controller.example.invalid")
 
@@ -187,6 +244,47 @@ def test_list_vouchers_maps_official_fields_and_unlimited(monkeypatch):
     assert voucher.start_time == int(
         datetime(2026, 9, 19, 16, 5, tzinfo=timezone.utc).timestamp()
     )
+
+
+def test_multiuse_is_used_from_first_authorization_and_keeps_fraction():
+    item = voucher_json(
+        guest_limit=5,
+        guest_count=1,
+    )
+    voucher = UniFiClient._voucher_from_json(item)
+
+    assert voucher.used == 1
+    assert voucher.quota == 5
+    assert voucher.status == "USED_MULTIPLE"
+    assert voucher.usage_label == "1 / 5"
+
+
+def test_multiuse_at_full_quota_remains_used_not_a_separate_business_state():
+    item = voucher_json(
+        guest_limit=5,
+        guest_count=5,
+    )
+    voucher = UniFiClient._voucher_from_json(item)
+
+    assert voucher.used == 5
+    assert voucher.status == "USED_MULTIPLE"
+    assert voucher.usage_label == "5 / 5"
+
+
+def test_old_never_activated_voucher_does_not_get_synthetic_expiry():
+    item = voucher_json(
+        guest_limit=1,
+        guest_count=0,
+        expired=False,
+        activated_at=None,
+        expires_at=None,
+    )
+    voucher = UniFiClient._voucher_from_json(item)
+
+    assert voucher.create_time > 0
+    assert voucher.start_time == 0
+    assert voucher.end_time == 0
+    assert voucher.status == "VALID_MULTI"
 
 
 def test_list_vouchers_maps_expired_state(monkeypatch):
