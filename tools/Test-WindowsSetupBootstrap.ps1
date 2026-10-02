@@ -100,6 +100,9 @@ try {
     if ([string]$marker.operator_group_sid -ine [string]$group.SID.Value) {
         throw "Il Setup non ha registrato il SID del gruppo operatori nel marker."
     }
+    if ([string]$marker.operator_group_name -ine [string]$group.Name) {
+        throw "Il Setup non ha registrato il nome del gruppo operatori nel marker."
+    }
     $aclState = Get-AllowRightsBySid -Path $dataRoot
     if (-not $aclState.Protected) {
         throw "ACL ProgramData non protetta dopo Setup.exe."
@@ -115,6 +118,39 @@ try {
     $modify = [Security.AccessControl.FileSystemRights]::Modify
     if (($aclState.Rights[$group.SID.Value] -band $modify) -ne $modify) {
         throw "Permessi gruppo operatori insufficienti dopo Setup.exe."
+    }
+
+    # Re-run the real Setup without repeating DataRoot/OperatorGroup.
+    # Upgrade logic must preserve the installed deployment choices.
+    $upgradeSentinel = Join-Path $dataRoot "setup-upgrade-preserves-data.txt"
+    Set-Content -LiteralPath $upgradeSentinel -Value "preserve" -Encoding ascii
+    $upgradeLogPath = Join-Path $root "setup-upgrade-diagnostic.log"
+    $upgradeArguments = @(
+        '"/quiet"',
+        ('"/InstallRoot={0}"' -f $installRoot),
+        ('"/OperatorUser={0}"' -f $operatorUser),
+        ('"/LogPath={0}"' -f $upgradeLogPath),
+        '"/SkipShortcut"'
+    ) -join " "
+    $upgradeProcess = Start-Process -FilePath $setup -ArgumentList $upgradeArguments -Wait -PassThru
+    if ($upgradeProcess.ExitCode -ne 0) {
+        $diagnostic = (
+            Get-Content -LiteralPath $upgradeLogPath -Raw -ErrorAction SilentlyContinue
+        )
+        throw "Setup upgrade senza parametri deployment fallito. $diagnostic"
+    }
+    if (-not (Test-Path -LiteralPath $upgradeSentinel -PathType Leaf)) {
+        throw "Il Setup upgrade ha cambiato DataRoot o perso dati esistenti."
+    }
+    $upgradedMarker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+    if ([IO.Path]::GetFullPath([string]$upgradedMarker.data_root) -ine [IO.Path]::GetFullPath($dataRoot)) {
+        throw "Il Setup upgrade ha cambiato il DataRoot installato."
+    }
+    if (
+        [string]$upgradedMarker.operator_group_sid -ine [string]$group.SID.Value -or
+        [string]$upgradedMarker.operator_group_name -ine [string]$group.Name
+    ) {
+        throw "Il Setup upgrade ha cambiato l'identità del gruppo operatori."
     }
 
     $uninstaller = Join-Path $installRoot "Uninstall-VoucherManagement.ps1"
