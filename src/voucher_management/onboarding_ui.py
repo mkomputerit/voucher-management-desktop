@@ -488,6 +488,41 @@ class FirstRunWizard(tk.Toplevel):
             "In chiusura potrai anche uscire senza creare una copia."
         ), wraplength=650).pack(anchor="w", pady=8)
 
+        ttk.Separator(self.body).pack(fill="x", pady=(18, 14))
+        ttk.Label(
+            self.body,
+            text="Hai già un backup di Voucher Management?",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            self.body,
+            text=(
+                "Puoi ripristinarlo ora. Il backup viene validato prima di "
+                "sostituire i dati locali e il programma si chiude al termine "
+                "del ripristino. Al riavvio userai i dati recuperati."
+            ),
+            style="Muted.TLabel",
+            wraplength=650,
+        ).pack(anchor="w", pady=(4, 8))
+        ttk.Button(
+            self.body,
+            text="Ripristina backup esistente…",
+            command=self._restore_existing_backup,
+        ).pack(anchor="w")
+
+    def _restore_existing_backup(self) -> None:
+        """Delegate first-run restore to the reviewed maintenance workflow."""
+
+        restore = getattr(self.app, "restore_backup", None)
+        if not callable(restore):
+            messagebox.showerror(
+                "Ripristina backup",
+                "La funzione di ripristino non è disponibile.",
+                parent=self,
+            )
+            return
+        restore(parent=self)
+
     def _choose_backup_directory(self) -> None:
         selected = filedialog.askdirectory(parent=self, title="Cartella predefinita backup",
                                            initialdir=self.backup_directory_var.get(), mustexist=False)
