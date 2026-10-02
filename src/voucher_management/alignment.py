@@ -124,6 +124,7 @@ def align_vouchers(
                     v.id,
                     v.is_nominal,
                     v.print_state,
+                    v.origin,
                     v.alignment_completed_at,
                     EXISTS(
                         SELECT 1
@@ -151,6 +152,22 @@ def align_vouchers(
                     "Lo stato stampa richiesto contraddice una stampa verificata "
                     "già presente nello storico."
                 )
+
+        controller_origin_without_verified_print = [
+            int(row["id"])
+            for row in rows
+            if str(row["origin"] or "").strip().upper() == "CONTROLLER"
+            and not bool(row["has_verified_print"])
+        ]
+        if (
+            controller_origin_without_verified_print
+            and normalized_print_state != PRINT_STATE_UNKNOWN
+        ):
+            raise ValueError(
+                "Per i voucher trovati direttamente sulla controller lo stato "
+                "di stampa non può essere dedotto. Usare 'Non determinabile' "
+                "finché non esiste una stampa verificata."
+            )
 
         updated: list[int] = []
         unchanged: list[int] = []
