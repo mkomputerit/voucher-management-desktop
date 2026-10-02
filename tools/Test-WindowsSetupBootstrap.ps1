@@ -81,6 +81,9 @@ try {
     if ($marker.format -ne 1 -or $marker.mode -ne "shared_programdata") {
         throw "Marker shared mode non valido dopo Setup.exe."
     }
+    if ([IO.Path]::GetFullPath([string]$marker.data_root) -ine [IO.Path]::GetFullPath($dataRoot)) {
+        throw "Il Setup non ha registrato il DataRoot installato nel marker."
+    }
 
     $sumPath = Join-Path $installRoot "SHA256SUMS.txt"
     if (-not (Test-Path -LiteralPath $sumPath -PathType Leaf)) {
@@ -94,6 +97,9 @@ try {
     }
 
     $group = Get-LocalGroup -Name $groupName
+    if ([string]$marker.operator_group_sid -ine [string]$group.SID.Value) {
+        throw "Il Setup non ha registrato il SID del gruppo operatori nel marker."
+    }
     $aclState = Get-AllowRightsBySid -Path $dataRoot
     if (-not $aclState.Protected) {
         throw "ACL ProgramData non protetta dopo Setup.exe."
