@@ -13,7 +13,11 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from .database import Database, PRINT_STATE_NOT_PRINTED
+from .database import (
+    Database,
+    PRINT_STATE_NOT_PRINTED,
+    PRINT_STATE_UNKNOWN,
+)
 
 
 MAX_PREPARATION_DELETE_REASON = 1000
@@ -26,6 +30,30 @@ class PreparationDeleteFact:
     print_state: str
     alignment_completed: bool
     ever_used: bool
+    usage_observed: bool
+    origin: str
+    name: str
+    has_verified_print: bool
+
+    @property
+    def invalid_external_cleanup_allowed(self) -> bool:
+        """Allow explicit cleanup of a controller voucher that cannot be nominal.
+
+        This is intentionally narrow: no recipient, controller origin, positive
+        unused observation, no verified print, no completed alignment and print
+        state still unknown. It exists so an operator can remove an unusable
+        externally-created voucher without inventing print history.
+        """
+
+        return (
+            self.origin == "CONTROLLER"
+            and not self.name
+            and not self.alignment_completed
+            and self.print_state == PRINT_STATE_UNKNOWN
+            and self.usage_observed
+            and not self.ever_used
+            and not self.has_verified_print
+        )
 
 
 def preparation_delete_facts(
@@ -45,8 +73,21 @@ def preparation_delete_facts(
         return {}
     placeholders = ",".join("?" for _ in ids)
     rows = database.connection.execute(
-        f"""SELECT id, unifi_id, print_state, alignment_completed_at, ever_used
-            FROM vouchers
+        f"""SELECT
+                v.id,
+                v.unifi_id,
+                v.print_state,
+                v.alignment_completed_at,
+                v.ever_used,
+                v.usage_observed,
+                v.origin,
+                v.name,
+                EXISTS(
+                    SELECT 1
+                    FROM voucher_prints AS vp
+                    WHERE vp.voucher_id=v.id
+                ) AS has_verified_print
+            FROM vouchers AS v
             WHERE controller_id=?
               AND unifi_id IN ({placeholders})
               AND archived_at IS NULL""",
@@ -61,6 +102,10 @@ def preparation_delete_facts(
                 str(row["alignment_completed_at"] or "").strip()
             ),
             ever_used=bool(row["ever_used"]),
+            usage_observed=bool(row["usage_observed"]),
+            origin=str(row["origin"] or "UNKNOWN").strip().upper(),
+            name=str(row["name"] or "").strip(),
+            has_verified_print=bool(row["has_verified_print"]),
         )
         for row in rows
     }
@@ -127,6 +172,9 @@ def record_preparation_delete_requests(
                     v.print_state,
                     v.alignment_completed_at,
                     v.ever_used,
+                    v.usage_observed,
+                    v.origin,
+                    v.name,
                     EXISTS(
                         SELECT 1
                         FROM voucher_prints AS vp
@@ -145,25 +193,53 @@ def record_preparation_delete_requests(
             )
 
         voucher_ids: list[int] = []
+        workflow_by_voucher: dict[int, str] = {}
         for row in rows:
             voucher_id = int(row["id"])
             voucher_ids.append(voucher_id)
-            if bool(row["ever_used"]):
+
+            ever_used = bool(row["ever_used"])
+            verified_print = bool(row["has_verified_print"])
+            aligned = bool(
+                str(row["alignment_completed_at"] or "").strip()
+            )
+            print_state = str(row["print_state"] or "UNKNOWN")
+            invalid_external = (
+                str(row["origin"] or "").strip().upper() == "CONTROLLER"
+                and not str(row["name"] or "").strip()
+                and not aligned
+                and print_state == PRINT_STATE_UNKNOWN
+                and bool(row["usage_observed"])
+                and not ever_used
+                and not verified_print
+            )
+
+            if ever_used:
                 raise RuntimeError(
                     "Un voucher già utilizzato non può essere cancellato come errore di preparazione."
                 )
-            if not str(row["alignment_completed_at"] or "").strip():
-                raise RuntimeError(
-                    "Un voucher non ancora allineato non può essere cancellato ordinariamente."
-                )
-            if bool(row["has_verified_print"]):
+            if verified_print:
                 raise RuntimeError(
                     "Una stampa verificata nello storico blocca la cancellazione ordinaria."
                 )
-            if str(row["print_state"] or "UNKNOWN") != PRINT_STATE_NOT_PRINTED:
+
+            ordinary = aligned and print_state == PRINT_STATE_NOT_PRINTED
+            if not ordinary and not invalid_external:
+                if not aligned:
+                    raise RuntimeError(
+                        "Un voucher non ancora allineato non può essere cancellato "
+                        "ordinariamente, salvo il caso controllato di voucher "
+                        "esterno privo di destinatario."
+                    )
                 raise RuntimeError(
                     "La cancellazione ordinaria richiede stato stampa Non stampato."
                 )
+
+            workflow_by_voucher[voucher_id] = (
+                "invalid_external_missing_recipient"
+                if invalid_external
+                else "preparation_error"
+            )
             pending = db.execute(
                 """SELECT 1
                    FROM voucher_events
@@ -192,7 +268,7 @@ def record_preparation_delete_requests(
                         {
                             "reason": normalized_reason,
                             "requested_at": stamp,
-                            "workflow": "preparation_error",
+                            "workflow": workflow_by_voucher[voucher_id],
                         }
                     ),
                 ),
