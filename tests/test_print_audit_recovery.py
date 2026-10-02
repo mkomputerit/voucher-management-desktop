@@ -173,6 +173,8 @@ def test_failed_audit_exposes_manual_registration_without_reprinting(monkeypatch
             *,
             audit_id,
             submitted_at,
+            site_id="",
+            unifi_ids=None,
         ):
             return None
 
@@ -188,6 +190,8 @@ def test_failed_audit_exposes_manual_registration_without_reprinting(monkeypatch
             *,
             audit_id,
             submitted_at,
+            site_id="",
+            unifi_ids=None,
         ):
             audited.append(
                 (list(codes), Path(pdf_path), copies, dict(settings))
@@ -208,6 +212,9 @@ def test_failed_audit_exposes_manual_registration_without_reprinting(monkeypatch
     fake = SimpleNamespace(
         app=app,
         _printing=False,
+        allow_physical_print=True,
+        site_id="",
+        unifi_ids=None,
         printer_var=_Var("Test printer"),
         copies_var=_Var(2),
         print_button=print_button,
@@ -284,6 +291,9 @@ def test_pending_audit_blocks_physical_print_before_printer_submission(
     fake = SimpleNamespace(
         app=app,
         _printing=False,
+        allow_physical_print=True,
+        site_id="",
+        unifi_ids=None,
         printer_var=_Var("Test printer"),
         copies_var=_Var(1),
         print_button=print_button,
@@ -339,6 +349,8 @@ def test_manual_registration_retries_audit_only_on_worker(monkeypatch):
             *,
             audit_id,
             submitted_at,
+            site_id="",
+            unifi_ids=None,
         ):
             audited.append(
                 {
@@ -365,6 +377,9 @@ def test_manual_registration_retries_audit_only_on_worker(monkeypatch):
     fake = SimpleNamespace(
         app=app,
         _printing=False,
+        allow_physical_print=True,
+        site_id="",
+        unifi_ids=None,
         print_button=print_button,
         register_print_button=register_button,
         _pending_print_audit=dict(pending),
@@ -438,6 +453,9 @@ def test_manual_registration_failure_keeps_pending_job(monkeypatch):
     fake = SimpleNamespace(
         app=app,
         _printing=False,
+        allow_physical_print=True,
+        site_id="",
+        unifi_ids=None,
         print_button=print_button,
         register_print_button=register_button,
         _pending_print_audit=dict(pending),
@@ -485,6 +503,8 @@ def test_print_flow_persists_intent_before_windows_submission(monkeypatch):
             *,
             audit_id,
             submitted_at,
+            site_id="",
+            unifi_ids=None,
         ):
             order.append(("prepare", audit_id, submitted_at, copies))
 
@@ -500,6 +520,8 @@ def test_print_flow_persists_intent_before_windows_submission(monkeypatch):
             *,
             audit_id,
             submitted_at,
+            site_id="",
+            unifi_ids=None,
         ):
             order.append(("record", audit_id, submitted_at, copies))
 
@@ -517,6 +539,9 @@ def test_print_flow_persists_intent_before_windows_submission(monkeypatch):
     fake = SimpleNamespace(
         app=app,
         _printing=False,
+        allow_physical_print=True,
+        site_id="",
+        unifi_ids=None,
         printer_var=_Var("Test printer"),
         copies_var=_Var(2),
         print_button=print_button,
@@ -597,6 +622,9 @@ def test_windows_failure_leaves_prepared_job_for_operator_resolution(monkeypatch
     fake = SimpleNamespace(
         app=app,
         _printing=False,
+        allow_physical_print=True,
+        site_id="",
+        unifi_ids=None,
         printer_var=_Var("Test printer"),
         copies_var=_Var(1),
         print_button=print_button,
@@ -749,6 +777,9 @@ def test_sqlite_audit_keeps_marker_until_secondary_commit(monkeypatch):
     fake = SimpleNamespace(
         app=app,
         _printing=False,
+        allow_physical_print=True,
+        site_id="",
+        unifi_ids=None,
         printer_var=_Var("Test printer"),
         copies_var=_Var(1),
         print_button=print_button,
@@ -804,6 +835,9 @@ def test_cancelled_reprint_preflight_never_starts_print_worker(monkeypatch):
     fake = SimpleNamespace(
         app=app,
         _printing=False,
+        allow_physical_print=True,
+        site_id="",
+        unifi_ids=None,
         printer_var=_Var("Test printer"),
         copies_var=_Var(1),
         print_button=print_button,
