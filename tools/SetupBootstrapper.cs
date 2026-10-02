@@ -125,6 +125,25 @@ namespace VoucherManagementSetup
                 startInfo.RedirectStandardError = true;
                 startInfo.WorkingDirectory = payloadRoot;
 
+                // Do not let an elevated Windows PowerShell inherit a
+                // caller-controlled/user PowerShell module path. The installer
+                // only needs trusted Windows/Program Files modules, including
+                // Microsoft.PowerShell.Security for Get-Acl.
+                string systemModulePath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                    "System32",
+                    "WindowsPowerShell",
+                    "v1.0",
+                    "Modules"
+                );
+                string programModulePath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                    "WindowsPowerShell",
+                    "Modules"
+                );
+                startInfo.EnvironmentVariables["PSModulePath"] =
+                    systemModulePath + ";" + programModulePath;
+
                 string standardOutput;
                 string standardError;
                 int exitCode;
