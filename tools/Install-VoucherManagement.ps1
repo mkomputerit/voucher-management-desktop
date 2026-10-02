@@ -12,6 +12,7 @@ $ErrorActionPreference = "Stop"
 $OperatorGroupDescription = "Operatori autorizzati a Voucher Management"
 $DefaultOperatorGroup = "Voucher Management Operators"
 $DefaultDataRoot = (Join-Path $env:ProgramData "VoucherManagement")
+$UninstallRegistryPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VoucherManagement"
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -186,6 +187,39 @@ function Ensure-OperatorGroup {
     }
 
     return $group
+}
+
+function Register-WindowsUninstallEntry {
+    param([string]$InstallRoot)
+
+    $uninstaller = Join-Path $InstallRoot "VoucherManagement-Uninstall.exe"
+    $application = Join-Path $InstallRoot "VoucherManagement.exe"
+    if (
+        -not (Test-Path -LiteralPath $uninstaller -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $application -PathType Leaf)
+    ) {
+        return
+    }
+
+    $version = [string](Get-Item -LiteralPath $application).VersionInfo.ProductVersion
+    $estimatedBytes = (
+        Get-ChildItem -LiteralPath $InstallRoot -File -Recurse -Force |
+            Measure-Object -Property Length -Sum
+    ).Sum
+    $estimatedKb = [Math]::Max(1, [Math]::Ceiling([double]$estimatedBytes / 1KB))
+
+    New-Item -Path $script:UninstallRegistryPath -Force | Out-Null
+    New-ItemProperty -Path $script:UninstallRegistryPath -Name "DisplayName" -Value "Voucher Management" -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $script:UninstallRegistryPath -Name "DisplayVersion" -Value $version -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $script:UninstallRegistryPath -Name "Publisher" -Value "Voucher Management contributors" -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $script:UninstallRegistryPath -Name "InstallLocation" -Value $InstallRoot -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $script:UninstallRegistryPath -Name "DisplayIcon" -Value "$application,0" -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $script:UninstallRegistryPath -Name "UninstallString" -Value ('"' + $uninstaller + '"') -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $script:UninstallRegistryPath -Name "QuietUninstallString" -Value ('"' + $uninstaller + '" /quiet') -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $script:UninstallRegistryPath -Name "InstallDate" -Value (Get-Date -Format "yyyyMMdd") -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $script:UninstallRegistryPath -Name "EstimatedSize" -Value ([int]$estimatedKb) -PropertyType DWord -Force | Out-Null
+    New-ItemProperty -Path $script:UninstallRegistryPath -Name "NoModify" -Value 1 -PropertyType DWord -Force | Out-Null
+    New-ItemProperty -Path $script:UninstallRegistryPath -Name "NoRepair" -Value 1 -PropertyType DWord -Force | Out-Null
 }
 
 function Set-SharedDataAcl {
@@ -394,6 +428,8 @@ finally {
         Move-Item -LiteralPath $previous -Destination $destination -ErrorAction SilentlyContinue
     }
 }
+
+Register-WindowsUninstallEntry -InstallRoot $destination
 
 if (-not $SkipShortcut) {
     $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs"
