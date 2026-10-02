@@ -12,6 +12,32 @@ $OperatorGroupDescription = "Operatori autorizzati a Voucher Management"
 $DefaultOperatorGroup = "Voucher Management Operators"
 $DefaultDataRoot = (Join-Path $env:ProgramData "VoucherManagement")
 
+function Assert-NoReparsePointsInTree {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return
+    }
+
+    $pending = New-Object 'System.Collections.Generic.Stack[string]'
+    $pending.Push([IO.Path]::GetFullPath($Path))
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        foreach ($item in Get-ChildItem -LiteralPath $current -Force) {
+            if (
+                ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+            ) {
+                throw "$Label contiene un junction, link o altro reparse point: $($item.FullName)"
+            }
+            if ($item.PSIsContainer) {
+                $pending.Push($item.FullName)
+            }
+        }
+    }
+}
+
 function Resolve-ManagedChildPath {
     param(
         [string]$Path,
@@ -153,6 +179,7 @@ if ($RemoveData) {
         # Re-check the destructive boundary immediately before icacls so a
         # replaced junction/reparse point is rejected instead of traversed.
         $DataRoot = Resolve-ManagedChildPath -Path $DataRoot -RequiredParent $env:ProgramData -Label "La cartella dati condivisa"
+        Assert-NoReparsePointsInTree -Path $DataRoot -Label "La cartella dati condivisa"
         # Shared mode deliberately protects every descendant with explicit,
         # non-inherited ACLs. Before destructive removal, restore an
         # administrator-deletable tree; otherwise Remove-Item can fail on
