@@ -122,6 +122,7 @@ def align_vouchers(
         rows = db.execute(
             f"""SELECT
                     v.id,
+                    v.name,
                     v.is_nominal,
                     v.print_state,
                     v.origin,
@@ -141,6 +142,16 @@ def align_vouchers(
         if len(rows) != len(ids):
             raise RuntimeError(
                 "Uno o più voucher selezionati non appartengono alla controller attiva"
+            )
+
+        if is_nominal and any(
+            not str(row["name"] or "").strip()
+            for row in rows
+        ):
+            raise ValueError(
+                "Un voucher nominale deve avere un destinatario nella "
+                "descrizione UniFi. La descrizione controller è sola lettura: "
+                "classificarlo Non nominale oppure eliminarlo con motivazione."
             )
 
         if normalized_print_state != PRINT_STATE_PRINTED:
