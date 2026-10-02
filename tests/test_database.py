@@ -244,7 +244,33 @@ def test_print_summary_preserves_known_legacy_print_without_audit(tmp_path):
 
         assert summary.print_jobs == 0
         assert summary.known_printed_without_audit is True
+        assert summary.print_state == "PRINTED"
         assert summary.last_printed_at == ""
+    finally:
+        db.close()
+
+
+def test_print_summary_exposes_unknown_state_without_guessing(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="external-unknown",
+            code="UNKNOWN",
+            imported_at="t",
+            last_synced_at="t",
+        )
+
+        summary = db.print_summary(voucher)
+
+        assert summary.print_jobs == 0
+        assert summary.known_printed_without_audit is False
+        assert summary.print_state == "UNKNOWN"
     finally:
         db.close()
 
