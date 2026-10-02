@@ -62,10 +62,19 @@ class ControllerConnectionMixin:
             saved_pin = str(
                 self.settings.get("controller_cert_sha256", "")
             ).strip()
+            saved_site_id = str(
+                self.settings.get("controller_site_id", "")
+            ).strip()
             trusted_pin = saved_pin if saved_root == normalized else ""
+            preferred_site_id = (
+                saved_site_id
+                if saved_root == normalized and saved_site_id
+                else None
+            )
             client = UniFiClient(
                 normalized,
                 trusted_cert_sha256=trusted_pin or None,
+                preferred_site_id=preferred_site_id,
             )
         except (UniFiApiError, ValueError) as exc:
             self._connection_failed(exc)
