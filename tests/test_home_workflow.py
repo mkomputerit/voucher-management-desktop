@@ -24,9 +24,14 @@ class Var:
 @pytest.mark.parametrize("connected,failed", [(False, False), (True, True)])
 def test_reconnect_asks_only_for_key_at_saved_endpoint(monkeypatch, connected, failed):
     calls = []
+    refreshed = []
+    reset = []
     fake = SimpleNamespace(
         _background_results=None, client=object() if connected else None,
         _controller_status_failed=failed,
+        _controller_retrying=False,
+        _reset_controller_retry_state=lambda: reset.append(True),
+        refresh=lambda: refreshed.append(True),
         settings_store=SimpleNamespace(load=lambda: {"controller_api_root": "https://controller.example/api"}),
         api_root_var=Var("https://unsaved.example/api"),
         _controller_record=lambda: {"name": "Reception", "last_successful_sync_at": ""},
@@ -34,9 +39,14 @@ def test_reconnect_asks_only_for_key_at_saved_endpoint(monkeypatch, connected, f
     )
     monkeypatch.setattr(modern_app, "QuickConnectDialog", lambda app, **kwargs: calls.append(kwargs))
     ModernVoucherApp._home_sync_or_connect(fake)
-    assert len(calls) == 1
-    assert calls[0]["api_root"] == "https://controller.example/api"
-    assert calls[0]["controller_name"] == "Reception"
+    if connected:
+        assert calls == []
+        assert refreshed == [True]
+        assert reset == [True]
+    else:
+        assert len(calls) == 1
+        assert calls[0]["api_root"] == "https://controller.example/api"
+        assert calls[0]["controller_name"] == "Reception"
 
 
 def test_active_session_refreshes_without_prompting_for_key():
@@ -217,13 +227,14 @@ def test_controller_failure_invalidates_live_home_metrics():
     fake = SimpleNamespace(
         _controller_status_failed=False,
         controller_snapshot_live=True,
+        _reset_controller_retry_state=lambda: calls.append("reset"),
         _refresh_controller_workspace_status=lambda: calls.append("status"),
         populate=lambda: calls.append("populate"),
     )
     ModernVoucherApp._controller_operation_failed(fake)
     assert fake._controller_status_failed is True
     assert fake.controller_snapshot_live is False
-    assert calls == ["status", "populate"]
+    assert calls == ["reset", "status", "populate"]
 
 
 
