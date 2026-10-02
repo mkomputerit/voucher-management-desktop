@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from voucher_management.database import Database, PRINT_STATE_NOT_PRINTED
 from voucher_management.sync_store import persist_successful_snapshot
+from voucher_management.voucher_creation_ui import VoucherCreationMixin
+import voucher_management.voucher_creation_ui as creation_ui
 from voucher_management.uncertain_create_recovery import (
     PendingCreateIntent,
     confirm_pending_create_intent_to_path,
@@ -247,3 +250,176 @@ def test_operator_rejection_leaves_candidates_controller_owned(tmp_path):
         ]
     finally:
         db.close()
+
+
+class _Guard:
+    def __init__(self):
+        self.pending = True
+
+    def clear(self):
+        self.pending = False
+        return True
+
+
+def test_ui_requires_explicit_yes_before_associating_exact_candidates(
+    monkeypatch,
+    tmp_path,
+):
+    db, controller, database_path = _db(tmp_path)
+    marker = tmp_path / "pending_create_intent.json"
+    write_pending_create_intent(
+        marker,
+        controller_id=controller,
+        site_id="site-a",
+        requested_at=NOW,
+        baseline_ids=["old-1"],
+        quantity=2,
+        recipient_digest="a" * 64,
+        duration_minutes=1440,
+        quota=1,
+        data_mb=None,
+        down_kbps=None,
+        up_kbps=None,
+        is_nominal=True,
+    )
+    tasks = []
+    infos = []
+    guard = _Guard()
+    fake = SimpleNamespace(
+        paths=SimpleNamespace(
+            database=database_path,
+            pending_create_intent=marker,
+        ),
+        active_controller_id=controller,
+        database=db,
+        history=SimpleNamespace(
+            correlation_digest=lambda namespace, value, settings: _digest(value),
+        ),
+        settings={},
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+        create_guard=guard,
+        checked_ids=set(),
+        filter_var=SimpleNamespace(set=lambda value: None),
+        populate=lambda: None,
+        _refresh_report_summary=lambda: None,
+        _windows_operator_identity=lambda: r"PC\operator",
+        _run_background_task=lambda label, worker, success, error: (
+            tasks.append((label, worker, success, error)) or True
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "askyesnocancel",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "showinfo",
+        lambda *args, **kwargs: infos.append(args),
+    )
+
+    try:
+        owned = VoucherCreationMixin._offer_uncertain_create_recovery_after_refresh(
+            fake,
+            [_voucher("new-1"), _voucher("new-2")],
+        )
+        assert owned is True
+        assert guard.pending is True
+        assert len(tasks) == 1
+
+        result = tasks[0][1]()
+        tasks[0][2](result)
+
+        assert guard.pending is False
+        assert fake.checked_ids == {"new-1", "new-2"}
+        assert not marker.exists()
+        origins = db.connection.execute(
+            "SELECT origin FROM vouchers ORDER BY unifi_id"
+        ).fetchall()
+        assert [row["origin"] for row in origins] == [
+            "APPLICATION",
+            "APPLICATION",
+        ]
+        assert infos
+    finally:
+        db.close()
+
+
+def test_ui_no_leaves_exact_candidates_external_but_closes_request(
+    monkeypatch,
+    tmp_path,
+):
+    db, controller, database_path = _db(tmp_path)
+    marker = tmp_path / "pending_create_intent.json"
+    write_pending_create_intent(
+        marker,
+        controller_id=controller,
+        site_id="site-a",
+        requested_at=NOW,
+        baseline_ids=["old-1"],
+        quantity=2,
+        recipient_digest="a" * 64,
+        duration_minutes=1440,
+        quota=1,
+        data_mb=None,
+        down_kbps=None,
+        up_kbps=None,
+        is_nominal=True,
+    )
+    tasks = []
+    guard = _Guard()
+    fake = SimpleNamespace(
+        paths=SimpleNamespace(
+            database=database_path,
+            pending_create_intent=marker,
+        ),
+        active_controller_id=controller,
+        database=db,
+        history=SimpleNamespace(
+            correlation_digest=lambda namespace, value, settings: _digest(value),
+        ),
+        settings={},
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+        create_guard=guard,
+        checked_ids=set(),
+        filter_var=SimpleNamespace(set=lambda value: None),
+        populate=lambda: None,
+        _refresh_report_summary=lambda: None,
+        _windows_operator_identity=lambda: r"PC\operator",
+        _run_background_task=lambda label, worker, success, error: (
+            tasks.append((label, worker, success, error)) or True
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "askyesnocancel",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "showinfo",
+        lambda *args, **kwargs: None,
+    )
+
+    try:
+        VoucherCreationMixin._offer_uncertain_create_recovery_after_refresh(
+            fake,
+            [_voucher("new-1"), _voucher("new-2")],
+        )
+        assert len(tasks) == 1
+
+        result = tasks[0][1]()
+        tasks[0][2](result)
+
+        assert guard.pending is False
+        assert not marker.exists()
+        origins = db.connection.execute(
+            "SELECT origin FROM vouchers ORDER BY unifi_id"
+        ).fetchall()
+        assert [row["origin"] for row in origins] == [
+            "CONTROLLER",
+            "CONTROLLER",
+        ]
+    finally:
+        db.close()
+
