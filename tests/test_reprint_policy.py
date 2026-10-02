@@ -25,6 +25,37 @@ def test_any_previous_physical_print_requires_warning():
 
 
 
+def test_legacy_printed_without_audit_can_print_when_controller_observed_never_used():
+    warning = evaluate_reprint(
+        PrintAuditSummary(
+            print_jobs=0,
+            physical_copies=0,
+            first_printed_at="",
+            last_printed_at="",
+            known_printed_without_audit=True,
+        ),
+        ever_used=False,
+    )
+
+    assert warning.required is False
+
+
+def test_legacy_printed_without_audit_stays_blocked_when_already_used():
+    warning = evaluate_reprint(
+        PrintAuditSummary(
+            print_jobs=0,
+            physical_copies=0,
+            first_printed_at="",
+            last_printed_at="",
+            known_printed_without_audit=True,
+        ),
+        ever_used=True,
+    )
+
+    assert warning.required is True
+    assert warning.print_history_incomplete is True
+
+
 def test_known_legacy_print_without_audit_requires_warning():
     warning = evaluate_reprint(
         PrintAuditSummary(
