@@ -321,7 +321,10 @@ class ControllerConnectionMixin:
         self.active_controller_id = controller_id
         self.client = client
         self.vouchers = snapshot
-        self.controller_snapshot_live = True
+        snapshot_authoritative = not bool(
+            persisted is not None and persisted.suspected_absence_ids
+        )
+        self.controller_snapshot_live = snapshot_authoritative
         self.api_root_var.set(client.base_url)
         name_var = getattr(self, "controller_name_var", None)
         if name_var is not None:
@@ -342,8 +345,12 @@ class ControllerConnectionMixin:
             f"{site_label} • {tls_label}"
         )
         self.checked_ids.clear()
-        if archive_error is None:
+        if archive_error is None and snapshot_authoritative:
             callback = getattr(self, "_controller_operation_succeeded", None)
+            if callback is not None:
+                callback()
+        elif archive_error is None:
+            callback = getattr(self, "_controller_operation_stale", None)
             if callback is not None:
                 callback()
         else:
@@ -364,10 +371,11 @@ class ControllerConnectionMixin:
         self.populate()
         self.logger.info(
             "controller_api_connected network_version=%s tls_pinned=%s "
-            "snapshot_persisted_off_ui=%s",
+            "snapshot_persisted_off_ui=%s snapshot_authoritative=%s",
             info["applicationVersion"],
             bool(client.trusted_cert_sha256),
             persisted is not None,
+            snapshot_authoritative,
         )
         after = getattr(self, "after", None)
         if callable(after):
