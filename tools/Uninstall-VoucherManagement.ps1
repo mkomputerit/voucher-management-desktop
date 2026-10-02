@@ -31,8 +31,7 @@ function Resolve-ManagedChildPath {
     if (Test-Path -LiteralPath $full) {
         $item = Get-Item -LiteralPath $full -Force
         if (
-            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne
-            [IO.FileAttributes]::Normal
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
         ) {
             throw "$Label non può essere un junction, link o altro reparse point."
         }
