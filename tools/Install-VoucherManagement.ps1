@@ -81,17 +81,73 @@ function Resolve-InteractiveUser {
     return $loggedOn
 }
 
+function Assert-OperatorGroupSafe {
+    param([object]$Group)
+
+    $sid = [string]$Group.SID.Value
+    if ($sid.StartsWith("S-1-5-32-", [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Il gruppo operatori non può essere un gruppo Windows built-in."
+    }
+
+    $nested = @(
+        Get-LocalGroupMember -Group $Group.Name -ErrorAction Stop |
+            Where-Object { $_.ObjectClass -ne "User" }
+    )
+    if ($nested.Count -gt 0) {
+        throw "Il gruppo operatori può contenere solo account utente diretti, non gruppi annidati."
+    }
+}
+
 function Ensure-OperatorGroup {
     param([string]$Name, [string]$Member)
+
+    if (-not $Name.Trim()) {
+        throw "Il nome del gruppo operatori non può essere vuoto."
+    }
+    if (-not $Member.Trim()) {
+        throw "L'account operatore non può essere vuoto."
+    }
+
     $group = Get-LocalGroup -Name $Name -ErrorAction SilentlyContinue
+    $created = $false
     if (-not $group) {
         $group = New-LocalGroup -Name $Name -Description "Operatori autorizzati a Voucher Management"
+        $created = $true
     }
+
+    try {
+        Assert-OperatorGroupSafe -Group $group
+    }
+    catch {
+        if ($created) {
+            Remove-LocalGroup -Name $Name -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+
     $present = Get-LocalGroupMember -Group $Name -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -ieq $Member }
+    $added = $false
     if (-not $present) {
         Add-LocalGroupMember -Group $Name -Member $Member
+        $added = $true
     }
+
+    try {
+        # Validate again so passing a group as -OperatorUser cannot silently
+        # introduce nested membership and broaden access to ProgramData.
+        Assert-OperatorGroupSafe -Group $group
+    }
+    catch {
+        if ($added) {
+            Remove-LocalGroupMember -Group $Name -Member $Member -ErrorAction SilentlyContinue
+        }
+        if ($created) {
+            Remove-LocalGroup -Name $Name -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+
     return $group
 }
 
