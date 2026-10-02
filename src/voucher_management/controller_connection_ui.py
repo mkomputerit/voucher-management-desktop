@@ -331,6 +331,7 @@ class ControllerConnectionMixin:
             name_var.set(persisted_name)
         self.settings = self.settings_store.update(
             controller_api_root=client.base_url,
+            controller_site_id=str(info.get("siteId") or ""),
             controller_cert_sha256=client.trusted_cert_sha256,
         )
 
