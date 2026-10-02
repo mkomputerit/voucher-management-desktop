@@ -41,6 +41,12 @@
   audit history, and history exchange refuses duplicate modern event identities.
   Routine reports hide voucher codes; the complete-history report can include
   preserved clear codes only after an explicit operator request.
+- Add a self-contained elevated Windows `Setup.exe` around the reviewed shared
+  deployment path. The Setup embeds the verified portable payload, extracts it
+  below protected Program Files, isolates elevated Windows PowerShell from
+  caller-controlled module paths, stages upgrades before replacing the previous
+  application directory, verifies shared ACL behavior end-to-end in CI and is
+  published with its own SHA-256 checksum.
 - Keep report data lineage explicit: detailed PDF/CSV exports show the
   immutable UniFi ID, the controller-owned recipient/description, local notes,
   provenance, nominality and print-state evidence without inventing a second
