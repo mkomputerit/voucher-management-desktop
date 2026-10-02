@@ -454,11 +454,18 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
     calls = []
     tasks = []
     voucher = SimpleNamespace(
+        id="v1",
         code_formatted="11111-22222",
         quota=1,
     )
     job = SimpleNamespace(
         output=Path("Print") / "Voucher_Test.pdf",
+        batch=SimpleNamespace(
+            site_id="site-a",
+            vouchers=[
+                SimpleNamespace(unifi_id="v1"),
+            ],
+        ),
     )
     outcome = SimpleNamespace(
         output=job.output,
@@ -470,6 +477,10 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
         history=history,
         settings={"structure_name": "Test"},
         paths=SimpleNamespace(prints=Path("Print")),
+        active_controller_id=7,
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
         _run_background_task=capture_runner(tasks),
         logger=SimpleNamespace(
             warning=lambda *args: None,
@@ -478,8 +489,8 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
         last_pdf=None,
         checked_ids={"v1"},
         populate=lambda: calls.append(("populate", None)),
-        _preview=lambda path, codes: calls.append(
-            ("preview", path, list(codes))
+        _preview=lambda path, codes, **kwargs: calls.append(
+            ("preview", path, list(codes), kwargs)
         ),
     )
 
@@ -493,8 +504,8 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
     monkeypatch.setattr(
         app_module,
         "prepare_print_job",
-        lambda selected, prints_root, *, unlimited_copies, now: (
-            calls.append(("prepare", unlimited_copies, prints_root))
+        lambda selected, prints_root, *, unlimited_copies, now, site_id: (
+            calls.append(("prepare", unlimited_copies, prints_root, site_id))
             or job
         ),
     )
@@ -528,17 +539,22 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
         "preview",
         job.output,
         ["11111-22222"],
+        {
+            "site_id": "site-a",
+            "unifi_ids": ["v1"],
+        },
     )
 
 
 def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
     monkeypatch,
 ):
-    current = SimpleNamespace(code_formatted="11111-22222")
-    other = SimpleNamespace(code_formatted="33333-44444")
+    current = SimpleNamespace(id="v1", code_formatted="11111-22222")
+    other = SimpleNamespace(id="v2", code_formatted="33333-44444")
     resolved = SimpleNamespace(
         path=Path("Print") / "Voucher_Group.pdf",
         linked_codes=("11111-22222", "33333-44444"),
+        linked_voucher_ids=("v1", "v2"),
     )
     captured = {}
     previews = []
@@ -548,8 +564,12 @@ def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
         history=object(),
         settings={"structure_name": "Test"},
         paths=SimpleNamespace(prints=Path("Print")),
-        _preview=lambda path, codes: previews.append(
-            (path, list(codes))
+        active_controller_id=7,
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
+        _preview=lambda path, codes, **kwargs: previews.append(
+            (path, list(codes), kwargs)
         ),
         logger=SimpleNamespace(error=lambda *args: None),
     )
@@ -571,22 +591,32 @@ def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
     assert captured["voucher"] is current
     assert captured["all_vouchers"] == [current, other]
     assert captured["history"] is fake.history
+    assert captured["site_id"] == "site-a"
     assert previews == [
         (
             resolved.path,
             ["11111-22222", "33333-44444"],
+            {
+                "site_id": "site-a",
+                "unifi_ids": ["v1", "v2"],
+                "allow_physical_print": False,
+            },
         )
     ]
 
 
 def test_open_existing_pdf_maps_typed_linkage_failure_to_ui(monkeypatch):
     shown = []
-    current = SimpleNamespace(code_formatted="11111-22222")
+    current = SimpleNamespace(id="v1", code_formatted="11111-22222")
     fake = SimpleNamespace(
         selected=lambda: [current],
         vouchers=[current],
         history=object(),
         settings={},
+        active_controller_id=7,
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
         paths=SimpleNamespace(prints=Path("Print")),
         _preview=lambda *args: None,
         logger=SimpleNamespace(error=lambda *args: None),
