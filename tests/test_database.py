@@ -364,6 +364,41 @@ def test_first_verified_site_adopts_pre_v8_controller_identity(tmp_path):
         db.close()
 
 
+def test_legacy_controller_is_not_adopted_when_root_already_has_scoped_site(tmp_path):
+    db = _db(tmp_path)
+    try:
+        legacy = db.create_controller(
+            name="Legacy archive",
+            api_root="https://controller.example",
+            created_at="2026-10-01T07:00:00+00:00",
+        )
+        site_a = db.create_controller(
+            name="Site A",
+            api_root="https://controller.example",
+            site_id="site-a",
+            created_at="2026-10-01T08:00:00+00:00",
+        )
+
+        site_b = db.get_or_create_controller(
+            name="Site B",
+            api_root="https://controller.example",
+            site_id="site-b",
+            observed_at="2026-10-02T07:00:00+00:00",
+        )
+
+        assert site_b not in {legacy, site_a}
+        rows = db.connection.execute(
+            "SELECT id, site_id, name FROM controllers ORDER BY id"
+        ).fetchall()
+        assert [(row["site_id"], row["name"]) for row in rows] == [
+            ("", "Legacy archive"),
+            ("site-a", "Site A"),
+            ("site-b", "Site B"),
+        ]
+    finally:
+        db.close()
+
+
 def test_schema_seven_upgrade_adds_unifi_site_identity(tmp_path):
     path = tmp_path / "schema-seven-site.db"
     db = Database(path)
