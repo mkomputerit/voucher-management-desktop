@@ -152,7 +152,7 @@ def _extract_pdf_codes(payload: bytes) -> set[str]:
             textpage = None
             try:
                 textpage = page.get_textpage()
-                text = textpage.get_text_range()
+                text = textpage.get_text_bounded()
             except Exception as exc:
                 raise LegacyMigrationError(
                     "Impossibile leggere il testo di un PDF del backup"
