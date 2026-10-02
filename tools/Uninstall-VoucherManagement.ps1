@@ -49,6 +49,49 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $InstallRoot = Resolve-ManagedChildPath -Path $InstallRoot -RequiredParent $env:ProgramFiles -Label "La cartella di installazione"
 $DataRoot = Resolve-ManagedChildPath -Path $DataRoot -RequiredParent $env:ProgramData -Label "La cartella dati condivisa"
 
+$managedGroup = $null
+if ($RemoveData) {
+    # Bind destructive cleanup to the installer-owned marker when the current
+    # deployment provides one. Older format-1 markers without these optional
+    # fields remain compatible and fall back to the dedicated group checks.
+    $expectedGroupSid = ""
+    $markerPath = Join-Path $InstallRoot "voucher-management-deployment.json"
+    if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+        try {
+            $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+        }
+        catch {
+            throw "Marker di deployment non leggibile: rimozione dati annullata."
+        }
+        if ($marker.format -ne 1 -or $marker.mode -ne "shared_programdata") {
+            throw "Marker di deployment non valido: rimozione dati annullata."
+        }
+        if ($marker.data_root) {
+            $markerDataRoot = Resolve-ManagedChildPath -Path ([string]$marker.data_root) -RequiredParent $env:ProgramData -Label "Il DataRoot registrato"
+            if ($markerDataRoot -ine $DataRoot) {
+                throw "Il DataRoot richiesto non corrisponde al deployment installato."
+            }
+        }
+        if ($marker.operator_group_sid) {
+            $expectedGroupSid = ([string]$marker.operator_group_sid).Trim()
+        }
+    }
+
+    $managedGroup = Get-LocalGroup -Name $OperatorGroup -ErrorAction SilentlyContinue
+    if ($managedGroup) {
+        $sid = [string]$managedGroup.SID.Value
+        if ($sid.StartsWith("S-1-5-32-", [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Il gruppo operatori non può essere un gruppo Windows built-in."
+        }
+        if ([string]$managedGroup.Description -ne $script:OperatorGroupDescription) {
+            throw "Il gruppo indicato non risulta gestito da Voucher Management."
+        }
+        if ($expectedGroupSid -and $sid -ine $expectedGroupSid) {
+            throw "Il SID del gruppo operatori non corrisponde al deployment installato."
+        }
+    }
+}
+
 if (-not $SkipShortcut) {
     $shortcutPath = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Voucher Management.lnk"
     if (Test-Path -LiteralPath $shortcutPath) {
@@ -72,20 +115,10 @@ if (-not $selfInsideInstall -and (Test-Path -LiteralPath $InstallRoot)) {
 }
 
 if ($RemoveData) {
-    # Validate group ownership before touching shared data, so a wrong
-    # -OperatorGroup value cannot produce a partial destructive uninstall.
-    $group = Get-LocalGroup -Name $OperatorGroup -ErrorAction SilentlyContinue
-    if ($group) {
-        $sid = [string]$group.SID.Value
-        if ($sid.StartsWith("S-1-5-32-", [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Il gruppo operatori non può essere un gruppo Windows built-in."
-        }
-        if ([string]$group.Description -ne $script:OperatorGroupDescription) {
-            throw "Il gruppo indicato non risulta gestito da Voucher Management."
-        }
-    }
-
     if (Test-Path -LiteralPath $DataRoot) {
+        # Re-check the destructive boundary immediately before icacls so a
+        # replaced junction/reparse point is rejected instead of traversed.
+        $DataRoot = Resolve-ManagedChildPath -Path $DataRoot -RequiredParent $env:ProgramData -Label "La cartella dati condivisa"
         # Shared mode deliberately protects every descendant with explicit,
         # non-inherited ACLs. Before destructive removal, restore an
         # administrator-deletable tree; otherwise Remove-Item can fail on
@@ -103,7 +136,7 @@ if ($RemoveData) {
         }
         Remove-Item -LiteralPath $DataRoot -Recurse -Force
     }
-    if ($group) {
+    if ($managedGroup) {
         Remove-LocalGroup -Name $OperatorGroup
     }
     Write-Host "Dati condivisi rimossi."
