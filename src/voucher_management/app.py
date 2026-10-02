@@ -232,9 +232,11 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         # Milestone A can reopen the last durable snapshot before any network
         # request. The timestamp/status remains explicitly local until connect.
         saved_api_root = str(self.settings.get("controller_api_root", "")).strip()
+        saved_site_id = str(self.settings.get("controller_site_id", "")).strip()
         if saved_api_root:
-            self.active_controller_id = self.database.find_controller_by_api_root(
-                saved_api_root
+            self.active_controller_id = self.database.find_controller_by_identity(
+                api_root=saved_api_root,
+                site_id=saved_site_id,
             )
         self.vouchers = (
             load_local_vouchers(
