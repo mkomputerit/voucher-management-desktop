@@ -132,12 +132,17 @@ function Ensure-OperatorGroup {
     $present = Get-LocalGroupMember -Group $Name -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -ieq $Member }
     $added = $false
-    if (-not $present) {
-        Add-LocalGroupMember -Group $Name -Member $Member
-        $added = $true
-    }
 
     try {
+        if (-not $present) {
+            # Membership changes are part of the same logical transaction as
+            # group creation. Windows can reject some principal types before a
+            # post-add validation is reached; that failure must still roll back
+            # a group created by this installer attempt.
+            Add-LocalGroupMember -Group $Name -Member $Member -ErrorAction Stop
+            $added = $true
+        }
+
         # Validate again so passing a group as -OperatorUser cannot silently
         # introduce nested membership and broaden access to ProgramData.
         Assert-OperatorGroupSafe -Group $group
