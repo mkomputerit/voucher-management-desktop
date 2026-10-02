@@ -138,6 +138,7 @@ class ReportRow:
     print_state: str = "UNKNOWN"
     preparation_deleted_at: str = ""
     preparation_delete_reason: str = ""
+    controller_deletion_source: str = ""
 
 
 @dataclass(frozen=True)
@@ -495,9 +496,16 @@ def build_report_dataset(
         usage_observed = bool(raw["usage_observed"])
         nominality_redacted = bool(raw["nominality_redacted"])
         preparation_deleted_at = str(raw["preparation_deleted_at"] or "")
+        delete_event_type = str(
+            raw["controller_delete_event_type"] or ""
+        ).strip()
+        controller_deletion_source = {
+            "PREPARATION_DELETED": "Voucher Management",
+            "CONTROLLER_DELETED": "Rilevata sulla controller",
+        }.get(delete_event_type, "")
         preparation_delete_reason = ""
         raw_delete_details = str(raw["preparation_delete_details"] or "").strip()
-        if raw_delete_details:
+        if raw_delete_details and delete_event_type == "PREPARATION_DELETED":
             try:
                 parsed_delete_details = json.loads(raw_delete_details)
             except (TypeError, ValueError, json.JSONDecodeError):
@@ -555,6 +563,7 @@ def build_report_dataset(
             print_state=str(raw["print_state"] or "UNKNOWN").strip().upper(),
             preparation_deleted_at=preparation_deleted_at,
             preparation_delete_reason=preparation_delete_reason,
+            controller_deletion_source=controller_deletion_source,
         )
         if threshold_candidate_ids is not None:
             if voucher_id in threshold_candidate_ids:
