@@ -119,6 +119,51 @@ try {
         throw "Il disinstaller non ha protetto una cartella programma fuori da Program Files."
     }
 
+    $junctionTarget = Join-Path $root "junction-target"
+    New-Item -ItemType Directory -Force -Path $junctionTarget | Out-Null
+    $junctionSentinel = Join-Path $junctionTarget "must-survive.txt"
+    Set-Content -LiteralPath $junctionSentinel -Value "preserve" -Encoding ascii
+    $junctionDataRoot = Join-Path $env:ProgramData ("VoucherManagementJunction-" + $token)
+    New-Item -ItemType Junction -Path $junctionDataRoot -Target $junctionTarget | Out-Null
+
+    $junctionInstallRejected = $false
+    try {
+        $junctionInstallArgs = @{
+            SourcePath = $SourcePath
+            InstallRoot = $installRoot
+            DataRoot = $junctionDataRoot
+            OperatorGroup = $groupName
+            OperatorUser = $operatorUser
+            SkipShortcut = $true
+        }
+        & $installer @junctionInstallArgs
+    }
+    catch {
+        $junctionInstallRejected = $true
+    }
+    if (-not $junctionInstallRejected -or -not (Test-Path -LiteralPath $junctionSentinel)) {
+        throw "L'installer non ha rifiutato un DataRoot junction."
+    }
+
+    $junctionUninstallRejected = $false
+    try {
+        $junctionUninstallArgs = @{
+            InstallRoot = $installRoot
+            DataRoot = $junctionDataRoot
+            OperatorGroup = $groupName
+            RemoveData = $true
+            SkipShortcut = $true
+        }
+        & $uninstaller @junctionUninstallArgs
+    }
+    catch {
+        $junctionUninstallRejected = $true
+    }
+    if (-not $junctionUninstallRejected -or -not (Test-Path -LiteralPath $junctionSentinel)) {
+        throw "Il disinstaller non ha rifiutato un DataRoot junction."
+    }
+    Remove-Item -LiteralPath $junctionDataRoot -Force
+
     # A failure before the staged application swap must never destroy the
     # previously installed version or leave a shared-deployment marker behind.
     New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
