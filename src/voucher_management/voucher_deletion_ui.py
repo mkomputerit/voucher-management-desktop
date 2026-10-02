@@ -225,7 +225,12 @@ class VoucherDeletionMixin:
         def completed(outcome) -> None:
             self.checked_ids.clear()
             self.vouchers = list(outcome.vouchers)
-            self.controller_snapshot_live = outcome.refresh_error is None
+            self.controller_snapshot_live = bool(
+                outcome.refresh_error is None
+                and not bool(
+                    getattr(outcome, "reconciliation_required", False)
+                )
+            )
             if outcome.refresh_error is not None:
                 callback = getattr(self, "_controller_operation_stale", None)
                 if callback is not None:
@@ -234,6 +239,10 @@ class VoucherDeletionMixin:
                 callback = getattr(self, "_controller_operation_stale", None)
                 if callback is not None:
                     callback(archive_failed=True)
+            elif bool(getattr(outcome, "reconciliation_required", False)):
+                callback = getattr(self, "_controller_operation_stale", None)
+                if callback is not None:
+                    callback()
             else:
                 callback = getattr(self, "_controller_operation_succeeded", None)
                 if callback is not None:
@@ -261,6 +270,17 @@ class VoucherDeletionMixin:
                     "voucher e l'elenco live è stato aggiornato, ma lo storico "
                     "locale non è stato salvato correttamente. Non ripetere "
                     "l'eliminazione; eseguire Sincronizza per riconciliare.",
+                    parent=self,
+                )
+                return
+
+            if bool(getattr(outcome, "reconciliation_required", False)):
+                messagebox.showwarning(
+                    "Eliminazione confermata • elenco da aggiornare",
+                    f"UniFi ha confermato l'eliminazione di {len(current)} "
+                    "voucher, ma la prima rilettura li riportava ancora. "
+                    "Lo storico locale conserva la DELETE confermata; eseguire "
+                    "Sincronizza prima di considerare la Home aggiornata.",
                     parent=self,
                 )
                 return
