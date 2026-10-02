@@ -49,6 +49,7 @@ class BackupServiceTests(unittest.TestCase):
                     "structure_name": "Test",
                     "history_key_fingerprint": history_fingerprint,
                     "controller_api_root": "https://controller.invalid/proxy/network/integration/v1",
+                    "controller_site_id": "site-from-backup",
                     "controller_cert_sha256": "a" * 64,
                 }
             ),
@@ -1072,6 +1073,7 @@ class BackupServiceTests(unittest.TestCase):
             )
         )
         self.assertEqual(settings["controller_api_root"], "")
+        self.assertEqual(settings["controller_site_id"], "")
         self.assertEqual(settings["controller_cert_sha256"], "")
 
     def test_restore_rejects_history_key_fingerprint_mismatch_before_live_change(self):
