@@ -16,6 +16,15 @@ from .create_reporting_recovery import (
 from .dialogs import CreateDialog
 from .mutation_guard import CreateMutationGuardError
 from .sync_store import persist_create_result_to_path
+from .uncertain_create_recovery import (
+    UncertainCreateRecoveryError,
+    clear_pending_create_intent,
+    confirm_pending_create_intent_to_path,
+    load_pending_create_intent,
+    match_pending_create_intent,
+    reject_pending_create_intent_to_path,
+    write_pending_create_intent,
+)
 from .workflows import CreateOutcome, create_vouchers_and_refresh
 
 
@@ -64,6 +73,26 @@ class VoucherCreationMixin:
         if not dialog.result:
             return
 
+        client = self.client
+        cached = list(self.vouchers)
+        params = dict(dialog.result)
+        controller_id = getattr(self, "active_controller_id", None)
+        paths = getattr(self, "paths", None)
+        database_path = (
+            Path(paths.database)
+            if controller_id is not None and paths is not None
+            else None
+        )
+        if controller_id is None or database_path is None or paths is None:
+            messagebox.showwarning(
+                "Creazione sospesa",
+                "La controller è collegata ma il profilo locale non è pronto "
+                "per registrare in sicurezza una creazione incerta. "
+                "Eseguire Sincronizza e riprovare.",
+                parent=self,
+            )
+            return
+
         try:
             self.create_guard.begin()
         except CreateMutationGuardError as exc:
@@ -79,16 +108,76 @@ class VoucherCreationMixin:
             )
             return
 
-        client = self.client
-        cached = list(self.vouchers)
-        params = dict(dialog.result)
-        controller_id = getattr(self, "active_controller_id", None)
-        paths = getattr(self, "paths", None)
-        database_path = (
-            Path(paths.database)
-            if controller_id is not None and paths is not None
-            else None
+        intent_path = getattr(
+            paths,
+            "pending_create_intent",
+            database_path.with_name("pending_create_intent.json"),
         )
+        requested_at = datetime.now(timezone.utc).isoformat()
+        try:
+            site_id = str(
+                self.database.controller_site_id(int(controller_id))
+                or getattr(client, "site_id", "")
+                or ""
+            ).strip()
+            recipient_digest = self.history.correlation_digest(
+                "uncertain-create-recipient",
+                str(params.get("recipient") or ""),
+                self.settings,
+            )
+            down_mbps = params.get("down_mbps")
+            up_mbps = params.get("up_mbps")
+            write_pending_create_intent(
+                intent_path,
+                controller_id=int(controller_id),
+                site_id=site_id,
+                requested_at=requested_at,
+                baseline_ids=[
+                    str(voucher.id)
+                    for voucher in cached
+                    if str(getattr(voucher, "id", "") or "").strip()
+                ],
+                quantity=int(params["quantity"]),
+                recipient_digest=recipient_digest,
+                duration_minutes=(
+                    int(params["expire_number"])
+                    * int(params["expire_unit"])
+                ),
+                quota=int(params["quota"]),
+                data_mb=(
+                    None
+                    if params.get("data_mb") is None
+                    else int(params["data_mb"])
+                ),
+                down_kbps=(
+                    None
+                    if down_mbps is None
+                    else int(down_mbps) * 1000
+                ),
+                up_kbps=(
+                    None
+                    if up_mbps is None
+                    else int(up_mbps) * 1000
+                ),
+                is_nominal=bool(params.get("is_nominal", False)),
+            )
+        except Exception as exc:
+            try:
+                self.create_guard.clear()
+            except CreateMutationGuardError:
+                pass
+            self.logger.warning(
+                "uncertain_create_intent_write_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Creazione sospesa",
+                "Non è stato possibile registrare il riferimento di sicurezza "
+                "necessario per riconoscere una creazione interrotta. "
+                "Nessuna richiesta è stata inviata a UniFi.",
+                parent=self,
+            )
+            return
 
         def worker():
             outcome = create_vouchers_and_refresh(
@@ -137,6 +226,11 @@ class VoucherCreationMixin:
                 # The controller result is already confirmed. Preserve the
                 # durable reconciliation marker when available and never
                 # recast this as a failed/uncertain POST.
+                if marker_error is None:
+                    try:
+                        clear_pending_create_intent(intent_path)
+                    except OSError:
+                        pass
                 return replace(
                     outcome,
                     local_persistence_error=exc,
@@ -150,6 +244,11 @@ class VoucherCreationMixin:
             except OSError:
                 # Reconciliation is idempotent; leaving the marker behind is
                 # safer than converting a confirmed create into a failure.
+                pass
+            try:
+                clear_pending_create_intent(intent_path)
+            except OSError:
+                # Confirmed UUID state is already durable in SQLite.
                 pass
             return replace(outcome, recovery_marker_error=None)
 
@@ -178,9 +277,11 @@ class VoucherCreationMixin:
                 self.populate()
                 if outcome.refresh_error is None:
                     detail = (
-                        "L'elenco è stato riletto dal controller, ma in una "
-                        "configurazione multi-postazione non è sicuro attribuire "
-                        "automaticamente eventuali nuovi voucher a questa richiesta."
+                        "L'elenco è stato riletto dal controller. Eventuali "
+                        "voucher compatibili non verranno attribuiti "
+                        "automaticamente alla richiesta: al prossimo "
+                        "Sincronizza verrà chiesta una conferma esplicita "
+                        "all'operatore."
                     )
                     if getattr(outcome, "local_persistence_error", None) is not None:
                         detail += (
@@ -287,7 +388,11 @@ class VoucherCreationMixin:
 
         def failed(exc: Exception) -> None:
             # Ambiguous POST failures are converted by the workflow into a
-            # CreateOutcome and therefore deliberately keep the durable marker.
+            # CreateOutcome and therefore deliberately keep both durable markers.
+            try:
+                clear_pending_create_intent(intent_path)
+            except OSError:
+                pass
             try:
                 self.create_guard.clear()
             except CreateMutationGuardError as guard_exc:
@@ -308,6 +413,10 @@ class VoucherCreationMixin:
         )
         if not started:
             try:
+                clear_pending_create_intent(intent_path)
+            except OSError:
+                pass
+            try:
                 self.create_guard.clear()
             except CreateMutationGuardError as exc:
                 self.logger.warning(
@@ -322,3 +431,219 @@ class VoucherCreationMixin:
                     "di recupero prima di tentare una nuova creazione.",
                     parent=self,
                 )
+
+
+    def _offer_uncertain_create_recovery_after_refresh(
+        self,
+        vouchers,
+    ) -> bool:
+        """Resolve an uncertain POST only through an explicit operator decision.
+
+        True means a durable uncertain-create intent exists, so the generic
+        refresh path must not clear the anti-repeat guard on its own.
+        """
+
+        paths = getattr(self, "paths", None)
+        controller_id = getattr(self, "active_controller_id", None)
+        if paths is None or controller_id is None:
+            return False
+        intent_path = getattr(
+            paths,
+            "pending_create_intent",
+            Path(paths.database).with_name("pending_create_intent.json"),
+        )
+        try:
+            pending = load_pending_create_intent(intent_path)
+        except UncertainCreateRecoveryError as exc:
+            self.logger.warning(
+                "uncertain_create_intent_invalid type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Creazione da verificare",
+                "Il riferimento della creazione interrotta non è leggibile. "
+                "La creazione resta bloccata per sicurezza.",
+                parent=self,
+            )
+            return True
+        if pending is None:
+            return False
+
+        site_id = str(
+            self.database.controller_site_id(int(controller_id)) or ""
+        ).strip()
+        if (
+            pending.controller_id != int(controller_id)
+            or not site_id
+            or pending.site_id != site_id
+        ):
+            messagebox.showerror(
+                "Creazione da verificare",
+                "La richiesta interrotta appartiene a un'altra identità "
+                "controller/Site. Nessuna associazione è stata eseguita e "
+                "la creazione resta bloccata.",
+                parent=self,
+            )
+            return True
+
+        try:
+            match = match_pending_create_intent(
+                pending,
+                list(vouchers),
+                recipient_digest=lambda value: self.history.correlation_digest(
+                    "uncertain-create-recipient",
+                    value,
+                    self.settings,
+                ),
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "uncertain_create_match_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Creazione da verificare",
+                "Non è stato possibile confrontare in modo sicuro i voucher "
+                "con la richiesta interrotta. La creazione resta bloccata.",
+                parent=self,
+            )
+            return True
+
+        candidate_ids = list(match.compatible_ids)
+        if match.exact:
+            decision = messagebox.askyesnocancel(
+                "Creazione interrotta rilevata",
+                (
+                    f"Sono stati trovati {len(candidate_ids)} voucher nuovi "
+                    "compatibili con la richiesta interrotta.\n\n"
+                    "Confermare che questi voucher sono stati creati da quella "
+                    "richiesta?\n\n"
+                    "Sì = associa i voucher alla richiesta.\n"
+                    "No = lasciali come voucher esterni e chiudi la richiesta.\n"
+                    "Annulla = rimanda la decisione e mantieni il blocco."
+                ),
+                parent=self,
+            )
+            if decision is None:
+                return True
+            associate = bool(decision)
+        else:
+            close_without_association = messagebox.askyesno(
+                "Creazione interrotta non riconciliata",
+                (
+                    "La sincronizzazione è riuscita, ma non è stato trovato un "
+                    "insieme univoco di voucher compatibile con la richiesta "
+                    f"interrotta ({len(candidate_ids)} compatibili su "
+                    f"{pending.quantity} attesi).\n\n"
+                    "Dopo aver verificato la controller, vuoi chiudere la "
+                    "richiesta come NON associata e sbloccare nuove creazioni?\n\n"
+                    "Sì = chiudi la richiesta senza attribuire voucher.\n"
+                    "No = mantieni il blocco e riprova con una sincronizzazione "
+                    "successiva."
+                ),
+                parent=self,
+            )
+            if not close_without_association:
+                return True
+            associate = False
+
+        database_path = Path(paths.database)
+        decided_at = datetime.now(timezone.utc).isoformat()
+        operator = self._windows_operator_identity()
+
+        def worker():
+            if associate:
+                return (
+                    "associated",
+                    confirm_pending_create_intent_to_path(
+                        database_path,
+                        intent_path,
+                        controller_id=int(controller_id),
+                        candidate_ids=candidate_ids,
+                        confirmed_at=decided_at,
+                        windows_user=operator,
+                    ),
+                )
+            return (
+                "rejected",
+                reject_pending_create_intent_to_path(
+                    database_path,
+                    intent_path,
+                    controller_id=int(controller_id),
+                    candidate_ids=candidate_ids,
+                    rejected_at=decided_at,
+                    windows_user=operator,
+                ),
+            )
+
+        def completed(result) -> None:
+            action, _local_ids = result
+            try:
+                self.create_guard.clear()
+            except CreateMutationGuardError as exc:
+                self.logger.warning(
+                    "create_guard_clear_after_recovery_failed type=%s",
+                    type(exc).__name__,
+                )
+                messagebox.showwarning(
+                    "Creazione riconciliata",
+                    "La decisione è stata registrata, ma il blocco "
+                    "anti-ripetizione non può essere rimosso automaticamente. "
+                    "Riavviare l'applicazione prima di creare altri voucher.",
+                    parent=self,
+                )
+                return
+
+            if action == "associated":
+                self.checked_ids = set(candidate_ids)
+                filter_var = getattr(self, "filter_var", None)
+                if filter_var is not None:
+                    filter_var.set("Da stampare")
+                messagebox.showinfo(
+                    "Creazione riconciliata",
+                    f"Associati {len(candidate_ids)} voucher alla richiesta "
+                    "interrotta. Sono ora trattati come creati da Voucher "
+                    "Management.",
+                    parent=self,
+                )
+            else:
+                messagebox.showinfo(
+                    "Creazione chiusa",
+                    "La richiesta interrotta è stata chiusa senza associare "
+                    "voucher. Gli eventuali voucher trovati restano di origine "
+                    "controller e seguiranno il normale allineamento.",
+                    parent=self,
+                )
+            self.populate()
+            refresh = getattr(self, "_refresh_report_summary", None)
+            if callable(refresh):
+                refresh()
+
+        def failed(exc: Exception) -> None:
+            self.logger.warning(
+                "uncertain_create_recovery_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showerror(
+                "Creazione da verificare",
+                "Non è stato possibile registrare la decisione. "
+                "La creazione resta bloccata e nessuna associazione è stata "
+                "applicata.",
+                parent=self,
+            )
+
+        started = self._run_background_task(
+            "Riconcilia creazione interrotta…",
+            worker,
+            completed,
+            failed,
+        )
+        if not started:
+            messagebox.showwarning(
+                "Creazione da verificare",
+                "Un'altra operazione è in corso. La decisione non è stata "
+                "registrata e il blocco resta attivo.",
+                parent=self,
+            )
+        return True
+
