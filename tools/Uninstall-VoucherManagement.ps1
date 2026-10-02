@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$OperatorGroupDescription = "Operatori autorizzati a Voucher Management"
 
 function Resolve-ManagedChildPath {
     param(
@@ -91,6 +92,13 @@ if ($RemoveData) {
     }
     $group = Get-LocalGroup -Name $OperatorGroup -ErrorAction SilentlyContinue
     if ($group) {
+        $sid = [string]$group.SID.Value
+        if ($sid.StartsWith("S-1-5-32-", [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Il gruppo operatori non può essere un gruppo Windows built-in."
+        }
+        if ([string]$group.Description -ne $script:OperatorGroupDescription) {
+            throw "Il gruppo indicato non risulta gestito da Voucher Management."
+        }
         Remove-LocalGroup -Name $OperatorGroup
     }
     Write-Host "Dati condivisi rimossi."
