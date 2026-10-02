@@ -269,7 +269,12 @@ try {
         Copy-Item -LiteralPath $_.FullName -Destination $staging -Recurse -Force
     }
 
-    $marker = @{ format = 1; mode = "shared_programdata" } | ConvertTo-Json -Compress
+    $marker = @{
+        format = 1
+        mode = "shared_programdata"
+        data_root = $DataRoot
+        operator_group_sid = [string]$group.SID.Value
+    } | ConvertTo-Json -Compress
     $utf8NoBom = [Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllText(
         (Join-Path $staging "voucher-management-deployment.json"),
