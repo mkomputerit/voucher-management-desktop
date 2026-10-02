@@ -45,6 +45,7 @@ from .print_archive import (
 from .settings import SettingsStore
 from .single_instance import InstanceAlreadyRunning, SingleInstanceGuard
 from .sync_store import (
+    inspect_snapshot_absences_to_path,
     load_local_vouchers,
     persist_connection_snapshot_to_path,
     persist_refresh_snapshot_to_path,
@@ -60,6 +61,7 @@ from .workflows import (
     refresh_vouchers,
     resolve_existing_pdf,
     verify_print_history_ready,
+    verify_snapshot_absences,
 )
 
 
@@ -607,25 +609,66 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         client = self.client
         controller_id = getattr(self, "active_controller_id", None)
-        database_path = (
-            Path(self.paths.database)
-            if controller_id is not None
-            else None
-        )
+        database_path = Path(self.paths.database)
+        cached_snapshot = list(self.vouchers)
         operator = VoucherApp._windows_operator_identity()
 
         def worker():
-            snapshot = list(refresh_vouchers(client))
+            listed_snapshot = list(refresh_vouchers(client))
+            persist_snapshot = list(listed_snapshot)
+            display_snapshot = list(listed_snapshot)
+            confirmed_absent_ids: frozenset[str] = frozenset()
+            snapshot_authoritative = True
             archive_error = None
             resolved_controller_id = controller_id
             observed_at = datetime.now(timezone.utc).isoformat()
             try:
                 if controller_id is not None:
+                    present_ids = frozenset(
+                        str(voucher.id)
+                        for voucher in listed_snapshot
+                        if str(getattr(voucher, "id", "") or "").strip()
+                    )
+                    plan = inspect_snapshot_absences_to_path(
+                        database_path,
+                        controller_id=controller_id,
+                        present_unifi_ids=present_ids,
+                    )
+                    verification = verify_snapshot_absences(
+                        client,
+                        listed_snapshot,
+                        plan.confirmation_ids,
+                    )
+                    persist_snapshot = list(verification.vouchers)
+                    confirmed_absent_ids = verification.confirmed_absent_ids
+                    unresolved_ids = (
+                        set(plan.suspected_ids)
+                        - set(verification.recovered_ids)
+                        - set(verification.confirmed_absent_ids)
+                    )
+                    snapshot_authoritative = not unresolved_ids
+
+                    display_by_id = {
+                        str(voucher.id): voucher
+                        for voucher in persist_snapshot
+                    }
+                    if unresolved_ids:
+                        cached_by_id = {
+                            str(voucher.id): voucher
+                            for voucher in cached_snapshot
+                        }
+                        for remote_id in unresolved_ids:
+                            cached = cached_by_id.get(remote_id)
+                            if cached is not None:
+                                display_by_id[remote_id] = cached
+                    display_snapshot = list(display_by_id.values())
+
                     persist_refresh_snapshot_to_path(
                         database_path,
                         controller_id=controller_id,
-                        vouchers=snapshot,
+                        vouchers=persist_snapshot,
                         observed_at=observed_at,
+                        confirmed_absent_ids=confirmed_absent_ids,
                     )
                 else:
                     # A live controller can exist even when the first local
@@ -654,8 +697,23 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                             observed_at=observed_at,
                         )
                         resolved_controller_id = persisted.controller_id
+                        if persisted.suspected_absence_ids:
+                            snapshot_authoritative = False
+                            cached_by_id = {
+                                str(voucher.id): voucher
+                                for voucher in cached_snapshot
+                            }
+                            display_by_id = {
+                                str(voucher.id): voucher
+                                for voucher in listed_snapshot
+                            }
+                            for remote_id in persisted.suspected_absence_ids:
+                                cached = cached_by_id.get(remote_id)
+                                if cached is not None:
+                                    display_by_id[remote_id] = cached
+                            display_snapshot = list(display_by_id.values())
 
-                if resolved_controller_id is not None and database_path is not None:
+                if resolved_controller_id is not None:
                     marker_path = getattr(
                         self.paths,
                         "pending_create_reporting",
@@ -673,18 +731,38 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                         controller_id=resolved_controller_id,
                         live_voucher_ids=frozenset(
                             str(voucher.id)
-                            for voucher in snapshot
+                            for voucher in persist_snapshot
                             if str(getattr(voucher, "id", "") or "").strip()
                         ),
+                        confirmed_absent_ids=confirmed_absent_ids,
                         observed_at=observed_at,
                         windows_user=operator,
                     )
             except Exception as exc:
                 archive_error = exc
-            return snapshot, archive_error, resolved_controller_id
+            return (
+                display_snapshot,
+                archive_error,
+                resolved_controller_id,
+                snapshot_authoritative,
+            )
 
         def completed(result) -> None:
             if (
+                isinstance(result, tuple)
+                and len(result) == 4
+                and (
+                    result[1] is None
+                    or isinstance(result[1], Exception)
+                )
+            ):
+                (
+                    vouchers,
+                    archive_error,
+                    resolved_controller_id,
+                    snapshot_authoritative,
+                ) = result
+            elif (
                 isinstance(result, tuple)
                 and len(result) == 3
                 and (
@@ -693,6 +771,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 )
             ):
                 vouchers, archive_error, resolved_controller_id = result
+                snapshot_authoritative = True
             elif (
                 isinstance(result, tuple)
                 and len(result) == 2
@@ -703,19 +782,25 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             ):
                 vouchers, archive_error = result
                 resolved_controller_id = controller_id
+                snapshot_authoritative = True
             else:
                 # Compatibility with thin adapters/tests that invoke the
                 # success callback directly with a voucher sequence.
                 vouchers, archive_error = result, None
                 resolved_controller_id = controller_id
+                snapshot_authoritative = True
 
             if resolved_controller_id is not None:
                 self.active_controller_id = resolved_controller_id
             snapshot = list(vouchers)
             self.vouchers = snapshot
-            self.controller_snapshot_live = True
-            if archive_error is None:
+            self.controller_snapshot_live = bool(snapshot_authoritative)
+            if archive_error is None and snapshot_authoritative:
                 callback = getattr(self, "_controller_operation_succeeded", None)
+                if callback is not None:
+                    callback()
+            elif archive_error is None:
+                callback = getattr(self, "_controller_operation_stale", None)
                 if callback is not None:
                     callback()
             else:
@@ -729,14 +814,20 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 )
                 messagebox.showwarning(
                     "Controller aggiornato • archivio locale da verificare",
-                    "La controller ha restituito correttamente l'elenco aggiornato, "
-                    "ma non è stato possibile salvarlo completamente nello storico "
-                    "locale. I numeri Home sono live; i Report potrebbero essere "
-                    "incompleti finché un aggiornamento non riesce.",
+                    "La controller ha restituito l'elenco aggiornato, ma non è "
+                    "stato possibile salvarlo completamente nello storico locale. "
+                    + (
+                        "I numeri Home sono live; "
+                        if snapshot_authoritative
+                        else "I numeri Home restano da verificare; "
+                    )
+                    + "i Report potrebbero essere incompleti finché un "
+                    "aggiornamento non riesce.",
                     parent=self,
                 )
             try:
-                self.create_guard.clear()
+                if snapshot_authoritative:
+                    self.create_guard.clear()
             except CreateMutationGuardError as exc:
                 self.logger.warning(
                     "create_guard_clear_failed type=%s",
