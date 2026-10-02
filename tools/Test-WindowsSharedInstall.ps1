@@ -325,8 +325,14 @@ try {
     if ($marker.format -ne 1 -or $marker.mode -ne "shared_programdata") {
         throw "Marker di deployment non valido."
     }
+    if ([IO.Path]::GetFullPath([string]$marker.data_root) -ine [IO.Path]::GetFullPath($dataRoot)) {
+        throw "Il marker non registra il DataRoot effettivamente installato."
+    }
 
     $group = Get-LocalGroup -Name $groupName
+    if ([string]$marker.operator_group_sid -ine [string]$group.SID.Value) {
+        throw "Il marker non registra il SID del gruppo operatori effettivo."
+    }
     $aclState = Get-AllowRightsBySid -Path $dataRoot
     if (-not $aclState.Protected) {
         throw "Le ACL ProgramData ereditano ancora permessi dal parent."
