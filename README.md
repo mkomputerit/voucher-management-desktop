@@ -167,22 +167,26 @@ application-data profile. Extract the complete build folder and run
 `VoucherManagement.exe`; no shared-machine permissions are changed.
 
 **Managed shared deployment** is intended for one workstation used by multiple
-authorized Windows accounts. It is currently delivered as an elevated
-PowerShell deployment script, not as an MSI/EXE package registered in Windows
-"Installed apps". From an elevated PowerShell prompt in the extracted build
-folder, run:
+authorized Windows accounts. The recommended package is the self-contained
+`VoucherManagement-Setup-<version>.exe`. Run it normally and approve the UAC
+elevation prompt; the Setup installs the verified portable payload through the
+same reviewed shared-deployment logic used by CI.
+
+The extracted portable build also retains the administrative PowerShell script
+as a fallback:
 
 ```powershell
 .\Install-VoucherManagement.ps1
 ```
 
-The managed deployment script copies the application to
+Managed installation copies the application to
 `Program Files\Voucher Management`, creates the local
-`Voucher Management Operators` group, authorizes the
-interactive Windows user, creates `ProgramData\VoucherManagement` with
-restrictive ACLs, writes the shared-deployment marker and creates a Start Menu
-shortcut. If the user was newly added to the group, sign out and sign in again
-before the first launch.
+`Voucher Management Operators` group, authorizes the interactive Windows
+user, creates `ProgramData\VoucherManagement` with restrictive ACLs, writes
+the shared-deployment marker and creates a Start Menu shortcut. Updates are
+staged before replacing the previous application directory, so a preparation
+failure does not remove the installed version. If the user was newly added to
+the group, sign out and sign in again before the first launch.
 
 Installed mode uses one shared SQLite database and one machine-wide application
 guard across Fast User Switching sessions. Existing per-user data is not
@@ -191,8 +195,9 @@ offers an explicit migration that creates and verifies an encrypted safety
 backup, transfers the old LocalAppData tree through the normal restore path and
 leaves the original per-user data unchanged.
 
-Because this is not a Windows Installer/MSI package, removal is also performed
-with the bundled administrative script. To remove the deployed program while
+The Setup is a self-contained EXE bootstrapper rather than an MSI and does not
+currently register itself in Windows "Installed apps". Removal is performed with
+the bundled administrative script. To remove the deployed program while
 preserving shared data, run `Uninstall-VoucherManagement.ps1` from an elevated
 PowerShell prompt. Pass
 `-RemoveData` only when the shared ProgramData archive and local operator group
