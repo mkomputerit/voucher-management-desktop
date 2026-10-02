@@ -30,7 +30,7 @@ function Assert-NoReparsePointsInTree {
         return
     }
 
-    $pending = New-Object 'System.Collections.Generic.Stack[string]'
+    $pending = New-Object System.Collections.Stack
     $pending.Push([IO.Path]::GetFullPath($Path))
     while ($pending.Count -gt 0) {
         $current = $pending.Pop()
