@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -557,7 +558,7 @@ def test_first_physical_print_from_unknown_state_is_countable_and_idempotent(tmp
         ).fetchall()
         assert len(events) == 1
         assert events[0]["event_type"] == "PRINTED_FROM_UNKNOWN_STATE"
-        details = Database.decode_event_details(events[0]["details_json"])
+        details = json.loads(events[0]["details_json"])
         assert details["prior_print_state"] == "UNKNOWN"
         assert details["print_job_uuid"] == "unknown-print-audit"
         assert db.print_summary(voucher).print_state == "PRINTED"
