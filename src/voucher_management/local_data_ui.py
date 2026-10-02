@@ -396,11 +396,14 @@ class AlignmentDialog(tk.Toplevel):
         )
         self._candidates = {str(item.voucher_id): item for item in candidates}
         for item in candidates:
-            print_label = (
-                f"Verificata {item.last_printed_at[:10]}"
-                if item.last_printed_at
-                else "Da dichiarare"
-            )
+            if item.last_printed_at:
+                print_label = f"Verificata {item.last_printed_at[:10]}"
+            elif str(item.print_state or "").strip().upper() == PRINT_STATE_PRINTED:
+                print_label = "Stampato • data non determinabile"
+            elif str(item.origin or "").strip().upper() == "CONTROLLER":
+                print_label = "Non determinabile"
+            else:
+                print_label = "Da dichiarare"
             self.tree.insert(
                 "",
                 "end",
@@ -445,12 +448,17 @@ class AlignmentDialog(tk.Toplevel):
             self.nominal.set("")
             self.nominal_combo.configure(state="readonly")
 
-        verified = [bool(item.last_printed_at) for item in selected]
+        positive_print = [
+            bool(item.last_printed_at)
+            or str(item.print_state or "").strip().upper()
+            == PRINT_STATE_PRINTED
+            for item in selected
+        ]
         origins = {
             str(item.origin or "").strip().upper()
             for item in selected
         }
-        if verified and all(verified):
+        if positive_print and all(positive_print):
             self.print_state.set("Stampato")
             self.print_combo.configure(state="disabled")
         elif origins == {"CONTROLLER"}:
@@ -486,12 +494,17 @@ class AlignmentDialog(tk.Toplevel):
             return
 
         selected_candidates = [self._candidates[value] for value in selected]
-        verified_flags = [bool(item.last_printed_at) for item in selected_candidates]
-        if any(verified_flags) and not all(verified_flags):
+        positive_print_flags = [
+            bool(item.last_printed_at)
+            or str(item.print_state or "").strip().upper()
+            == PRINT_STATE_PRINTED
+            for item in selected_candidates
+        ]
+        if any(positive_print_flags) and not all(positive_print_flags):
             messagebox.showinfo(
                 "Allinea voucher",
-                "La selezione mescola voucher con stampa verificata e voucher "
-                "senza storico di stampa. Allinearli in due gruppi separati.",
+                "La selezione mescola voucher con prova positiva di stampa e "
+                "voucher senza tale evidenza. Allinearli in due gruppi separati.",
                 parent=self,
             )
             return
@@ -520,11 +533,11 @@ class AlignmentDialog(tk.Toplevel):
         requested_print = _PRINT_VALUES[self.print_state.get()]
         if (
             requested_print != PRINT_STATE_PRINTED
-            and any(item.last_printed_at for item in selected_candidates)
+            and any(positive_print_flags)
         ):
             messagebox.showerror(
                 "Allinea voucher",
-                "La selezione contiene una stampa verificata nello storico. "
+                "La selezione contiene una prova positiva di stampa nello storico. "
                 "Per questi voucher lo stato deve rimanere Stampato.",
                 parent=self,
             )
