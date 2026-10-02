@@ -379,6 +379,7 @@ def test_worker_path_connection_persists_controller_and_snapshot(tmp_path):
         cert_sha256="AA",
         requested_name="Reception",
         site_name="Default Site",
+        site_id="site-worker",
         vouchers=[voucher("worker-1")],
         observed_at="2026-09-28T07:30:00+00:00",
     )
@@ -388,6 +389,7 @@ def test_worker_path_connection_persists_controller_and_snapshot(tmp_path):
         db.initialize()
         assert result.controller_name == "Reception"
         assert db.controller_name(result.controller_id) == "Reception"
+        assert db.controller_site_id(result.controller_id) == "site-worker"
         row = db.connection.execute(
             "SELECT COUNT(*) FROM vouchers WHERE controller_id=?",
             (result.controller_id,),
