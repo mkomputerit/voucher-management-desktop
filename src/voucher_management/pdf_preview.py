@@ -44,6 +44,8 @@ class PdfPreview(tk.Toplevel):
         codes: list[str],
         history,
         settings: dict,
+        site_id: str = "",
+        unifi_ids: list[str] | None = None,
         on_print=None,
         on_audit=None,
         on_submitted=None,
@@ -53,6 +55,15 @@ class PdfPreview(tk.Toplevel):
         self.app = parent
         self.pdf_path = Path(pdf_path)
         self.codes = list(codes)
+        self.site_id = str(site_id or "").strip()
+        self.unifi_ids = (
+            [str(value).strip() for value in unifi_ids]
+            if unifi_ids is not None
+            else None
+        )
+        if self.unifi_ids is not None and len(self.unifi_ids) != len(self.codes):
+            super().destroy()
+            raise ValueError("Identità voucher non coerenti con il PDF")
         self.history = history
         self.settings = settings
         self.on_print = on_print
@@ -350,6 +361,12 @@ class PdfPreview(tk.Toplevel):
         history = self.history
         settings = dict(self.settings)
         application_audit = getattr(self, "on_audit", None)
+        site_id = self.site_id
+        unifi_ids = (
+            list(self.unifi_ids)
+            if self.unifi_ids is not None
+            else None
+        )
 
         def worker():
             history.assert_no_pending_print_audit()
@@ -372,6 +389,8 @@ class PdfPreview(tk.Toplevel):
                 settings,
                 audit_id=pending["audit_id"],
                 submitted_at=pending["submitted_at"],
+                site_id=site_id,
+                unifi_ids=unifi_ids,
             )
 
             self._print_windows(printer, copies)
@@ -390,6 +409,8 @@ class PdfPreview(tk.Toplevel):
                     settings,
                     audit_id=pending["audit_id"],
                     submitted_at=pending["submitted_at"],
+                    site_id=site_id,
+                    unifi_ids=unifi_ids,
                     **record_kwargs,
                 )
             except Exception as exc:
@@ -519,6 +540,12 @@ class PdfPreview(tk.Toplevel):
         settings = dict(self.settings)
         stable_pending = dict(pending)
         application_audit = getattr(self, "on_audit", None)
+        site_id = self.site_id
+        unifi_ids = (
+            list(self.unifi_ids)
+            if self.unifi_ids is not None
+            else None
+        )
 
         def worker():
             record_kwargs = {}
@@ -531,6 +558,8 @@ class PdfPreview(tk.Toplevel):
                 settings,
                 audit_id=str(stable_pending["audit_id"]),
                 submitted_at=str(stable_pending["submitted_at"]),
+                site_id=site_id,
+                unifi_ids=unifi_ids,
                 **record_kwargs,
             )
 
