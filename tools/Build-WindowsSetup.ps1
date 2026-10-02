@@ -58,7 +58,7 @@ $windowsForms = Join-Path $referenceDirectory "System.Windows.Forms.dll"
 
 $bootstrapSource = Join-Path $PSScriptRoot "SetupBootstrapper.cs"
 $manifest = Join-Path $PSScriptRoot "SetupBootstrapper.manifest"
-$icon = Join-Path $repoRoot "assets\VoucherManagement.ico"
+$icon = Join-Path $source "_internal\assets\VoucherManagement.ico"
 foreach ($required in @($bootstrapSource, $manifest, $icon)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "File Setup richiesto non trovato: $required"
