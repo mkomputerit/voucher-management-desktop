@@ -11,10 +11,11 @@ if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) {
     throw "Setup.exe non trovato: $setup"
 }
 
-$root = Join-Path $env:RUNNER_TEMP ("voucher-management-setup-test-" + [Guid]::NewGuid().ToString("N"))
-$installRoot = Join-Path $root "ProgramFiles\Voucher Management"
-$dataRoot = Join-Path $root "ProgramData\VoucherManagement"
-$groupName = "VMSetup-" + [Guid]::NewGuid().ToString("N").Substring(0, 12)
+$token = [Guid]::NewGuid().ToString("N")
+$root = Join-Path $env:RUNNER_TEMP ("voucher-management-setup-test-" + $token)
+$installRoot = Join-Path $env:ProgramFiles ("Voucher Management Setup Test-" + $token)
+$dataRoot = Join-Path $env:ProgramData ("VoucherManagementSetupTest-" + $token)
+$groupName = "VMSetup-" + $token.Substring(0, 12)
 $operatorUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 function Get-AllowRightsBySid {
@@ -138,6 +139,8 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $dataRoot -Recurse -Force -ErrorAction SilentlyContinue
     if (Get-LocalGroup -Name $groupName -ErrorAction SilentlyContinue) {
         Remove-LocalGroup -Name $groupName -ErrorAction SilentlyContinue
     }
