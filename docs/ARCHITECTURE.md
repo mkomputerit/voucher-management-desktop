@@ -172,6 +172,16 @@ before the corresponding history rows are appended. The descriptor stores HMAC
 voucher identifiers and print metadata, never clear voucher codes. It is removed
 only after the complete print event has been read back and verified.
 
+Before physical submission, SQLite print facts are re-read. A voucher with
+`print_state=UNKNOWN` is not silently treated as never printed: the operator
+must explicitly acknowledge that it may already have been printed or delivered
+outside Voucher Management. PDF generation alone does not trigger this prompt.
+If physical submission is subsequently audited, the voucher becomes positively
+`PRINTED` and an idempotent privacy-safe `PRINTED_FROM_UNKNOWN_STATE` event
+records that this first verified print began from indeterminate prior history.
+This gives field operation a measurable local signal without external
+telemetry.
+
 If the history write or verification fails, the preview exposes a **REGISTRA
 STAMPA** recovery action. That action never resubmits the document to Windows:
 it retries only the audit event with the same job ID and submission timestamp.
