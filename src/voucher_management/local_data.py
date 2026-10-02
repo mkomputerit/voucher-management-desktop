@@ -81,7 +81,7 @@ def apply_local_voucher_patch(
     placeholders = ",".join("?" for _ in ids)
     with database.transaction() as db:
         rows = db.execute(
-            f"""SELECT id, notes, is_nominal, nominality_redacted
+            f"""SELECT id, name, notes, is_nominal, nominality_redacted
                 FROM vouchers
                 WHERE controller_id=?
                   AND id IN ({placeholders})
@@ -93,6 +93,18 @@ def apply_local_voucher_patch(
             raise RuntimeError(
                 "Uno o più voucher selezionati non appartengono alla controller attiva"
             )
+
+        if clean.apply_is_nominal and clean.is_nominal is True:
+            missing_name = [
+                int(row["id"])
+                for row in rows
+                if not str(row["name"] or "").strip()
+            ]
+            if missing_name:
+                raise ValueError(
+                    "Un voucher nominale deve avere un destinatario nella "
+                    "descrizione UniFi. La descrizione controller è sola lettura."
+                )
 
         updated: list[int] = []
         unchanged: list[int] = []
