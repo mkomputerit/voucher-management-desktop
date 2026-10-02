@@ -695,7 +695,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                                 getattr(client, "site_name", "") or requested_name
                             ),
                             site_id=str(getattr(client, "site_id", "") or ""),
-                            vouchers=snapshot,
+                            vouchers=listed_snapshot,
                             observed_at=observed_at,
                         )
                         resolved_controller_id = persisted.controller_id
@@ -827,8 +827,19 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     "aggiornamento non riesce.",
                     parent=self,
                 )
+            self.populate()
+
+            recovery_owns_guard = False
+            if snapshot_authoritative:
+                recovery = getattr(
+                    self,
+                    "_offer_uncertain_create_recovery_after_refresh",
+                    None,
+                )
+                if callable(recovery):
+                    recovery_owns_guard = bool(recovery(snapshot))
             try:
-                if snapshot_authoritative:
+                if snapshot_authoritative and not recovery_owns_guard:
                     self.create_guard.clear()
             except CreateMutationGuardError as exc:
                 self.logger.warning(
@@ -842,7 +853,6 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     "sospesa per sicurezza.",
                     parent=self,
                 )
-            self.populate()
 
         def failed(exc: Exception) -> None:
             callback = getattr(self, "_controller_operation_failed", None)
