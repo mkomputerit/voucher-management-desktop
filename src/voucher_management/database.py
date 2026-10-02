@@ -436,13 +436,14 @@ ALTER TABLE vouchers ADD COLUMN missing_since TEXT;
 
 @dataclass(frozen=True)
 class PrintAuditSummary:
-    """Aggregated local print facts used by the duplicate-print warning."""
+    """Aggregated local print facts used by physical-print safety checks."""
 
     print_jobs: int
     physical_copies: int
     first_printed_at: str
     last_printed_at: str
     known_printed_without_audit: bool = False
+    print_state: str = PRINT_STATE_UNKNOWN
 
 
 class Database:
@@ -1381,11 +1382,20 @@ COMMIT;
             "SELECT print_state FROM vouchers WHERE id=?",
             (int(voucher_id),),
         ).fetchone()
+        print_state = (
+            str(state_row["print_state"] or PRINT_STATE_UNKNOWN).strip().upper()
+            if state_row is not None
+            else PRINT_STATE_UNKNOWN
+        )
+        if print_state not in {
+            PRINT_STATE_UNKNOWN,
+            PRINT_STATE_NOT_PRINTED,
+            PRINT_STATE_PRINTED,
+        }:
+            print_state = PRINT_STATE_UNKNOWN
         known_printed_without_audit = bool(
             jobs == 0
-            and state_row is not None
-            and str(state_row["print_state"] or "").strip().upper()
-            == PRINT_STATE_PRINTED
+            and print_state == PRINT_STATE_PRINTED
         )
         return PrintAuditSummary(
             print_jobs=jobs,
@@ -1393,6 +1403,7 @@ COMMIT;
             first_printed_at=str(row["first_at"]),
             last_printed_at=str(row["last_at"]),
             known_printed_without_audit=known_printed_without_audit,
+            print_state=print_state,
         )
 
     def print_summaries_for_codes(
