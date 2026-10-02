@@ -75,10 +75,10 @@ class ResolvedPendingPrint:
     state: str
     audit_id: str
     codes: tuple[str, ...]
-    unifi_ids: tuple[str, ...]
     output_file: str
     document_copies: int
     submitted_at: str
+    unifi_ids: tuple[str, ...] = ()
 
 
 class HistoryService:
