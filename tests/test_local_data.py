@@ -132,6 +132,38 @@ def test_batch_can_clear_notes_and_set_non_nominal_without_touching_unifi_name(t
         db.close()
 
 
+def test_nominal_classification_requires_unifi_recipient(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="blank-name",
+            code="9999900000",
+            name="",
+            imported_at=NOW,
+            last_synced_at=NOW,
+        )
+        with pytest.raises(ValueError, match="destinatario"):
+            apply_local_voucher_patch(
+                db,
+                controller_id=controller,
+                voucher_ids=[voucher_id],
+                patch=LocalVoucherPatch(
+                    apply_is_nominal=True,
+                    is_nominal=True,
+                ),
+                updated_at=NOW,
+                windows_user="operator",
+            )
+        row = db.connection.execute(
+            "SELECT is_nominal FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["is_nominal"] is None
+    finally:
+        db.close()
+
+
 def test_nominality_patch_rejects_non_classified_choice(tmp_path):
     db, controller = _db(tmp_path)
     try:
