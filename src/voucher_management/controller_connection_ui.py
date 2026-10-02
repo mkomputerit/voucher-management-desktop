@@ -379,6 +379,15 @@ class ControllerConnectionMixin:
                 parent=self,
             )
         self.populate()
+        if snapshot_authoritative:
+            recovery = getattr(
+                self,
+                "_offer_uncertain_create_recovery_after_refresh",
+                None,
+            )
+            if callable(recovery):
+                recovery(snapshot)
+
         self.logger.info(
             "controller_api_connected network_version=%s tls_pinned=%s "
             "snapshot_persisted_off_ui=%s snapshot_authoritative=%s",
