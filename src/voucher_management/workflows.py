@@ -56,6 +56,7 @@ class DeleteOutcome:
     vouchers: tuple[ApiVoucher, ...]
     refresh_error: UniFiApiError | None = None
     local_persistence_error: Exception | None = None
+    reconciliation_required: bool = False
 
 
 
@@ -558,7 +559,20 @@ def delete_vouchers_and_refresh(
 
     try:
         refreshed = tuple(client.list_vouchers())
-        return DeleteOutcome(vouchers=refreshed)
+        deleted_ids = set(ids)
+        stale_deleted_present = any(
+            voucher.id in deleted_ids
+            for voucher in refreshed
+        )
+        visible = tuple(
+            voucher
+            for voucher in refreshed
+            if voucher.id not in deleted_ids
+        )
+        return DeleteOutcome(
+            vouchers=visible,
+            reconciliation_required=stale_deleted_present,
+        )
     except UniFiApiError as exc:
         deleted_ids = set(ids)
         fallback = tuple(
