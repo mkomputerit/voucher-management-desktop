@@ -323,7 +323,9 @@ class AlignmentDialog(tk.Toplevel):
             text=(
                 "Sono voucher trovati sulla controller per cui il nuovo database "
                 "non possiede ancora tutte le informazioni locali. Seleziona uno "
-                "o più voucher e indica nominalità e stato stampa."
+                "o più voucher e indica la nominalità. Per i voucher creati fuori "
+                "da Voucher Management la stampa resta 'Non determinabile' salvo "
+                "evidenza verificata nello storico."
             ),
             style="Muted.TLabel",
             wraplength=790,
@@ -444,8 +446,15 @@ class AlignmentDialog(tk.Toplevel):
             self.nominal_combo.configure(state="readonly")
 
         verified = [bool(item.last_printed_at) for item in selected]
+        origins = {
+            str(item.origin or "").strip().upper()
+            for item in selected
+        }
         if verified and all(verified):
             self.print_state.set("Stampato")
+            self.print_combo.configure(state="disabled")
+        elif origins == {"CONTROLLER"}:
+            self.print_state.set("Non determinabile")
             self.print_combo.configure(state="disabled")
         else:
             self.print_state.set("")
