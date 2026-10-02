@@ -167,6 +167,56 @@ try {
     }
     Remove-Item -LiteralPath $junctionDataRoot -Force
 
+    # Reparse points nested below DataRoot are equally unsafe for recursive
+    # icacls/Remove-Item operations and must be rejected without traversing them.
+    $treeDataRoot = Join-Path $env:ProgramData ("VoucherManagementTree-" + $token)
+    $treeTarget = Join-Path $root "tree-junction-target"
+    New-Item -ItemType Directory -Force -Path $treeDataRoot | Out-Null
+    New-Item -ItemType Directory -Force -Path $treeTarget | Out-Null
+    $treeSentinel = Join-Path $treeTarget "must-survive.txt"
+    Set-Content -LiteralPath $treeSentinel -Value "preserve" -Encoding ascii
+    $nestedJunction = Join-Path $treeDataRoot "linked"
+    New-Item -ItemType Junction -Path $nestedJunction -Target $treeTarget | Out-Null
+
+    $treeInstallRejected = $false
+    try {
+        $treeInstallArgs = @{
+            SourcePath = $SourcePath
+            InstallRoot = $installRoot
+            DataRoot = $treeDataRoot
+            OperatorGroup = $groupName
+            OperatorUser = $operatorUser
+            SkipShortcut = $true
+        }
+        & $installer @treeInstallArgs
+    }
+    catch {
+        $treeInstallRejected = $true
+    }
+    if (-not $treeInstallRejected -or -not (Test-Path -LiteralPath $treeSentinel)) {
+        throw "L'installer non ha rifiutato un reparse point interno al DataRoot."
+    }
+
+    $treeUninstallRejected = $false
+    try {
+        $treeUninstallArgs = @{
+            InstallRoot = $installRoot
+            DataRoot = $treeDataRoot
+            OperatorGroup = $groupName
+            RemoveData = $true
+            SkipShortcut = $true
+        }
+        & $uninstaller @treeUninstallArgs
+    }
+    catch {
+        $treeUninstallRejected = $true
+    }
+    if (-not $treeUninstallRejected -or -not (Test-Path -LiteralPath $treeSentinel)) {
+        throw "Il disinstaller non ha rifiutato un reparse point interno al DataRoot."
+    }
+    Remove-Item -LiteralPath $nestedJunction -Force
+    Remove-Item -LiteralPath $treeDataRoot -Recurse -Force
+
     # The data ACL must never be delegated to a broad Windows built-in group.
     $administrators = Get-LocalGroup -SID "S-1-5-32-544"
     $builtInGroupRejected = $false
@@ -420,6 +470,7 @@ finally {
     Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $dataRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $invalidDataParent -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $treeDataRoot -Recurse -Force -ErrorAction SilentlyContinue
     foreach ($cleanupGroup in @(
         $groupName,
         $foreignGroupName,
