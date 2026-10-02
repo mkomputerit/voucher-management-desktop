@@ -171,6 +171,11 @@ def test_public_workflow_release_permissions_are_isolated(tmp_path: Path):
     assert "Upload public release files" in workflow
     assert "Download verified release files" in workflow
     assert "Publish GitHub release" in workflow
+    assert "Build self-contained Windows Setup" in workflow
+    assert "Test self-contained Windows Setup" in workflow
+    assert "VoucherManagement-Setup-*.exe" in workflow
+    assert 'setup="$(find release-files' in workflow
+    assert '"$setup" \\' in workflow
     assert "SHA256SUMS.txt" in workflow
     assert "sha256sum -c SHA256SUMS.txt" in workflow
     assert "-notmatch '^\\d+\\.\\d+\\.\\d+$'" in workflow
