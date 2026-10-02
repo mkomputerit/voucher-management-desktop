@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 PRINT_STATE_UNKNOWN = "UNKNOWN"
 PRINT_STATE_NOT_PRINTED = "NOT_PRINTED"
@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS controllers (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     api_root TEXT NOT NULL,
+    site_id TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     cert_sha256 TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
@@ -56,6 +57,9 @@ CREATE TABLE IF NOT EXISTS controllers (
     last_successful_sync_at TEXT,
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
 );
+
+CREATE INDEX IF NOT EXISTS idx_controllers_identity
+ON controllers(api_root, site_id, is_active);
 
 CREATE TABLE IF NOT EXISTS application_sessions (
     id INTEGER PRIMARY KEY,
@@ -413,6 +417,13 @@ WHERE is_nominal IS NOT NULL
   AND print_state <> 'UNKNOWN';
 """
 
+
+MIGRATION_7_TO_8_SQL = """
+ALTER TABLE controllers ADD COLUMN site_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_controllers_identity
+ON controllers(api_root, site_id, is_active);
+"""
+
 @dataclass(frozen=True)
 class PrintAuditSummary:
     """Aggregated local print facts used by the duplicate-print warning."""
@@ -603,6 +614,37 @@ COMMIT;
 """
                 )
                 current = 7
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 7:
+            try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(controllers)"
+                    )
+                }
+                migration_sql = (
+                    MIGRATION_7_TO_8_SQL
+                    if "site_id" not in columns
+                    else """
+CREATE INDEX IF NOT EXISTS idx_controllers_identity
+ON controllers(api_root, site_id, is_active);
+"""
+                )
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + migration_sql
+                    + """
+PRAGMA user_version = 8;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '8');
+COMMIT;
+"""
+                )
+                current = 8
             except Exception:
                 self.connection.rollback()
                 raise
@@ -947,21 +989,32 @@ COMMIT;
 
     def create_controller(
         self, *, name: str, api_root: str, created_at: str,
-        description: str = "", cert_sha256: str = "",
+        description: str = "", cert_sha256: str = "", site_id: str = "",
     ) -> int:
-        """Persist non-secret controller identity; credentials are never accepted."""
+        """Persist non-secret controller/site identity; credentials are never accepted."""
 
         with self.transaction() as db:
             cursor = db.execute(
                 """INSERT INTO controllers
-                   (name, api_root, description, cert_sha256, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (name.strip(), api_root.strip(), description.strip(), cert_sha256.strip(), created_at),
+                   (name, api_root, site_id, description, cert_sha256, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    name.strip(),
+                    api_root.strip(),
+                    site_id.strip(),
+                    description.strip(),
+                    cert_sha256.strip(),
+                    created_at,
+                ),
             )
             return int(cursor.lastrowid)
 
     def find_controller_by_api_root(self, api_root: str) -> int | None:
-        """Return the active controller matching an API root, if already known."""
+        """Return one active controller matching an API root, if already known.
+
+        This compatibility lookup is intentionally not used to establish a new
+        UniFi identity once a site UUID is available.
+        """
 
         row = self.connection.execute(
             """SELECT id FROM controllers
@@ -970,16 +1023,88 @@ COMMIT;
         ).fetchone()
         return None if row is None else int(row["id"])
 
-    def get_or_create_controller(
-        self, *, name: str, api_root: str, observed_at: str,
-        cert_sha256: str = "",
-    ) -> int:
-        """Resolve one non-secret controller profile by normalized API root."""
+    def find_controller_by_identity(
+        self,
+        *,
+        api_root: str,
+        site_id: str,
+    ) -> int | None:
+        """Resolve the durable UniFi target by API root plus Site UUID."""
+
+        root = api_root.strip()
+        site = site_id.strip()
+        if not site:
+            return self.find_controller_by_api_root(root)
+        row = self.connection.execute(
+            """SELECT id FROM controllers
+               WHERE api_root=? AND site_id=? AND is_active=1
+               ORDER BY id LIMIT 1""",
+            (root, site),
+        ).fetchone()
+        return None if row is None else int(row["id"])
+
+    def controller_site_id(self, controller_id: int) -> str:
+        """Return the persisted UniFi Site UUID for one controller profile."""
 
         row = self.connection.execute(
-            "SELECT id FROM controllers WHERE api_root=? AND is_active=1 ORDER BY id LIMIT 1",
-            (api_root.strip(),),
+            "SELECT site_id FROM controllers WHERE id=?",
+            (int(controller_id),),
         ).fetchone()
+        return "" if row is None else str(row["site_id"] or "").strip()
+
+    def get_or_create_controller(
+        self, *, name: str, api_root: str, observed_at: str,
+        cert_sha256: str = "", site_id: str = "",
+    ) -> int:
+        """Resolve one controller profile by normalized API root and Site UUID.
+
+        Pre-v8 rows have an empty site_id. The first verified connection may
+        adopt that empty identity in place, preserving all historical voucher
+        rows. A different non-empty Site UUID at the same API root is never
+        silently merged into the existing archive.
+        """
+
+        root = api_root.strip()
+        site = site_id.strip()
+        row = None
+        if site:
+            row = self.connection.execute(
+                """SELECT id FROM controllers
+                   WHERE api_root=? AND site_id=? AND is_active=1
+                   ORDER BY id LIMIT 1""",
+                (root, site),
+            ).fetchone()
+            if row is None:
+                legacy_rows = self.connection.execute(
+                    """SELECT id FROM controllers
+                       WHERE api_root=? AND site_id='' AND is_active=1
+                       ORDER BY id""",
+                    (root,),
+                ).fetchall()
+                if len(legacy_rows) == 1:
+                    row = legacy_rows[0]
+                    with self.transaction() as db:
+                        db.execute(
+                            """UPDATE controllers
+                               SET site_id=?, name=?, cert_sha256=?, last_used_at=?
+                               WHERE id=?""",
+                            (
+                                site,
+                                name.strip(),
+                                cert_sha256.strip(),
+                                observed_at,
+                                row["id"],
+                            ),
+                        )
+                    return int(row["id"])
+        else:
+            row = self.connection.execute(
+                """SELECT id FROM controllers
+                   WHERE api_root=? AND is_active=1
+                   ORDER BY id LIMIT 1""",
+                (root,),
+            ).fetchone()
+
         if row is not None:
             with self.transaction() as db:
                 db.execute(
@@ -990,9 +1115,10 @@ COMMIT;
             return int(row["id"])
         return self.create_controller(
             name=name,
-            api_root=api_root,
+            api_root=root,
             created_at=observed_at,
             cert_sha256=cert_sha256,
+            site_id=site,
         )
 
     def upsert_voucher(
