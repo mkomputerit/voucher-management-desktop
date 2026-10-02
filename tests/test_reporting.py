@@ -1052,6 +1052,41 @@ def test_full_history_can_explicitly_export_preserved_revoked_voucher_code(tmp_p
 
 
 
+def test_external_controller_deletion_has_no_invented_reason(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        voucher_id = _voucher(
+            db,
+            controller,
+            "deleted-externally",
+            "8080808080",
+            name="Ospite esterno",
+        )
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[],
+            confirmed_absent_ids=frozenset({"deleted-externally"}),
+            observed_at="2026-09-29T10:04:00+00:00",
+            sync_uuid="external-delete-confirmed",
+        )
+
+        dataset = build_report_dataset(
+            db,
+            kind=ReportKind.PREPARATION_DELETED,
+            generated_at="2026-09-29T10:10:00+00:00",
+        )
+
+        assert [row.voucher_id for row in dataset.rows] == [voucher_id]
+        row = dataset.rows[0]
+        assert row.preparation_deleted_at == "2026-09-29T10:04:00+00:00"
+        assert row.preparation_delete_reason == ""
+        assert row.controller_deletion_source == "Rilevata sulla controller"
+        assert row.status == "Eliminato dalla controller"
+    finally:
+        db.close()
+
+
 def test_preparation_deleted_report_preserves_reason_and_timestamp(tmp_path):
     db, controller = _db(tmp_path)
     try:
@@ -1086,6 +1121,7 @@ def test_preparation_deleted_report_preserves_reason_and_timestamp(tmp_path):
             db,
             controller_id=controller,
             present_unifi_ids=frozenset(),
+            confirmed_absent_ids=frozenset({"deleted-preparation"}),
             observed_at="2026-09-29T10:05:00+00:00",
         )
         assert deleted == (voucher_id,)
@@ -1101,6 +1137,7 @@ def test_preparation_deleted_report_preserves_reason_and_timestamp(tmp_path):
         row = dataset.rows[0]
         assert row.preparation_deleted_at == "2026-09-29T10:05:00+00:00"
         assert row.preparation_delete_reason == "Voucher creato per errore"
+        assert row.controller_deletion_source == "Voucher Management"
         assert row.status == "Eliminato dalla controller"
         assert dataset.totals.preparation_deleted_vouchers == 1
     finally:
