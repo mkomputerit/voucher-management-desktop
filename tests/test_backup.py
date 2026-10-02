@@ -1076,6 +1076,21 @@ class BackupServiceTests(unittest.TestCase):
         self.assertEqual(settings["controller_site_id"], "")
         self.assertEqual(settings["controller_cert_sha256"], "")
 
+    def test_restore_blocks_unresolved_uncertain_create_intent(self):
+        backup = Path(self.temp.name) / "backup.zip"
+        self.service.create(backup)
+
+        intent = self.paths.data / "pending_create_intent.json"
+        intent.write_text('{"format":1}\n', encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            BackupError,
+            "esito incerto",
+        ):
+            self.service.restore(backup)
+
+        intent.unlink()
+
     def test_restore_rejects_history_key_fingerprint_mismatch_before_live_change(self):
         backup = Path(self.temp.name) / "backup.zip"
         self.service.create(backup)
