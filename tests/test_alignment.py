@@ -57,7 +57,7 @@ def test_controller_import_requires_alignment(tmp_path):
         db.close()
 
 
-def test_operator_can_complete_alignment_with_unknown_print_date(tmp_path):
+def test_controller_discovered_voucher_cannot_claim_unverified_print(tmp_path):
     db, controller = _db(tmp_path)
     try:
         persist_successful_snapshot(
@@ -73,30 +73,41 @@ def test_operator_can_complete_alignment_with_unknown_print_date(tmp_path):
             ).fetchone()["id"]
         )
 
+        try:
+            align_vouchers(
+                db,
+                controller_id=controller,
+                voucher_ids=[voucher_id],
+                is_nominal=True,
+                print_state=PRINT_STATE_PRINTED,
+                aligned_at="2026-10-01T09:00:00+00:00",
+                windows_user="PC\\operatore",
+            )
+        except ValueError as exc:
+            assert "Non determinabile" in str(exc)
+        else:
+            raise AssertionError(
+                "controller-discovered voucher must not invent print evidence"
+            )
+
         result = align_vouchers(
             db,
             controller_id=controller,
             voucher_ids=[voucher_id],
             is_nominal=True,
-            print_state=PRINT_STATE_PRINTED,
-            aligned_at="2026-10-01T09:00:00+00:00",
+            print_state=PRINT_STATE_UNKNOWN,
+            aligned_at="2026-10-01T09:05:00+00:00",
             windows_user="PC\\operatore",
         )
-
         assert result.updated_ids == (voucher_id,)
-        assert alignment_candidates(db, controller_id=controller) == ()
         row = db.connection.execute(
             """SELECT is_nominal, print_state, alignment_completed_at
                FROM vouchers WHERE id=?""",
             (voucher_id,),
         ).fetchone()
         assert row["is_nominal"] == 1
-        assert row["print_state"] == PRINT_STATE_PRINTED
-        assert row["alignment_completed_at"] == "2026-10-01T09:00:00+00:00"
-        assert db.connection.execute(
-            "SELECT COUNT(*) FROM voucher_prints WHERE voucher_id=?",
-            (voucher_id,),
-        ).fetchone()[0] == 0
+        assert row["print_state"] == PRINT_STATE_UNKNOWN
+        assert row["alignment_completed_at"] == "2026-10-01T09:05:00+00:00"
     finally:
         db.close()
 
