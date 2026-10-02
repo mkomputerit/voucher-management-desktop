@@ -269,6 +269,85 @@ def match_pending_create_intent(
     )
 
 
+def reject_pending_create_intent_to_path(
+    database_path: Path,
+    marker_path: Path,
+    *,
+    controller_id: int,
+    candidate_ids: Sequence[str],
+    rejected_at: str,
+    windows_user: str,
+) -> tuple[int, ...]:
+    """Record an operator decision not to associate candidates, then unblock."""
+
+    pending = load_pending_create_intent(marker_path)
+    if pending is None:
+        raise UncertainCreateRecoveryError(
+            "Nessuna creazione incerta da chiudere"
+        )
+    if pending.controller_id != int(controller_id):
+        raise UncertainCreateRecoveryError(
+            "La creazione incerta appartiene a un'altra controller"
+        )
+
+    ids = tuple(
+        dict.fromkeys(
+            str(value).strip()
+            for value in candidate_ids
+            if str(value).strip()
+        )
+    )
+    stamp = str(rejected_at or "").strip()
+    operator = str(windows_user or "").strip()
+    if not stamp or not operator:
+        raise ValueError("rejected_at and windows_user are required")
+
+    database = Database(Path(database_path))
+    try:
+        database.initialize()
+        rows = []
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            rows = database.connection.execute(
+                f"""SELECT id, unifi_id
+                    FROM vouchers
+                    WHERE controller_id=?
+                      AND unifi_id IN ({placeholders})
+                      AND archived_at IS NULL
+                    ORDER BY id""",
+                (int(controller_id), *ids),
+            ).fetchall()
+            if len(rows) != len(ids):
+                raise UncertainCreateRecoveryError(
+                    "Uno o più voucher candidati non sono nello snapshot locale"
+                )
+
+        with database.transaction() as tx:
+            for row in rows:
+                tx.execute(
+                    """INSERT INTO voucher_events(
+                           event_uuid, voucher_id, event_type, occurred_at,
+                           source, windows_user, details_json
+                       ) VALUES (?, ?, 'UNCERTAIN_CREATE_ASSOCIATION_REJECTED', ?, 'OPERATOR', ?, ?)""",
+                    (
+                        str(uuid4()),
+                        int(row["id"]),
+                        stamp,
+                        operator,
+                        Database.encode_event_details(
+                            {
+                                "requested_at": pending.requested_at,
+                                "workflow": "operator_rejected_uncertain_create",
+                            }
+                        ),
+                    ),
+                )
+        clear_pending_create_intent(marker_path)
+        return tuple(int(row["id"]) for row in rows)
+    finally:
+        database.close()
+
+
 def confirm_pending_create_intent_to_path(
     database_path: Path,
     marker_path: Path,
@@ -365,5 +444,6 @@ __all__ = [
     "confirm_pending_create_intent_to_path",
     "load_pending_create_intent",
     "match_pending_create_intent",
+    "reject_pending_create_intent_to_path",
     "write_pending_create_intent",
 ]
