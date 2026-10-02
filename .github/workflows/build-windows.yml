@@ -210,6 +210,14 @@ jobs:
         shell: pwsh
         run: .\tools\Build-WindowsSetup.ps1 -SourcePath .\dist\VoucherManagement -OutputDirectory .\dist\installer
 
+      - name: Verify Windows Setup icon
+        shell: pwsh
+        run: |
+          $version = (Get-Content version.txt -Raw).Trim()
+          .\.venv\Scripts\python.exe tools\verify_exe_icon.py `
+            --exe ".\dist\installer\VoucherManagement-Setup-$version.exe" `
+            --ico ".\dist\VoucherManagement\_internal\assets\VoucherManagement.ico"
+
       - name: Test self-contained Windows Setup
         shell: pwsh
         run: $version = (Get-Content version.txt -Raw).Trim(); .\tools\Test-WindowsSetupBootstrap.ps1 -SetupPath ".\dist\installer\VoucherManagement-Setup-$version.exe"
