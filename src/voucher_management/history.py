@@ -322,6 +322,30 @@ class HistoryService:
     def _digest(code: str, secret: bytes) -> str:
         return hmac.new(secret, code.encode("ascii"), hashlib.sha256).hexdigest()
 
+    @staticmethod
+    def _stable_identity(site_id: str, unifi_id: str) -> str:
+        site = str(site_id or "").strip()
+        voucher = str(unifi_id or "").strip()
+        if not site or not voucher:
+            return ""
+        return f"site:{site}|voucher:{voucher}"
+
+    @classmethod
+    def _stable_digest(
+        cls,
+        site_id: str,
+        unifi_id: str,
+        secret: bytes,
+    ) -> str:
+        identity = cls._stable_identity(site_id, unifi_id)
+        if not identity:
+            return ""
+        return hmac.new(
+            secret,
+            identity.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
     def _items(self):
         """Yield audit rows, failing closed if any persistent row is corrupt.
 
@@ -370,6 +394,56 @@ class HistoryService:
                 hits[code] = DuplicateHit(digest=digest, recipient=item.get("recipient", ""), timestamp=item.get("timestamp", ""), output_file=item.get("output_file", ""))
         return hits
 
+    def find_duplicates_for_batch(
+        self,
+        batch: VoucherBatch,
+        settings: dict,
+    ) -> dict[str, DuplicateHit]:
+        """Find prior generated documents using stable UUID identity when present.
+
+        New rows are matched by HMAC(Site UUID + Voucher UUID). Legacy rows that
+        predate this identity remain readable through their code HMAC. A modern
+        row carrying voucher_ref never falls back to its code HMAC, preventing a
+        future reused code from conflating two distinct UniFi voucher UUIDs.
+        """
+
+        secret = self._secret(settings)
+        ref_targets: dict[str, str] = {}
+        code_targets: dict[str, str] = {}
+        for voucher in batch.vouchers:
+            code = str(voucher.code).strip()
+            if not code:
+                continue
+            code_targets[self._digest(code, secret)] = code
+            stable = self._stable_digest(
+                batch.site_id,
+                voucher.unifi_id,
+                secret,
+            )
+            if stable:
+                ref_targets[stable] = code
+
+        hits: dict[str, DuplicateHit] = {}
+        for item in self._items() or ():
+            if item.get("event", "generate") != "generate":
+                continue
+            stable_value = str(item.get("voucher_ref", "") or "")
+            if stable_value:
+                code = ref_targets.get(stable_value)
+                digest = stable_value
+            else:
+                legacy_value = str(item.get("voucher_id", "") or "")
+                code = code_targets.get(legacy_value)
+                digest = legacy_value
+            if code:
+                hits[code] = DuplicateHit(
+                    digest=digest,
+                    recipient=str(item.get("recipient", "") or ""),
+                    timestamp=str(item.get("timestamp", "") or ""),
+                    output_file=str(item.get("output_file", "") or ""),
+                )
+        return hits
+
     def stats_for_codes(self, codes: list[str], settings: dict) -> dict[str, PrintStats]:
         """Summarise PDF generation, first print and physical print counters."""
         secret = self._secret(settings)
@@ -410,6 +484,60 @@ class HistoryService:
             if value:
                 names.add(Path(value).name)
         return names
+
+    def voucher_links_for_output(
+        self,
+        candidate_vouchers: list[tuple[str, str]],
+        site_id: str,
+        output_path: Path,
+        settings: dict,
+    ) -> list[tuple[str, str]]:
+        """Resolve one PDF to stable voucher UUID/code pairs.
+
+        Modern rows prefer voucher_ref. Legacy rows without a stable reference
+        fall back to the historical code HMAC and fail closed if that code is
+        ambiguous among the supplied vouchers.
+        """
+
+        secret = self._secret(settings)
+        output_name = Path(output_path).name
+        ref_targets: dict[str, tuple[str, str]] = {}
+        legacy_targets: dict[str, list[tuple[str, str]]] = {}
+        for unifi_id, code in candidate_vouchers:
+            remote = str(unifi_id or "").strip()
+            display = str(code or "").strip()
+            if not remote or not display:
+                continue
+            stable = self._stable_digest(site_id, remote, secret)
+            if stable:
+                ref_targets[stable] = (remote, display)
+            legacy_targets.setdefault(
+                self._digest(display, secret),
+                [],
+            ).append((remote, display))
+
+        linked: list[tuple[str, str]] = []
+        for item in self._items() or ():
+            if item.get("event", "generate") != "generate":
+                continue
+            if Path(str(item.get("output_file", "") or "")).name != output_name:
+                continue
+            stable_value = str(item.get("voucher_ref", "") or "")
+            if stable_value:
+                match = ref_targets.get(stable_value)
+                if match is not None:
+                    linked.append(match)
+                continue
+
+            legacy_value = str(item.get("voucher_id", "") or "")
+            matches = legacy_targets.get(legacy_value, [])
+            if len(matches) > 1:
+                raise HistoryError(
+                    "Collegamento PDF legacy ambiguo per codice voucher"
+                )
+            if matches:
+                linked.append(matches[0])
+        return linked
 
     def codes_for_output(
         self,
@@ -454,6 +582,21 @@ class HistoryService:
                 "event": "generate",
                 "event_id": secrets.token_hex(16),
                 "voucher_id": self._digest(v.code, secret),
+                **(
+                    {
+                        "voucher_ref": self._stable_digest(
+                            batch.site_id,
+                            v.unifi_id,
+                            secret,
+                        )
+                    }
+                    if self._stable_digest(
+                        batch.site_id,
+                        v.unifi_id,
+                        secret,
+                    )
+                    else {}
+                ),
                 "recipient": v.recipient or batch.recipient,
                 "duration_minutes": v.duration_minutes,
                 "timestamp": now,
