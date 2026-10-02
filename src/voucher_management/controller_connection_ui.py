@@ -99,6 +99,7 @@ class ControllerConnectionMixin:
                     cert_sha256=client.trusted_cert_sha256 or "",
                     requested_name=requested_name,
                     site_name=str(info.get("siteName") or ""),
+                    site_id=str(info.get("siteId") or ""),
                     vouchers=vouchers,
                     observed_at=observed_at,
                 )
@@ -283,8 +284,9 @@ class ControllerConnectionMixin:
                     getattr(self, "_requested_controller_name", "")
                 ).strip()
             )
-            existing_id = self.database.find_controller_by_api_root(
-                client.base_url
+            existing_id = self.database.find_controller_by_identity(
+                api_root=client.base_url,
+                site_id=str(info.get("siteId") or ""),
             )
             persisted_name = requested_name
             if not persisted_name and existing_id is not None:
@@ -300,6 +302,7 @@ class ControllerConnectionMixin:
                     api_root=client.base_url,
                     observed_at=snapshot_observed_at,
                     cert_sha256=client.trusted_cert_sha256 or "",
+                    site_id=str(info.get("siteId") or ""),
                 )
                 persist_successful_snapshot(
                     self.database,
