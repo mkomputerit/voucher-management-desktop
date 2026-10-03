@@ -611,9 +611,10 @@ def _ensure_import_candidates(
                            (controller_id, unifi_id, code, name,
                             created_at, imported_at, duration_minutes,
                             authorized_guest_count, ever_used, usage_observed,
-                            expired, present_on_controller, last_seen_at,
-                            last_synced_at, archived_at, origin)
-                           VALUES (?, ?, ?, ?, NULL, ?, ?, 0, 0, 0, 1, 0, NULL, ?, NULL, 'UNKNOWN')""",
+                            expired, expiry_observed, present_on_controller,
+                            last_seen_at, last_synced_at, archived_at, origin)
+                           VALUES (?, ?, ?, ?, NULL, ?, ?, 0, 0, 0, 0, 0, 0,
+                                   NULL, ?, NULL, 'UNKNOWN')""",
                         (
                             archive_controller_id,
                             unifi_id,
@@ -649,7 +650,8 @@ def _ensure_import_candidates(
                                END,
                                origin='UNKNOWN',
                                duration_minutes=COALESCE(duration_minutes, ?),
-                               expired=1, present_on_controller=0,
+                               expired=0, expiry_observed=0,
+                               present_on_controller=0,
                                archived_at=NULL
                            WHERE id=?""",
                         (
