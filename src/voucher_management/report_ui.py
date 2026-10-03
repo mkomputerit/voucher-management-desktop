@@ -339,10 +339,12 @@ class ReportDialog(tk.Toplevel):
                 parent=self,
             )
 
-        self.app._run_background_task(
+        started = self.app._run_background_task(
             "Generazione report…",
             worker,
             completed,
             failed,
             busy_scope=self._set_busy,
         )
+        if not started and extension == ".pdf":
+            output.unlink(missing_ok=True)
