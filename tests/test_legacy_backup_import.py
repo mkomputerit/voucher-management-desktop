@@ -206,8 +206,9 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
         ).fetchone()[0] == 2
         rows = database.connection.execute(
             """SELECT code, name, assigned_to, created_at,
-                       present_on_controller, expired, archived_at,
-                       origin, is_nominal, print_state, usage_observed
+                       present_on_controller, expired, expiry_observed,
+                       archived_at, origin, is_nominal, print_state,
+                       usage_observed
                FROM vouchers ORDER BY code"""
         ).fetchall()
         assert [row["code"] for row in rows] == [
@@ -221,7 +222,8 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
         assert all(row["assigned_to"] == "" for row in rows)
         assert all(row["created_at"] is None for row in rows)
         assert all(row["present_on_controller"] == 0 for row in rows)
-        assert all(row["expired"] == 1 for row in rows)
+        assert all(row["expired"] == 0 for row in rows)
+        assert all(row["expiry_observed"] == 0 for row in rows)
         assert all(row["archived_at"] is None for row in rows)
         assert all(row["origin"] == "UNKNOWN" for row in rows)
         assert all(row["is_nominal"] is None for row in rows)
