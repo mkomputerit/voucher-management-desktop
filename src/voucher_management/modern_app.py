@@ -3477,14 +3477,22 @@ class ModernVoucherApp(
         """
 
         tree = event.widget
+        is_home = tree is self.home_recent_tree
         mapping = (
             getattr(self, "_home_voucher_by_iid", {})
-            if tree is self.home_recent_tree else self.by_iid
+            if is_home else self.by_iid
         )
         voucher = mapping.get(tree.focus())
         if voucher is None:
             return "break"
-        if self._is_expired(voucher) or not self._voucher_alignment_ready(voucher):
+        if self._is_expired(voucher):
+            self.bell()
+            return "break"
+        # Home remains a print shortcut and therefore requires alignment.
+        # The full Voucher table must still allow selecting an unaligned active
+        # row so the operator can inspect it and receive an explicit action-time
+        # alignment message instead of an apparently dead table.
+        if is_home and not self._voucher_alignment_ready(voucher):
             self.bell()
             return "break"
         if voucher.id in self.checked_ids:
@@ -3575,9 +3583,12 @@ class ModernVoucherApp(
         self.tree.focus_set()
         self.tree.focus(iid)
         voucher = self.by_iid[iid]
-        if self._is_expired(voucher) or not self._voucher_alignment_ready(voucher):
+        if self._is_expired(voucher):
             self.bell()
             return "break"
+        # Row selection is an operator navigation concept. Alignment is checked
+        # at the action boundary (printing/deletion), so an active voucher must
+        # remain selectable even when it still needs local alignment.
         if voucher.id in self.checked_ids:
             self.checked_ids.remove(voucher.id)
         else:
@@ -3700,7 +3711,7 @@ class ModernVoucherApp(
         valid_ids = {
             v.id
             for v in self.vouchers
-            if not self._is_expired(v) and self._voucher_alignment_ready(v)
+            if not self._is_expired(v)
         }
         self.checked_ids.intersection_update(valid_ids)
         candidates = []
