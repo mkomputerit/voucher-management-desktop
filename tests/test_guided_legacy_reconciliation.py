@@ -45,7 +45,7 @@ def test_guided_reconciliation_runs_once_per_session_and_reuses_verified_plan(
     monkeypatch.setattr(
         data_maintenance_ui,
         "legacy_candidates_from_database",
-        lambda _db: ("candidate",),
+        lambda _db, **_kwargs: ("candidate",),
     )
     monkeypatch.setattr(
         data_maintenance_ui,
@@ -95,7 +95,7 @@ def test_guided_reconciliation_stays_silent_when_plan_is_already_reconciled(
     monkeypatch.setattr(
         data_maintenance_ui,
         "legacy_candidates_from_database",
-        lambda _db: (),
+        lambda _db, **_kwargs: (),
     )
     monkeypatch.setattr(
         data_maintenance_ui,
