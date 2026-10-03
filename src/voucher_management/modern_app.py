@@ -1247,9 +1247,7 @@ class ModernVoucherApp(
             self.home_sync_button,
             self.sidebar_action_button,
             self.refresh_button,
-            self.nominality_button,
-            self.notes_button,
-            self.alignment_button,
+            self.voucher_actions_button,
             self.delete_button,
             self.print_button,
             self.open_pdf_button,
@@ -1527,18 +1525,32 @@ class ModernVoucherApp(
             text="Seleziona tutti da stampare",
             command=self.select_unprinted,
         ).pack(side="left", padx=(8, 0))
-        self.nominality_button = ttk.Button(
+        self.voucher_actions_button = ttk.Menubutton(
             primary_actions,
-            text="Nominalità…",
+            text="Allinea / modifica ▾",
+        )
+        self.voucher_actions_menu = tk.Menu(
+            self.voucher_actions_button,
+            tearoff=False,
+        )
+        self.voucher_actions_menu.add_command(
+            label="Allinea stato locale…",
+            command=self.align_pending_vouchers,
+        )
+        self.voucher_actions_menu.add_separator()
+        self.voucher_actions_menu.add_command(
+            label="Nominalità…",
             command=self.edit_selected_nominality,
         )
-        self.nominality_button.pack(side="left", padx=(8, 0))
-        self.notes_button = ttk.Button(
-            primary_actions,
-            text="Note…",
+        self.voucher_actions_menu.add_command(
+            label="Note…",
             command=self.edit_selected_notes,
         )
-        self.notes_button.pack(side="left", padx=(8, 0))
+        self.voucher_actions_menu.configure(
+            postcommand=self._refresh_voucher_actions_menu,
+        )
+        self.voucher_actions_button.configure(menu=self.voucher_actions_menu)
+        self.voucher_actions_button.pack(side="left", padx=(8, 0))
 
         secondary_actions = ttk.Frame(toolbar)
         secondary_actions.grid(row=0, column=1, sticky="e")
@@ -1548,12 +1560,6 @@ class ModernVoucherApp(
             command=self.refresh,
         )
         self.refresh_button.pack(side="left")
-        self.alignment_button = ttk.Button(
-            secondary_actions,
-            text="Allinea…",
-            command=self.align_pending_vouchers,
-        )
-        self.alignment_button.pack(side="left", padx=(8, 0))
         self.open_pdf_button = ttk.Button(
             secondary_actions,
             text="Apri PDF",
@@ -1689,6 +1695,18 @@ class ModernVoucherApp(
             ),
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(8, 0))
+
+    def _refresh_voucher_actions_menu(self) -> None:
+        """Enable only local actions valid for the current blue selection."""
+
+        states = self.voucher_action_states()
+        menu = self.voucher_actions_menu
+        menu.entryconfigure(0, state="normal" if states["align"] else "disabled")
+        menu.entryconfigure(
+            2,
+            state="normal" if states["nominality"] else "disabled",
+        )
+        menu.entryconfigure(3, state="normal" if states["notes"] else "disabled")
 
     def _build_report_workspace(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(0, weight=1)
