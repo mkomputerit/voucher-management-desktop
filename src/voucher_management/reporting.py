@@ -113,6 +113,9 @@ class ReportRow:
     created_at: str
     imported_at: str
     expires_at: str
+    activated_at: str
+    duration_minutes: int
+    authorized_guest_limit: int | None
     authorized_guest_count: int
     ever_used: bool
     usage_observed: bool
@@ -129,6 +132,7 @@ class ReportRow:
     status: str
     origin: str
     is_nominal: bool | None
+    last_seen_at: str = ""
     last_synced_at: str = ""
     nominality_redacted: bool = False
     security_revoked_at: str = ""
@@ -530,6 +534,13 @@ def build_report_dataset(
             created_at=str(raw["created_at"] or ""),
             imported_at=str(raw["imported_at"] or ""),
             expires_at=str(raw["expires_at"] or ""),
+            activated_at=str(raw["activated_at"] or ""),
+            duration_minutes=int(raw["duration_minutes"] or 0),
+            authorized_guest_limit=(
+                None
+                if raw["authorized_guest_limit"] is None
+                else int(raw["authorized_guest_limit"])
+            ),
             authorized_guest_count=int(raw["authorized_guest_count"] or 0),
             ever_used=ever_used,
             usage_observed=usage_observed,
@@ -554,6 +565,7 @@ def build_report_dataset(
             ),
             origin=str(raw["origin"] or "UNKNOWN"),
             is_nominal=is_nominal,
+            last_seen_at=str(raw["last_seen_at"] or ""),
             last_synced_at=str(raw["last_synced_at"] or ""),
             nominality_redacted=nominality_redacted,
             security_revoked_at=str(raw["security_revoked_at"] or ""),
@@ -581,7 +593,7 @@ def build_report_dataset(
 
     materialized = tuple(rows)
     sync_times = sorted(
-        row.last_synced_at for row in materialized if row.last_synced_at
+        row.last_seen_at for row in materialized if row.last_seen_at
     )
     return ReportDataset(
         kind=kind,
