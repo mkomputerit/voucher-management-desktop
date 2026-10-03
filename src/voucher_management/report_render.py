@@ -99,7 +99,7 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
         ["Utilizzati almeno una volta", str(totals.used_vouchers)],
         ["Mai osservati utilizzati", str(totals.never_used_vouchers)],
         ["Utilizzo non determinabile", str(totals.usage_unknown_vouchers)],
-        ["Guest autorizzati (somma ultimo conteggio)", str(totals.total_controller_uses)],
+        ["Guest autorizzati (conteggio cumulativo osservato)", str(totals.total_controller_uses)],
         ["Voucher scaduti", str(totals.expired_vouchers)],
         ["Voucher stampati", str(totals.printed_vouchers)],
         ["Mai stampati", str(totals.never_printed)],
@@ -119,73 +119,379 @@ def _summary_rows(dataset: ReportDataset) -> list[list[str]]:
     ]
 
 
+def _usage_value(row) -> str:
+    if row.ever_used:
+        return "Utilizzato"
+    if row.usage_observed:
+        return "Mai osservato utilizzato"
+    return "Uso non determinabile"
+
+
+def _presence_value(row) -> str:
+    return "Presente" if row.present_on_controller else "Non presente"
+
+
+def _duration_value(row) -> str:
+    minutes = int(row.duration_minutes or 0)
+    if minutes <= 0:
+        return "—"
+    if minutes % 1440 == 0:
+        days = minutes // 1440
+        return f"{days} giorno" if days == 1 else f"{days} giorni"
+    if minutes % 60 == 0:
+        hours = minutes // 60
+        return f"{hours} ora" if hours == 1 else f"{hours} ore"
+    return f"{minutes} min"
+
+
+def _quota_value(row) -> str:
+    if row.authorized_guest_limit is None:
+        return "—"
+    return str(row.authorized_guest_limit)
+
+
+def _age_days(generated_at: str, basis: str) -> str:
+    generated = _display_time(generated_at)
+    source = _display_time(basis)
+    if generated == "—" or source == "—":
+        return "—"
+    try:
+        generated_dt = datetime.fromisoformat(
+            str(generated_at).replace("Z", "+00:00")
+        )
+        source_dt = datetime.fromisoformat(
+            str(basis).replace("Z", "+00:00")
+        )
+        if generated_dt.tzinfo is None and source_dt.tzinfo is not None:
+            generated_dt = generated_dt.replace(tzinfo=source_dt.tzinfo)
+        if source_dt.tzinfo is None and generated_dt.tzinfo is not None:
+            source_dt = source_dt.replace(tzinfo=generated_dt.tzinfo)
+        return str(max(0, (generated_dt - source_dt).days))
+    except (TypeError, ValueError):
+        return "—"
+
+
 def _detail_headers(dataset: ReportDataset) -> list[str]:
-    headers = ["Controller", "ID UniFi"]
-    if dataset.code_exposed:
-        headers.append("Voucher")
-    headers.extend(
-        [
+    kind = dataset.kind
+    if kind is ReportKind.FULL_HISTORY:
+        headers = ["Controller", "ID UniFi"]
+        if dataset.code_exposed:
+            headers.append("Voucher")
+        headers.extend(
+            [
+                "Destinatario",
+                "Note locali",
+                "Origine",
+                "Nominale",
+                "Creazione controller",
+                "Prima acquisizione locale",
+                "Prima attivazione",
+                "Scadenza",
+                "Ultima osservazione controller",
+                "Ultima sincronizzazione locale",
+                "Dato uso",
+                "Utilizzato",
+                "Guest autorizzati cumulativi",
+                "Quota guest",
+                "Durata",
+                "Stato stampa",
+                "Prima stampa",
+                "Ultima stampa",
+                "Stampe",
+                "Copie",
+                "Ristampe",
+                "Operatori stampa",
+                "Data cancellazione",
+                "Origine cancellazione",
+                "Motivo cancellazione",
+                "Stato",
+            ]
+        )
+        return headers
+
+    if kind in {ReportKind.USED, ReportKind.EXPIRED}:
+        return [
             "Destinatario",
-            "Note locali",
-            "Origine",
-            "Nominale",
-            "Creazione controller",
-            "Prima acquisizione",
+            "Creazione",
+            "Prima attivazione",
+            "Guest autorizzati cumulativi",
+            "Quota guest",
+            "Durata",
             "Scadenza",
-            "Ultima osservazione controller",
-            "Dato uso",
-            "Utilizzato",
-            "Guest autorizzati",
-            "Stato stampa",
-            "Stampe",
+            "Prima stampa",
+            "Ultima stampa",
+            "Copie",
+            "Stato",
+        ]
+
+    if kind in {ReportKind.PRINTED, ReportKind.PRINTED_UNUSED}:
+        return [
+            "Destinatario",
+            "Creazione",
+            "Prima stampa",
+            "Ultima stampa",
             "Copie",
             "Ristampe",
-            "Operatori",
+            "Uso",
+            "Guest autorizzati cumulativi",
+            "Scadenza",
+            "Presenza controller",
+            "Stato",
+        ]
+
+    if kind is ReportKind.SECURITY_REVIEW:
+        return [
+            "Destinatario",
+            "Ultima stampa",
+            "Giorni dall'ultima stampa",
+            "Copie",
+            "Uso",
+            "Guest autorizzati cumulativi",
+            "Presenza controller",
+            "Stato",
+        ]
+
+    if kind in {ReportKind.NEVER_PRINTED, ReportKind.UNPRINTED_WARNING}:
+        return [
+            "Destinatario",
+            "Creazione",
+            "Giorni dalla creazione",
+            "Nominale",
+            "Uso",
+            "Presenza controller",
+            "Stato",
+        ]
+
+    if kind is ReportKind.PREPARATION_DELETED:
+        return [
+            "Destinatario",
+            "Creazione",
             "Data cancellazione",
             "Origine cancellazione",
             "Motivo cancellazione",
+            "Uso",
+            "Stato stampa",
+            "Operatore stampa",
             "Stato",
         ]
-    )
-    return headers
+
+    if kind is ReportKind.SECURITY_REVOKED:
+        return [
+            "Destinatario",
+            "Creazione",
+            "Data revoca",
+            "Ultima stampa",
+            "Uso",
+            "Guest autorizzati cumulativi",
+            "Stato",
+        ]
+
+    if kind in {
+        ReportKind.PRINT_UNKNOWN,
+        ReportKind.USAGE_UNKNOWN,
+        ReportKind.ORIGIN_UNKNOWN,
+        ReportKind.UNCLASSIFIED,
+    }:
+        return [
+            "Destinatario",
+            "Creazione",
+            "Origine",
+            "Nominale",
+            "Uso",
+            "Stato stampa",
+            "Ultima osservazione controller",
+            "Stato",
+        ]
+
+    return [
+        "Destinatario",
+        "Creazione",
+        "Nominale",
+        "Uso",
+        "Guest autorizzati cumulativi",
+        "Stato stampa",
+        "Presenza controller",
+        "Stato",
+    ]
 
 
 def _detail_row(dataset: ReportDataset, row) -> list[str]:
-    values = [row.controller_name, row.unifi_id]
-    if dataset.code_exposed:
-        values.append(row.code)
-    values.extend(
-        [
+    kind = dataset.kind
+    usage = _usage_value(row)
+
+    if kind is ReportKind.FULL_HISTORY:
+        values = [row.controller_name, row.unifi_id]
+        if dataset.code_exposed:
+            values.append(row.code)
+        values.extend(
+            [
+                row.recipient or "—",
+                row.local_notes or "—",
+                origin_label(row.origin),
+                nominal_label(
+                    row.is_nominal,
+                    redacted=row.nominality_redacted,
+                ),
+                _display_time(row.created_at),
+                _display_time(row.imported_at),
+                _display_time(row.activated_at),
+                _display_time(row.expires_at),
+                _display_time(row.last_seen_at),
+                _display_time(row.last_synced_at),
+                "Osservato" if row.usage_observed else "Non disponibile",
+                "Sì" if row.ever_used else ("No" if row.usage_observed else "—"),
+                str(row.authorized_guest_count) if row.usage_observed else "—",
+                _quota_value(row),
+                _duration_value(row),
+                print_state_label(row),
+                _display_time(row.first_printed_at),
+                _display_time(row.last_printed_at),
+                str(row.print_jobs),
+                str(row.physical_copies),
+                str(row.reprint_jobs),
+                ", ".join(row.print_operators) or "—",
+                _display_time(row.preparation_deleted_at),
+                row.controller_deletion_source or "—",
+                row.preparation_delete_reason or "—",
+                row.status,
+            ]
+        )
+        return values
+
+    if kind in {ReportKind.USED, ReportKind.EXPIRED}:
+        return [
             row.recipient or "—",
-            row.local_notes or "—",
+            _display_time(row.created_at),
+            _display_time(row.activated_at),
+            str(row.authorized_guest_count),
+            _quota_value(row),
+            _duration_value(row),
+            _display_time(row.expires_at),
+            _display_time(row.first_printed_at),
+            _display_time(row.last_printed_at),
+            str(row.physical_copies),
+            row.status,
+        ]
+
+    if kind in {ReportKind.PRINTED, ReportKind.PRINTED_UNUSED}:
+        return [
+            row.recipient or "—",
+            _display_time(row.created_at),
+            _display_time(row.first_printed_at),
+            _display_time(row.last_printed_at),
+            str(row.physical_copies),
+            str(row.reprint_jobs),
+            usage,
+            str(row.authorized_guest_count) if row.usage_observed else "—",
+            _display_time(row.expires_at),
+            _presence_value(row),
+            row.status,
+        ]
+
+    if kind is ReportKind.SECURITY_REVIEW:
+        return [
+            row.recipient or "—",
+            _display_time(row.last_printed_at),
+            (
+                _age_days(dataset.generated_at, row.last_printed_at)
+                if row.last_printed_at
+                else "Revisione immediata"
+            ),
+            str(row.physical_copies),
+            usage,
+            str(row.authorized_guest_count) if row.usage_observed else "—",
+            _presence_value(row),
+            row.status,
+        ]
+
+    if kind in {ReportKind.NEVER_PRINTED, ReportKind.UNPRINTED_WARNING}:
+        return [
+            row.recipient or "—",
+            _display_time(row.created_at),
+            _age_days(dataset.generated_at, row.created_at),
+            nominal_label(
+                row.is_nominal,
+                redacted=row.nominality_redacted,
+            ),
+            usage,
+            _presence_value(row),
+            row.status,
+        ]
+
+    if kind is ReportKind.PREPARATION_DELETED:
+        return [
+            row.recipient or "—",
+            _display_time(row.created_at),
+            _display_time(row.preparation_deleted_at),
+            row.controller_deletion_source or "—",
+            row.preparation_delete_reason or "—",
+            usage,
+            print_state_label(row),
+            ", ".join(row.print_operators) or "—",
+            row.status,
+        ]
+
+    if kind is ReportKind.SECURITY_REVOKED:
+        return [
+            row.recipient or "—",
+            _display_time(row.created_at),
+            _display_time(row.security_revoked_at),
+            _display_time(row.last_printed_at),
+            usage,
+            str(row.authorized_guest_count) if row.usage_observed else "—",
+            row.status,
+        ]
+
+    if kind in {
+        ReportKind.PRINT_UNKNOWN,
+        ReportKind.USAGE_UNKNOWN,
+        ReportKind.ORIGIN_UNKNOWN,
+        ReportKind.UNCLASSIFIED,
+    }:
+        return [
+            row.recipient or "—",
+            _display_time(row.created_at),
             origin_label(row.origin),
             nominal_label(
                 row.is_nominal,
                 redacted=row.nominality_redacted,
             ),
-            _display_time(row.created_at),
-            _display_time(row.imported_at),
-            _display_time(row.expires_at),
-            _display_time(row.last_synced_at),
-            "Osservato" if row.usage_observed else "Non disponibile",
-            (
-                "Sì"
-                if row.ever_used
-                else ("No" if row.usage_observed else "—")
-            ),
-            str(row.authorized_guest_count) if row.usage_observed else "—",
+            usage,
             print_state_label(row),
-            str(row.print_jobs),
-            str(row.physical_copies),
-            str(row.reprint_jobs),
-            ", ".join(row.print_operators) or "—",
-            _display_time(row.preparation_deleted_at),
-            row.controller_deletion_source or "—",
-            row.preparation_delete_reason or "—",
+            _display_time(row.last_seen_at),
             row.status,
         ]
-    )
-    return values
+
+    return [
+        row.recipient or "—",
+        _display_time(row.created_at),
+        nominal_label(
+            row.is_nominal,
+            redacted=row.nominality_redacted,
+        ),
+        usage,
+        str(row.authorized_guest_count) if row.usage_observed else "—",
+        print_state_label(row),
+        _presence_value(row),
+        row.status,
+    ]
+
+
+def _detail_weights(dataset: ReportDataset) -> list[float]:
+    wide = {
+        "Destinatario": 1.45,
+        "Note locali": 1.55,
+        "Motivo cancellazione": 1.55,
+        "Origine": 1.15,
+        "Origine cancellazione": 1.15,
+        "ID UniFi": 1.25,
+        "Voucher": 0.85,
+        "Operatori stampa": 1.15,
+        "Operatore stampa": 1.15,
+        "Ultima osservazione controller": 1.05,
+        "Ultima sincronizzazione locale": 1.05,
+    }
+    return [wide.get(header, 0.85) for header in _detail_headers(dataset)]
 
 
 def render_report_csv(dataset: ReportDataset, output_path: Path) -> None:
@@ -397,16 +703,7 @@ def render_report_pdf(
                 )
             else:
                 usable = page_width - 20 * mm
-                weights = [0.62, 0.86]
-                if dataset.code_exposed:
-                    weights.append(0.70)
-                weights.extend(
-                    [
-                        0.96, 1.20, 0.80, 0.50, 0.60, 0.60, 0.60,
-                        0.64, 0.58, 0.40, 0.35, 0.52, 0.35, 0.35,
-                        0.35, 0.64, 0.62, 0.70, 1.00, 0.50,
-                    ]
-                )
+                weights = _detail_weights(dataset)
                 if len(weights) != len(headers):
                     raise RuntimeError(
                         "report PDF column geometry does not match export fields"
@@ -442,8 +739,8 @@ def render_report_pdf(
                 "Management non ha mai osservato un conteggio guest autorizzati positivo "
                 "fino all'ultima osservazione controller indicata. Se manca questa "
                 "evidenza, il report mostra “uso non determinabile”. Il conteggio guest "
-                "autorizzati è l'ultimo valore conservato e non è un contatore cumulativo "
-                "di accessi né un timestamp d'uso.",
+                "autorizzati è il massimo conteggio cumulativo positivo osservato dal "
+                "controller; non rappresenta un timestamp d'uso.",
                 small,
             )
         )
