@@ -449,6 +449,53 @@ def test_sidebar_icon_size_tracks_windows_tk_scaling():
     assert _sidebar_icon_pixel_size("invalid") == 20
 
 
+def test_successful_voucher_operation_clears_selection_and_refreshes_every_projection():
+    calls = []
+    fake = SimpleNamespace(
+        checked_ids={"one", "two"},
+        populate=lambda: calls.append("populate"),
+        _refresh_report_summary=lambda: calls.append("report"),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+
+    result = VoucherApp._finalize_voucher_operation_ui(
+        fake,
+        operation="alignment",
+    )
+
+    assert result is True
+    assert fake.checked_ids == set()
+    assert calls == ["populate", "report"]
+
+
+def test_successful_voucher_operation_keeps_selection_cleared_if_refresh_fails(
+    monkeypatch,
+):
+    warnings = []
+    sync_calls = []
+    fake = SimpleNamespace(
+        checked_ids={"one"},
+        populate=lambda: (_ for _ in ()).throw(RuntimeError("layout")),
+        _refresh_report_summary=lambda: None,
+        _sync_selection_ui=lambda: sync_calls.append("selection"),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+    monkeypatch.setattr(
+        "voucher_management.app.messagebox.showwarning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+
+    result = VoucherApp._finalize_voucher_operation_ui(
+        fake,
+        operation="nominality",
+    )
+
+    assert result is False
+    assert fake.checked_ids == set()
+    assert sync_calls == ["selection"]
+    assert len(warnings) == 1
+
+
 def test_main_window_minimum_stays_inside_short_display():
     assert _main_window_minimum(1600, 755) == (1220, 655)
     assert _main_window_minimum(1093, 614) == (1013, 514)
