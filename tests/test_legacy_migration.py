@@ -311,6 +311,105 @@ def test_materialized_placeholder_converges_to_live_unifi_identity(tmp_path):
         db.close()
 
 
+def test_materialized_placeholder_blocks_when_live_code_is_ambiguous(tmp_path):
+    history = tmp_path / "history.jsonl"
+    code = "12345-67890"
+    _write_history(
+        history,
+        [
+            {
+                "event": "print",
+                "voucher_id": _digest(code),
+                "timestamp": "2026-09-20T10:05:00+00:00",
+                "output_file": "Voucher_Legacy.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+                "print_job_id": "ambiguous-placeholder-print",
+            }
+        ],
+    )
+    db = Database(tmp_path / "ambiguous-placeholder.sqlite")
+    db.initialize()
+    legacy_controller = db.create_controller(
+        name="Archivio precedente",
+        api_root="legacy-backup://fixture",
+        created_at="2026-09-20T09:00:00+00:00",
+    )
+    placeholder_id = db.upsert_voucher(
+        controller_id=legacy_controller,
+        unifi_id="legacy-backup-fixture-a",
+        code="1234567890",
+        imported_at="2026-09-20T09:00:00+00:00",
+        last_synced_at="2026-09-20T09:00:00+00:00",
+    )
+    initial = build_legacy_migration_plan(
+        history_path=history,
+        expected_fingerprint=FINGERPRINT,
+        secret=FIXTURE_KEY,
+        candidates=[
+            LegacyVoucherCandidate(
+                legacy_controller,
+                "legacy-backup-fixture-a",
+                "1234567890",
+            )
+        ],
+    )
+    apply_legacy_migration_plan(
+        database=db,
+        plan=initial,
+        migration_uuid="ambiguous-old",
+        applied_at="2026-09-20T10:06:00+00:00",
+    )
+    materialize_resolved_legacy_events(
+        database=db,
+        materialized_at="2026-09-20T10:07:00+00:00",
+        migration_uuid="ambiguous-old",
+    )
+
+    try:
+        live_controller = db.create_controller(
+            name="Reception",
+            api_root="https://controller.example",
+            created_at="2026-10-01T08:00:00+00:00",
+        )
+        for remote_id in ("live-a", "live-b"):
+            db.upsert_voucher(
+                controller_id=live_controller,
+                unifi_id=remote_id,
+                code="1234567890",
+                imported_at="2026-10-01T08:00:00+00:00",
+                last_synced_at="2026-10-01T08:00:00+00:00",
+            )
+
+        current = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=legacy_candidates_from_database(
+                db,
+                preferred_controller_id=live_controller,
+            ),
+        )
+        assert len(current.ambiguous) == 1
+
+        with pytest.raises(
+            LegacyMigrationError,
+            match="più identità voucher live",
+        ):
+            legacy_migration_plan_needs_reconciliation(db, current)
+
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM vouchers WHERE id=?",
+            (placeholder_id,),
+        ).fetchone()[0] == 1
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM voucher_prints WHERE voucher_id=?",
+            (placeholder_id,),
+        ).fetchone()[0] == 1
+    finally:
+        db.close()
+
+
 def test_placeholder_with_operator_activity_is_not_auto_merged(tmp_path):
     history = tmp_path / "history.jsonl"
     code = "12345-67890"
