@@ -479,9 +479,9 @@ def _detail_row(dataset: ReportDataset, row) -> list[str]:
 
 def _detail_weights(dataset: ReportDataset) -> list[float]:
     wide = {
-        "Destinatario": 1.45,
-        "Note locali": 1.55,
-        "Motivo cancellazione": 1.55,
+        "Destinatario": 1.9,
+        "Note locali": 5.0,
+        "Motivo cancellazione": 3.0,
         "Origine": 1.15,
         "Origine cancellazione": 1.15,
         "ID UniFi": 1.25,
