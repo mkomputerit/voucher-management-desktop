@@ -106,6 +106,16 @@ jobs:
           PYTHONPATH: src
         run: .\.venv\Scripts\python.exe -m compileall -q src launcher.py
 
+      - name: Check Python correctness with Ruff
+        shell: pwsh
+        run: |
+          $lintVenv = Join-Path $env:RUNNER_TEMP "voucher-management-ruff"
+          python -m venv $lintVenv
+          $lintPython = Join-Path $lintVenv "Scripts\python.exe"
+          $ruffExe = Join-Path $lintVenv "Scripts\ruff.exe"
+          & $lintPython -m pip install ruff==0.12.11
+          & $ruffExe check --select F,E9 src launcher.py
+
       - name: Check generic engineering privacy
         run: .\.venv\Scripts\python.exe tools/check_public_tree.py
 
