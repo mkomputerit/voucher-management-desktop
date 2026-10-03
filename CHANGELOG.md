@@ -103,8 +103,10 @@
   remain operation-only and are never persisted.
 - Add a self-contained elevated Windows **Setup.exe** around the reviewed shared
   deployment path. The Setup embeds the verified portable payload, installs
-  under protected Program Files/ProgramData locations, uses the dedicated local
-  operator group and is exercised by the same ACL/integration checks used by CI.
+  under protected Program Files/ProgramData locations and gives the Windows
+  built-in Users group modify access only to the shared application data; no
+  per-user detection or application-specific local group is required. The same
+  ACL/integration path is exercised by CI.
 - Keep the application API key **memory-only for every session**, including
   reconnects. TLS remains verified by default with explicit SHA-256 pinning for
   approved local/self-signed controllers.
@@ -130,9 +132,11 @@
 - Added explicit 4.x history migration with verified HMAC association,
   resolved/ambiguous/unresolved evidence, idempotent materialization and
   encrypted pre-migration safety backups.
-- Added installer-controlled shared Windows deployment under ProgramData with a
-  dedicated operator group, machine-wide file locking, restrictive verified
-  NTFS ACLs and explicit LocalAppData-to-ProgramData migration.
+- Added installer-controlled shared Windows deployment under ProgramData with
+  machine-wide file locking, verified NTFS ACLs and explicit
+  LocalAppData-to-ProgramData migration. Current 5.1 setup uses the Windows
+  built-in Users group for shared data access instead of a dedicated local
+  application group.
 - Added first-run onboarding for genuinely new 5.0 installations with
   installation identity, structure/Wi-Fi branding, managed logo selection,
   ephemeral UniFi API-key verification, explicit TLS trust, a persistent
