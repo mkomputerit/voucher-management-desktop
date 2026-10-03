@@ -149,14 +149,21 @@ function Set-SharedDataAcl {
         throw "Reset ACL ProgramData non riuscito."
     }
 
+    & icacls.exe $Path /inheritance:r /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Disattivazione ereditarietà ACL ProgramData non riuscita."
+    }
+
     $rules = @(
         "*S-1-5-18:(OI)(CI)F",
         "*S-1-5-32-544:(OI)(CI)F",
         "*$($script:BuiltinUsersSid):(OI)(CI)M"
     )
-    & icacls.exe $Path /inheritance:r /grant:r $rules /T /C | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Configurazione ACL ProgramData non riuscita."
+    foreach ($rule in $rules) {
+        & icacls.exe $Path /grant:r $rule /T /C | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Configurazione ACL ProgramData non riuscita per: $rule"
+        }
     }
 
     $allowedSids = @(
@@ -164,6 +171,11 @@ function Set-SharedDataAcl {
         "S-1-5-32-544",
         $script:BuiltinUsersSid
     )
+    $requiredRights = @{
+        "S-1-5-18" = [Security.AccessControl.FileSystemRights]::FullControl
+        "S-1-5-32-544" = [Security.AccessControl.FileSystemRights]::FullControl
+        $script:BuiltinUsersSid = [Security.AccessControl.FileSystemRights]::Modify
+    }
     $items = @((Get-Item -LiteralPath $Path)) + @(
         Get-ChildItem -LiteralPath $Path -Force -Recurse
     )
@@ -172,6 +184,8 @@ function Set-SharedDataAcl {
         if (-not $acl.AreAccessRulesProtected) {
             throw "ACL ProgramData non protetta: $($item.FullName)"
         }
+
+        $rightsBySid = @{}
         foreach ($ace in $acl.Access) {
             if (
                 $ace.AccessControlType -ne
@@ -184,6 +198,20 @@ function Set-SharedDataAcl {
             ).Value
             if ($allowedSids -notcontains $sid) {
                 throw "ACL ProgramData contiene un principal non autorizzato: $sid"
+            }
+            if (-not $rightsBySid.ContainsKey($sid)) {
+                $rightsBySid[$sid] = [Security.AccessControl.FileSystemRights]0
+            }
+            $rightsBySid[$sid] = $rightsBySid[$sid] -bor $ace.FileSystemRights
+        }
+
+        foreach ($sid in $requiredRights.Keys) {
+            if (-not $rightsBySid.ContainsKey($sid)) {
+                throw "ACL ProgramData mancante per SID richiesto $sid: $($item.FullName)"
+            }
+            $expected = $requiredRights[$sid]
+            if (($rightsBySid[$sid] -band $expected) -ne $expected) {
+                throw "ACL ProgramData insufficiente per SID $sid: $($item.FullName)"
             }
         }
     }
