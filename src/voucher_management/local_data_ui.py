@@ -34,10 +34,11 @@ _PRINT_VALUES = {
 
 
 def selected_workspace_vouchers(app) -> tuple:
-    """Return the current operational print selection.
+    """Return the current blue selection in the Voucher workspace.
 
-    Kept for compatibility with callers/tests. Local metadata actions do not
-    rely on this selection because it intentionally excludes expired vouchers.
+    This is the single UI selection used by local metadata actions. Printing
+    and deletion apply their own stricter eligibility checks at the action
+    boundary, so selecting a row never grants permission to mutate it.
     """
 
     selected = set(getattr(app, "checked_ids", set()))
