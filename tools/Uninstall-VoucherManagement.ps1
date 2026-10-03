@@ -2,14 +2,11 @@
 param(
     [string]$InstallRoot = (Join-Path $env:ProgramFiles "Voucher Management"),
     [string]$DataRoot,
-    [string]$OperatorGroup,
     [switch]$RemoveData,
     [switch]$SkipShortcut
 )
 
 $ErrorActionPreference = "Stop"
-$OperatorGroupDescription = "Operatori autorizzati a Voucher Management"
-$DefaultOperatorGroup = "Voucher Management Operators"
 $DefaultDataRoot = (Join-Path $env:ProgramData "VoucherManagement")
 $UninstallRegistryPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VoucherManagement"
 
@@ -100,7 +97,6 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $InstallRoot = Resolve-ManagedChildPath -Path $InstallRoot -RequiredParent $env:ProgramFiles -Label "La cartella di installazione"
 
 $dataRootExplicit = $PSBoundParameters.ContainsKey("DataRoot") -and [bool]$DataRoot
-$operatorGroupExplicit = $PSBoundParameters.ContainsKey("OperatorGroup") -and [bool]$OperatorGroup
 $marker = $null
 $markerPath = Join-Path $InstallRoot "voucher-management-deployment.json"
 if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
@@ -127,51 +123,12 @@ if (-not $dataRootExplicit) {
         $script:DefaultDataRoot
     }
 }
-if (-not $operatorGroupExplicit) {
-    $OperatorGroup = if ($marker -and $marker.operator_group_name) {
-        [string]$marker.operator_group_name
-    } else {
-        $script:DefaultOperatorGroup
-    }
-}
 $DataRoot = Resolve-ManagedChildPath -Path $DataRoot -RequiredParent $env:ProgramData -Label "La cartella dati condivisa"
 
-$managedGroup = $null
-if ($RemoveData) {
-    # Bind destructive cleanup to the installer-owned marker when the current
-    # deployment provides one. Older format-1 markers without these optional
-    # fields remain compatible and fall back to the dedicated group checks.
-    $expectedGroupSid = ""
-    if ($marker) {
-        if ($marker.data_root) {
-            $markerDataRoot = Resolve-ManagedChildPath -Path ([string]$marker.data_root) -RequiredParent $env:ProgramData -Label "Il DataRoot registrato"
-            if ($markerDataRoot -ine $DataRoot) {
-                throw "Il DataRoot richiesto non corrisponde al deployment installato."
-            }
-        }
-        if ($marker.operator_group_sid) {
-            $expectedGroupSid = ([string]$marker.operator_group_sid).Trim()
-        }
-        if (
-            $marker.operator_group_name -and
-            [string]$marker.operator_group_name -ine [string]$OperatorGroup
-        ) {
-            throw "Il gruppo operatori richiesto non corrisponde al deployment installato."
-        }
-    }
-
-    $managedGroup = Get-LocalGroup -Name $OperatorGroup -ErrorAction SilentlyContinue
-    if ($managedGroup) {
-        $sid = [string]$managedGroup.SID.Value
-        if ($sid.StartsWith("S-1-5-32-", [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Il gruppo operatori non può essere un gruppo Windows built-in."
-        }
-        if ([string]$managedGroup.Description -ne $script:OperatorGroupDescription) {
-            throw "Il gruppo indicato non risulta gestito da Voucher Management."
-        }
-        if ($expectedGroupSid -and $sid -ine $expectedGroupSid) {
-            throw "Il SID del gruppo operatori non corrisponde al deployment installato."
-        }
+if ($RemoveData -and $marker -and $marker.data_root) {
+    $markerDataRoot = Resolve-ManagedChildPath -Path ([string]$marker.data_root) -RequiredParent $env:ProgramData -Label "Il DataRoot registrato"
+    if ($markerDataRoot -ine $DataRoot) {
+        throw "Il DataRoot richiesto non corrisponde al deployment installato."
     }
 }
 
@@ -192,14 +149,11 @@ $selfInsideInstall = $scriptFull.StartsWith(
 # operator can retry instead of ending in a half-uninstalled state.
 if ($RemoveData) {
     if (Test-Path -LiteralPath $DataRoot) {
-        # Re-check the destructive boundary immediately before icacls so a
-        # replaced junction/reparse point is rejected instead of traversed.
         $DataRoot = Resolve-ManagedChildPath -Path $DataRoot -RequiredParent $env:ProgramData -Label "La cartella dati condivisa"
         Assert-NoReparsePointsInTree -Path $DataRoot -Label "La cartella dati condivisa"
-        # Shared mode deliberately protects every descendant with explicit,
-        # non-inherited ACLs. Before destructive removal, restore an
-        # administrator-deletable tree; otherwise Remove-Item can fail on
-        # descendants even from an elevated uninstall process.
+
+        # Shared mode uses explicit protected ACLs. Restore an
+        # administrator-deletable tree before recursive removal.
         & icacls.exe $DataRoot /reset /T /C | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "Ripristino ACL prima della rimozione dati non riuscito."
@@ -212,9 +166,6 @@ if ($RemoveData) {
             throw "Preparazione ACL per la rimozione dati non riuscita."
         }
         Remove-Item -LiteralPath $DataRoot -Recurse -Force
-    }
-    if ($managedGroup) {
-        Remove-LocalGroup -Name $OperatorGroup
     }
     Write-Host "Dati condivisi rimossi."
 } else {
