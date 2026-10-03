@@ -408,7 +408,11 @@ class DataMaintenanceMixin:
                             parent=parent,
                         )
                         return
-                self.populate()
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="pending_print_recovery",
+                )
+                if not refreshed:
+                    return
                 messagebox.showinfo(
                     "Registrazione stampa",
                     "La stampa pendente è stata registrata correttamente "
@@ -604,7 +608,11 @@ class DataMaintenanceMixin:
             def applied(added) -> None:
                 self.settings = self.settings_store.load()
                 self._history_error_shown = False
-                self.populate()
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="history_exchange_import",
+                )
+                if not refreshed:
+                    return
                 messagebox.showinfo(
                     "Importa cronologia",
                     "Merge completato.\n\n"
@@ -763,14 +771,9 @@ class DataMaintenanceMixin:
                     import_db.close()
 
             def completed(result) -> None:
-                self.populate()
-                refresh_report = getattr(
-                    self,
-                    "_refresh_report_summary",
-                    None,
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="legacy_backup_import",
                 )
-                if refresh_report is not None:
-                    refresh_report()
                 refresh_backup = getattr(
                     self,
                     "_refresh_backup_summary",
@@ -785,6 +788,8 @@ class DataMaintenanceMixin:
                 )
                 if refresh_legacy is not None:
                     refresh_legacy()
+                if not refreshed:
+                    return
 
                 messagebox.showinfo(
                     "Importazione completata",
@@ -1108,7 +1113,11 @@ class DataMaintenanceMixin:
                     migration_db.close()
 
             def completed(result) -> None:
-                self.populate()
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="legacy_history_migration",
+                )
+                if not refreshed:
+                    return
                 messagebox.showinfo(
                     "Migrazione storico 4.x",
                     "Migrazione completata.\n\n"
