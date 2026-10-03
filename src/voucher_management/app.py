@@ -1078,11 +1078,9 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         def completed(outcome) -> None:
             self.last_pdf = outcome.output
-            # A successful print completes the current operational action.
-            # Clear the selection before rebuilding the table so the operator
-            # cannot accidentally repeat the same batch on the next click.
-            self.checked_ids.clear()
-            self.populate()
+            self._finalize_voucher_operation_ui(
+                operation="pdf_generation",
+            )
             self._preview(
                 outcome.output,
                 list(outcome.codes),
@@ -1340,15 +1338,12 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         return True
 
     def _deselect_printed_codes(self, codes: list[str]) -> None:
-        """Clear only vouchers whose Windows print submission was confirmed."""
+        """Finalize every successful physical-print operation consistently."""
 
-        wanted = {str(code).replace("-", "") for code in codes}
-        self.checked_ids.difference_update(
-            voucher.id
-            for voucher in self.vouchers
-            if voucher.code_formatted.replace("-", "") in wanted
+        del codes
+        self._finalize_voucher_operation_ui(
+            operation="physical_print",
         )
-        self.populate()
 
     def _preview(
         self,
