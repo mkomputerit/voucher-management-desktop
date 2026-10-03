@@ -16,7 +16,8 @@ from voucher_management.onboarding import (
     legacy_installation_has_evidence,
     onboarding_state,
 )
-from voucher_management.modern_app import ModernVoucherApp
+import voucher_management.modern_app as modern_app
+from voucher_management.modern_app import MigrationRequiredDialog, ModernVoucherApp
 from voucher_management.onboarding_ui import (
     FirstRunWizard,
     schedule_first_run_onboarding,
@@ -571,3 +572,53 @@ def test_onboarding_requires_both_explicit_threshold_values(tmp_path):
         assert database.installation_profile() is None
     finally:
         database.close()
+
+
+
+def test_shared_fresh_start_launches_first_run_wizard(monkeypatch):
+    events = []
+
+    class App:
+        database = object()
+        logger = type("Logger", (), {"error": lambda *args, **kwargs: None})()
+
+        def after_idle(self, callback):
+            events.append(("scheduled", callback))
+
+    dialog = type(
+        "Dialog",
+        (),
+        {
+            "app": App(),
+            "grab_release": lambda self: events.append(("grab_release",)),
+            "destroy": lambda self: events.append(("destroy",)),
+        },
+    )()
+
+    monkeypatch.setattr(
+        modern_app,
+        "choose_shared_fresh_start",
+        lambda database: events.append(("fresh", database)),
+    )
+    launched = []
+    monkeypatch.setattr(
+        modern_app,
+        "FirstRunWizard",
+        lambda app: launched.append(app),
+    )
+    monkeypatch.setattr(
+        modern_app.messagebox,
+        "askyesno",
+        lambda *args, **kwargs: True,
+    )
+
+    MigrationRequiredDialog._start_fresh_installation(dialog)
+
+    assert events[0][0] == "fresh"
+    assert events[1] == ("grab_release",)
+    assert events[2] == ("destroy",)
+    assert events[3][0] == "scheduled"
+    assert launched == []
+
+    events[3][1]()
+    assert launched == [dialog.app]
