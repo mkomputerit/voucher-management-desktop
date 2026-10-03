@@ -913,6 +913,19 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     parent=self,
                 )
 
+            if archive_error is None and snapshot_authoritative:
+                refresh_report = getattr(
+                    self,
+                    "_refresh_report_summary",
+                    None,
+                )
+                if callable(refresh_report):
+                    after_idle = getattr(self, "after_idle", None)
+                    if callable(after_idle):
+                        after_idle(refresh_report)
+                    else:
+                        refresh_report()
+
         def failed(exc: Exception) -> None:
             retry = getattr(
                 self,
@@ -1345,12 +1358,21 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         return True
 
     def _deselect_printed_codes(self, codes: list[str]) -> None:
-        """Finalize every successful physical-print operation consistently."""
+        """Clear the global selection immediately after Windows submission.
+
+        The durable full refresh happens only after the SQLite print audit has
+        committed.  This prevents the UI/report layer from racing ahead of the
+        authoritative print fact while still protecting against accidental
+        duplicate printing.
+        """
 
         del codes
-        self._finalize_voucher_operation_ui(
-            operation="physical_print",
-        )
+        self.checked_ids.clear()
+        sync_selection = getattr(self, "_sync_selection_ui", None)
+        if callable(sync_selection):
+            sync_selection()
+        else:
+            self.populate()
 
     def _preview(
         self,
@@ -1361,6 +1383,21 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         unifi_ids: list[str] | None = None,
         allow_physical_print: bool = True,
     ):
+        def record_audit_and_refresh(
+            pending,
+            audit_codes,
+            pdf_path,
+        ) -> None:
+            self._record_sqlite_print_audit(
+                pending,
+                audit_codes,
+                pdf_path,
+                unifi_ids=stable_ids,
+            )
+            self._finalize_voucher_operation_ui(
+                operation="physical_print",
+            )
+
         stable_ids = (
             list(unifi_ids)
             if unifi_ids is not None
@@ -1376,14 +1413,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             unifi_ids=stable_ids,
             allow_physical_print=allow_physical_print,
             on_print=self.populate,
-            on_audit=lambda pending, audit_codes, pdf_path: (
-                self._record_sqlite_print_audit(
-                    pending,
-                    audit_codes,
-                    pdf_path,
-                    unifi_ids=stable_ids,
-                )
-            ),
+            on_audit=record_audit_and_refresh,
             on_submitted=lambda: self._deselect_printed_codes(codes),
             confirm_print=lambda parent: self._confirm_physical_reprint(
                 codes,
