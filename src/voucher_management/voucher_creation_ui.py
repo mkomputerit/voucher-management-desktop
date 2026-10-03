@@ -25,7 +25,7 @@ from .uncertain_create_recovery import (
     reject_pending_create_intent_to_path,
     write_pending_create_intent,
 )
-from .workflows import CreateOutcome, create_vouchers_and_refresh
+from .workflows import create_vouchers_and_refresh
 
 
 class VoucherCreationMixin:
