@@ -3515,7 +3515,7 @@ class ModernVoucherApp(
         voucher = mapping.get(tree.focus())
         if voucher is None:
             return "break"
-        if self._is_expired(voucher):
+        if is_home and self._is_expired(voucher):
             self.bell()
             return "break"
         # Home remains a print shortcut and therefore requires alignment.
@@ -3557,7 +3557,15 @@ class ModernVoucherApp(
         # No <<TreeviewSelect>> handler is bound to this Treeview: highlighting
         # is one-way presentation state and cannot recursively mutate selection.
         self.home_recent_tree.selection_set(selected)
-        count = len(self.checked_ids)
+        vouchers = getattr(self, "vouchers", None)
+        if vouchers is None:
+            count = len(self.checked_ids)
+        else:
+            count = sum(
+                1
+                for voucher in vouchers
+                if voucher.id in self.checked_ids and not self._is_expired(voucher)
+            )
         self.home_print_action_var.set(
             f"Stampa {count} voucher" if count else "Stampa voucher"
         )
@@ -3600,6 +3608,9 @@ class ModernVoucherApp(
             if voucher.id in self.checked_ids
         ]
         self.tree.selection_set(selected_iids)
+        printable = getattr(self, "selected", None)
+        if callable(printable):
+            self.action_var.set(print_action_label(len(printable())))
         self._sync_home_selection_ui()
 
     def on_tree_click(self, event):
@@ -3613,9 +3624,9 @@ class ModernVoucherApp(
         self.tree.focus_set()
         self.tree.focus(iid)
         voucher = self.by_iid[iid]
-        if self._is_expired(voucher):
-            self.bell()
-            return "break"
+        # Voucher workspace selection is broader than print eligibility:
+        # expired rows may still need local notes/nominality corrections.
+        # Print/delete remain fail-closed in VoucherApp.selected().
         # Row selection is an operator navigation concept. Alignment is checked
         # at the action boundary (printing/deletion), so an active voucher must
         # remain selectable even when it still needs local alignment.
@@ -3738,11 +3749,7 @@ class ModernVoucherApp(
             self.count_var.set("Cronologia non disponibile  •  0 selezionati")
             self._refresh_controller_workspace_status()
             return
-        valid_ids = {
-            v.id
-            for v in self.vouchers
-            if not self._is_expired(v)
-        }
+        valid_ids = {v.id for v in self.vouchers}
         self.checked_ids.intersection_update(valid_ids)
         candidates = []
         for voucher in self.vouchers:
