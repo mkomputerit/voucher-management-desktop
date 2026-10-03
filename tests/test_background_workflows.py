@@ -10,6 +10,7 @@ from voucher_management import dialogs as dialogs_module
 from voucher_management import modern_app
 from voucher_management import data_maintenance_ui as maintenance_ui
 from voucher_management import voucher_creation_ui as creation_ui
+from voucher_management.workflows import CreateOutcome
 from voucher_management.app import VoucherApp
 from voucher_management.background_tasks import BackgroundResult
 
@@ -377,7 +378,7 @@ def test_confirmed_create_is_not_reported_failed_when_local_reporting_persistenc
     monkeypatch.setattr(
         creation_ui,
         "create_vouchers_and_refresh",
-        lambda *args, **kwargs: creation_ui.CreateOutcome(
+        lambda *args, **kwargs: CreateOutcome(
             created=(created,),
             vouchers=(created,),
         ),
