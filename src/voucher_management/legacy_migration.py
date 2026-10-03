@@ -194,6 +194,22 @@ def _validated_history_rows(
                         f"Record legacy non valido alla riga {line_number}"
                     )
 
+                stable_ref = str(payload.get("voucher_ref", "") or "").lower()
+                if stable_ref:
+                    if (
+                        len(stable_ref) != 64
+                        or any(ch not in _HEX for ch in stable_ref)
+                    ):
+                        raise LegacyMigrationError(
+                            f"Identità voucher moderna non valida alla riga "
+                            f"{line_number}"
+                        )
+                    # Modern 5.x rows already carry the stable Site UUID +
+                    # voucher UUID HMAC and are audited through the current
+                    # SQLite print bridge. They must never be reinterpreted as
+                    # legacy code-HMAC evidence.
+                    continue
+
                 event = str(payload.get("event", "generate") or "generate")
                 if event not in {"generate", "print"}:
                     raise LegacyMigrationError(
