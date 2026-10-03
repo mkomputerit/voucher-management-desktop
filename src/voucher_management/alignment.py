@@ -1,9 +1,9 @@
 """Operator-driven alignment of controller/legacy vouchers.
 
 Alignment fills only facts Voucher Management cannot infer safely. Controller-
-owned fields remain read-only. Controller-discovered vouchers without verified
-print evidence keep print state UNKNOWN; legacy positive print evidence is
-preserved and cannot be downgraded.
+owned fields remain read-only. Controller-discovered vouchers without positive
+print evidence become NOT_PRINTED only when the operator completes alignment;
+positive legacy/SQLite print evidence is preserved and cannot be downgraded.
 """
 
 from __future__ import annotations
@@ -171,20 +171,37 @@ def align_vouchers(
                     "o altra prova positiva di stampa già presente nello storico."
                 )
 
-        controller_origin_without_verified_print = [
+        if normalized_print_state == PRINT_STATE_PRINTED:
+            invented_print_ids = [
+                int(row["id"])
+                for row in rows
+                if not bool(row["has_verified_print"])
+                and str(
+                    row["print_state"] or PRINT_STATE_UNKNOWN
+                ).strip().upper() != PRINT_STATE_PRINTED
+            ]
+            if invented_print_ids:
+                raise ValueError(
+                    "Stampato richiede una prova positiva di stampa già "
+                    "presente nello storico; l'allineamento non può inventarla."
+                )
+
+        controller_origin_without_positive_print = [
             int(row["id"])
             for row in rows
             if str(row["origin"] or "").strip().upper() == "CONTROLLER"
             and not bool(row["has_verified_print"])
+            and str(
+                row["print_state"] or PRINT_STATE_UNKNOWN
+            ).strip().upper() != PRINT_STATE_PRINTED
         ]
         if (
-            controller_origin_without_verified_print
-            and normalized_print_state != PRINT_STATE_UNKNOWN
+            controller_origin_without_positive_print
+            and normalized_print_state != PRINT_STATE_NOT_PRINTED
         ):
             raise ValueError(
-                "Per i voucher trovati direttamente sulla controller lo stato "
-                "di stampa non può essere dedotto. Usare 'Non determinabile' "
-                "finché non esiste una stampa verificata."
+                "Per i voucher trovati sulla controller senza prova positiva "
+                "di stampa, l'allineamento deve registrarli come Non stampati."
             )
 
         updated: list[int] = []
