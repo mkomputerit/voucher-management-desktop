@@ -117,7 +117,7 @@ def report_label_for_kind(kind: ReportKind) -> str:
 class ReportGuideDialog(tk.Toplevel):
     """Guide the operator from a practical question to the right report."""
 
-    def __init__(self, app, *, initial_kind: ReportKind | None = None):
+    def __init__(self, app):
         super().__init__(app)
         self.app = app
         self.title("Guida alla scelta del report")
@@ -199,7 +199,7 @@ class ReportGuideDialog(tk.Toplevel):
 class ReportDialog(tk.Toplevel):
     """Small operator-facing report export workflow."""
 
-    def __init__(self, app):
+    def __init__(self, app, *, initial_kind: ReportKind | None = None):
         super().__init__(app)
         self.app = app
         self.title("Report")
