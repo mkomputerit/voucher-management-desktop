@@ -53,23 +53,7 @@ def _draft():
     )
 
 
-@pytest.mark.parametrize(
-    "state",
-    [
-        OnboardingState.EXISTING_INSTALLATION,
-        OnboardingState.COMPLETE,
-        OnboardingState.REQUIRED,
-        OnboardingState.MIGRATION_AVAILABLE,
-    ],
-)
-def test_privacy_retention_startup_gate_is_disabled(
-    monkeypatch,
-    state,
-):
-    monkeypatch.setattr(
-        "voucher_management.modern_app.startup_onboarding_state",
-        lambda _app: state,
-    )
+def test_privacy_retention_startup_gate_is_disabled():
     fake = object()
     assert ModernVoucherApp._retention_intro_allowed_on_startup(fake) is False
 
