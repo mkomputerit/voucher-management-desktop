@@ -596,6 +596,13 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self.checked_ids.clear()
         try:
             self.populate()
+            refresh_thresholds = getattr(
+                self,
+                "_refresh_threshold_summary",
+                None,
+            )
+            if callable(refresh_thresholds):
+                refresh_thresholds()
             if refresh_reports:
                 refresh_report = getattr(
                     self,
