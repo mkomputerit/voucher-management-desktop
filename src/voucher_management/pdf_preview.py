@@ -14,10 +14,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import shutil
 from queue import Empty
 import tkinter as tk
 from uuid import uuid4
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import pypdfium2 as pdfium
 from PIL import Image, ImageTk, ImageWin
@@ -51,6 +52,12 @@ class PdfPreview(tk.Toplevel):
         on_audit=None,
         on_submitted=None,
         confirm_print=None,
+        report_mode: bool = False,
+        allow_save_copy: bool = False,
+        delete_on_close: bool = False,
+        preview_title: str | None = None,
+        preview_note: str | None = None,
+        suggested_save_name: str = "",
     ):
         super().__init__(parent)
         self.app = parent
@@ -78,6 +85,11 @@ class PdfPreview(tk.Toplevel):
         # recovery and ambiguous prepared jobs.
         self.on_submitted = on_submitted
         self.confirm_print = confirm_print
+        self.report_mode = bool(report_mode)
+        self.allow_save_copy = bool(allow_save_copy)
+        self.delete_on_close = bool(delete_on_close)
+        self.preview_note = str(preview_note or "").strip()
+        self.suggested_save_name = str(suggested_save_name or "").strip()
         self.document = None
         self.page_index = 0
         self.photo = None
@@ -96,7 +108,11 @@ class PdfPreview(tk.Toplevel):
             super().destroy()
             raise RuntimeError("Impossibile caricare il documento PDF") from exc
 
-        self.title(f"Anteprima di stampa - {self.pdf_path.name}")
+        self.title(
+            str(preview_title).strip()
+            if preview_title
+            else f"Anteprima di stampa - {self.pdf_path.name}"
+        )
         # A sensible fallback is kept for environments where Windows refuses
         # the zoomed state. On normal Windows desktops the window is maximised
         # after widgets exist, giving the A4 viewport the largest safe area.
@@ -108,6 +124,8 @@ class PdfPreview(tk.Toplevel):
         self.copies_var = tk.IntVar(value=1)
         self._build_ui()
         self._load_printers()
+        if self.delete_on_close:
+            self.protocol("WM_DELETE_WINDOW", self._request_close)
         self.bind("<Configure>", self._resize)
         self.after_idle(self._maximize_window)
         self.after(120, self.render_page)
@@ -149,6 +167,14 @@ class PdfPreview(tk.Toplevel):
             command=self.print_document,
         )
         self.print_button.grid(row=0, column=4, padx=(14, 5))
+        self.save_button = ttk.Button(
+            bottom,
+            text="SALVA PDF",
+            command=self.save_copy,
+        )
+        self.save_button.grid(row=0, column=5, padx=(8, 0))
+        if not self.allow_save_copy:
+            self.save_button.grid_remove()
         self.register_print_button = ttk.Button(
             bottom,
             text="REGISTRA STAMPA",
@@ -156,39 +182,41 @@ class PdfPreview(tk.Toplevel):
         )
         self.register_print_button.grid(
             row=0,
-            column=5,
+            column=6,
             padx=(8, 0),
         )
         self.register_print_button.grid_remove()
         if not self.allow_physical_print:
             self.print_button.grid_remove()
+            note = self.preview_note or (
+                "PDF storico in sola consultazione. Per ristampare un voucher "
+                "selezionalo nell'elenco e usa “Stampa selezionati”."
+            )
             ttk.Label(
                 bottom,
-                text=(
-                    "PDF storico in sola consultazione. Per ristampare un voucher "
-                    "selezionalo nell'elenco e usa “Stampa selezionati”."
-                ),
+                text=note,
                 wraplength=680,
             ).grid(
                 row=1,
                 column=0,
-                columnspan=6,
+                columnspan=7,
                 sticky="w",
                 pady=(8, 0),
             )
         else:
+            note = self.preview_note or (
+                "Nei nuovi PDF, il destinatario resta sul voucher dopo il "
+                "ritaglio ed è visibile all'ospite. Controlla l'anteprima "
+                "prima di stampare."
+            )
             ttk.Label(
                 bottom,
-                text=(
-                    "Nei nuovi PDF, il destinatario resta sul voucher dopo il "
-                    "ritaglio ed è visibile all'ospite. Controlla l'anteprima "
-                    "prima di stampare."
-                ),
+                text=note,
                 wraplength=680,
             ).grid(
                 row=1,
                 column=0,
-                columnspan=6,
+                columnspan=7,
                 sticky="w",
                 pady=(8, 0),
             )
@@ -340,6 +368,37 @@ class PdfPreview(tk.Toplevel):
             self.page_index += 1
             self.render_page()
 
+    def save_copy(self) -> None:
+        """Save the already-rendered definitive PDF to an operator-selected path."""
+
+        if not self.allow_save_copy:
+            return
+        target = filedialog.asksaveasfilename(
+            parent=self,
+            title="Salva report",
+            defaultextension=".pdf",
+            initialfile=self.suggested_save_name or self.pdf_path.name,
+            filetypes=(("Documento PDF", "*.pdf"),),
+        )
+        if not target:
+            return
+        destination = Path(target)
+        try:
+            if destination.resolve() != self.pdf_path.resolve():
+                shutil.copy2(self.pdf_path, destination)
+        except OSError as exc:
+            messagebox.showerror(
+                "Salva report",
+                f"Impossibile salvare il report.\n\n{exc}",
+                parent=self,
+            )
+            return
+        messagebox.showinfo(
+            "Salva report",
+            f"Report salvato:\n{destination}",
+            parent=self,
+        )
+
     def print_document(self):
         """Submit/rasterise on the shared worker without blocking Tk."""
 
@@ -403,6 +462,10 @@ class PdfPreview(tk.Toplevel):
         )
 
         def worker():
+            if self.report_mode:
+                self._print_windows(printer, copies)
+                return None, None
+
             history.assert_no_pending_print_audit()
             pending = {
                 "copies": copies,
@@ -470,6 +533,14 @@ class PdfPreview(tk.Toplevel):
             if not finish_controls():
                 return
 
+            if self.report_mode:
+                messagebox.showinfo(
+                    "Stampa report",
+                    f"Report inviato a {printer}.",
+                    parent=self,
+                )
+                return
+
             on_submitted = getattr(self, "on_submitted", None)
             if on_submitted:
                 on_submitted()
@@ -519,6 +590,14 @@ class PdfPreview(tk.Toplevel):
 
         def failed(exc: Exception) -> None:
             if not finish_controls():
+                return
+            if self.report_mode:
+                messagebox.showerror(
+                    "Stampa report",
+                    "Impossibile inviare il report alla stampante.\n\n"
+                    f"{exc}",
+                    parent=self,
+                )
                 return
             try:
                 pending_state = history.pending_print_state()
@@ -732,6 +811,9 @@ class PdfPreview(tk.Toplevel):
         finally:
             dc.DeleteDC()
 
+    def _request_close(self) -> None:
+        self.destroy()
+
     def destroy(self):
         """Cancel pending work and release the PDFium document deterministically."""
 
@@ -761,3 +843,11 @@ class PdfPreview(tk.Toplevel):
                     type(close_exc).__name__,
                 )
         super().destroy()
+        if self.delete_on_close:
+            try:
+                self.pdf_path.unlink(missing_ok=True)
+            except OSError as exc:
+                LOGGER.warning(
+                    "preview_temp_cleanup_failed type=%s",
+                    type(exc).__name__,
+                )
