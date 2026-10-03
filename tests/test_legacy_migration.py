@@ -16,6 +16,7 @@ from voucher_management.legacy_migration import (
     apply_legacy_migration_plan,
     build_legacy_migration_plan,
     execute_legacy_migration,
+    legacy_candidates_from_database,
     legacy_migration_plan_needs_reconciliation,
     materialize_resolved_legacy_events,
 )
@@ -92,6 +93,305 @@ def test_plan_resolves_generate_and_print_rows_from_known_code(tmp_path):
     assert plan.resolved[1].row.event == "print"
     assert plan.ambiguous == ()
     assert plan.unresolved == ()
+
+
+def test_preferred_live_controller_shadows_matching_legacy_placeholder(tmp_path):
+    db = Database(tmp_path / "candidate-shadow.sqlite")
+    db.initialize()
+    legacy_controller = db.create_controller(
+        name="Archivio precedente",
+        api_root="legacy-backup://fixture",
+        created_at="2026-09-01T08:00:00+00:00",
+    )
+    live_controller = db.create_controller(
+        name="Reception",
+        api_root="https://controller.example",
+        created_at="2026-09-02T08:00:00+00:00",
+    )
+    try:
+        db.upsert_voucher(
+            controller_id=legacy_controller,
+            unifi_id="legacy-backup-fixture-a",
+            code="12345-67890",
+            imported_at="2026-09-01T08:00:00+00:00",
+            last_synced_at="2026-09-01T08:00:00+00:00",
+        )
+        db.upsert_voucher(
+            controller_id=live_controller,
+            unifi_id="live-uuid",
+            code="1234567890",
+            imported_at="2026-09-02T08:00:00+00:00",
+            last_synced_at="2026-09-02T08:00:00+00:00",
+        )
+
+        candidates = legacy_candidates_from_database(
+            db,
+            preferred_controller_id=live_controller,
+        )
+
+        matching = [
+            item
+            for item in candidates
+            if item.code.replace("-", "") == "1234567890"
+        ]
+        assert [(item.controller_id, item.unifi_id) for item in matching] == [
+            (live_controller, "live-uuid")
+        ]
+    finally:
+        db.close()
+
+
+def test_materialized_placeholder_converges_to_live_unifi_identity(tmp_path):
+    history = tmp_path / "history.jsonl"
+    code = "12345-67890"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "placeholder-generate",
+                "voucher_id": _digest(code),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+                "output_file": "Voucher_Legacy.pdf",
+            },
+            {
+                "event": "print",
+                "voucher_id": _digest(code),
+                "timestamp": "2026-09-20T10:05:00+00:00",
+                "output_file": "Voucher_Legacy.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+                "print_job_id": "placeholder-print",
+            },
+        ],
+    )
+
+    db = Database(tmp_path / "placeholder-merge.sqlite")
+    db.initialize()
+    legacy_controller = db.create_controller(
+        name="Archivio precedente",
+        api_root="legacy-backup://fixture",
+        created_at="2026-09-20T09:00:00+00:00",
+    )
+    placeholder_id = db.upsert_voucher(
+        controller_id=legacy_controller,
+        unifi_id="legacy-backup-fixture-a",
+        code="1234567890",
+        imported_at="2026-09-20T09:00:00+00:00",
+        last_synced_at="2026-09-20T09:00:00+00:00",
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            """UPDATE vouchers
+               SET present_on_controller=0, usage_observed=0,
+                   expiry_observed=0, origin='UNKNOWN'
+               WHERE id=?""",
+            (placeholder_id,),
+        )
+
+    try:
+        initial_plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    legacy_controller,
+                    "legacy-backup-fixture-a",
+                    "1234567890",
+                )
+            ],
+        )
+        apply_legacy_migration_plan(
+            database=db,
+            plan=initial_plan,
+            migration_uuid="placeholder-run",
+            applied_at="2026-09-20T10:10:00+00:00",
+        )
+        materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-20T10:11:00+00:00",
+            migration_uuid="placeholder-run",
+        )
+        assert db.connection.execute(
+            "SELECT print_state FROM vouchers WHERE id=?",
+            (placeholder_id,),
+        ).fetchone()["print_state"] == "PRINTED"
+
+        live_controller = db.create_controller(
+            name="Reception",
+            api_root="https://controller.example",
+            created_at="2026-10-01T08:00:00+00:00",
+        )
+        live_id = db.upsert_voucher(
+            controller_id=live_controller,
+            unifi_id="live-uuid",
+            code="12345-67890",
+            name="Guest",
+            imported_at="2026-10-01T08:00:00+00:00",
+            last_synced_at="2026-10-01T08:00:00+00:00",
+        )
+
+        current_plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=legacy_candidates_from_database(
+                db,
+                preferred_controller_id=live_controller,
+            ),
+        )
+        assert current_plan.fully_resolved is True
+        assert {
+            item.candidate.unifi_id for item in current_plan.resolved
+        } == {"live-uuid"}
+        assert (
+            legacy_migration_plan_needs_reconciliation(db, current_plan)
+            is True
+        )
+
+        apply_legacy_migration_plan(
+            database=db,
+            plan=current_plan,
+            migration_uuid="live-reconciliation",
+            applied_at="2026-10-01T08:05:00+00:00",
+        )
+        materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-10-01T08:06:00+00:00",
+            migration_uuid="live-reconciliation",
+        )
+
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM vouchers WHERE id=?",
+            (placeholder_id,),
+        ).fetchone()[0] == 0
+        assert {
+            int(row["voucher_id"])
+            for row in db.connection.execute(
+                "SELECT voucher_id FROM legacy_audit_events"
+            ).fetchall()
+        } == {live_id}
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM voucher_prints WHERE voucher_id=?",
+            (live_id,),
+        ).fetchone()[0] == 1
+        live = db.connection.execute(
+            "SELECT print_state FROM vouchers WHERE id=?",
+            (live_id,),
+        ).fetchone()
+        assert live["print_state"] == "PRINTED"
+        assert db.connection.execute(
+            """SELECT COUNT(*) FROM voucher_events
+               WHERE voucher_id=?
+                 AND event_type='LEGACY_PLACEHOLDER_MERGED'""",
+            (live_id,),
+        ).fetchone()[0] == 1
+        assert db.connection.execute(
+            """SELECT COUNT(*) FROM vouchers
+               WHERE REPLACE(code, '-', '')='1234567890'"""
+        ).fetchone()[0] == 1
+    finally:
+        db.close()
+
+
+def test_placeholder_with_operator_activity_is_not_auto_merged(tmp_path):
+    history = tmp_path / "history.jsonl"
+    code = "12345-67890"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "protected-placeholder",
+                "voucher_id": _digest(code),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+    db = Database(tmp_path / "protected-placeholder.sqlite")
+    db.initialize()
+    legacy_controller = db.create_controller(
+        name="Archivio precedente",
+        api_root="legacy-backup://fixture",
+        created_at="2026-09-20T09:00:00+00:00",
+    )
+    placeholder_id = db.upsert_voucher(
+        controller_id=legacy_controller,
+        unifi_id="legacy-backup-fixture-a",
+        code="1234567890",
+        imported_at="2026-09-20T09:00:00+00:00",
+        last_synced_at="2026-09-20T09:00:00+00:00",
+    )
+    initial = build_legacy_migration_plan(
+        history_path=history,
+        expected_fingerprint=FINGERPRINT,
+        secret=FIXTURE_KEY,
+        candidates=[
+            LegacyVoucherCandidate(
+                legacy_controller,
+                "legacy-backup-fixture-a",
+                "1234567890",
+            )
+        ],
+    )
+    apply_legacy_migration_plan(
+        database=db,
+        plan=initial,
+        migration_uuid="protected-old",
+        applied_at="2026-09-20T10:01:00+00:00",
+    )
+    materialize_resolved_legacy_events(
+        database=db,
+        materialized_at="2026-09-20T10:02:00+00:00",
+        migration_uuid="protected-old",
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            """INSERT INTO voucher_events(
+                   event_uuid, voucher_id, event_type, occurred_at,
+                   source, windows_user, details_json
+               ) VALUES ('operator-event', ?, 'LOCAL_NOTE_UPDATED',
+                         '2026-09-21T10:00:00+00:00',
+                         'OPERATOR', 'PC\\operator', NULL)""",
+            (placeholder_id,),
+        )
+
+    try:
+        live_controller = db.create_controller(
+            name="Reception",
+            api_root="https://controller.example",
+            created_at="2026-10-01T08:00:00+00:00",
+        )
+        db.upsert_voucher(
+            controller_id=live_controller,
+            unifi_id="live-uuid",
+            code="1234567890",
+            imported_at="2026-10-01T08:00:00+00:00",
+            last_synced_at="2026-10-01T08:00:00+00:00",
+        )
+        current = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=legacy_candidates_from_database(
+                db,
+                preferred_controller_id=live_controller,
+            ),
+        )
+
+        with pytest.raises(
+            LegacyMigrationError,
+            match="confligge",
+        ):
+            legacy_migration_plan_needs_reconciliation(db, current)
+
+        assert db.connection.execute(
+            "SELECT COUNT(*) FROM vouchers WHERE id=?",
+            (placeholder_id,),
+        ).fetchone()[0] == 1
+    finally:
+        db.close()
 
 
 def test_plan_ignores_modern_rows_with_stable_voucher_identity(tmp_path):
