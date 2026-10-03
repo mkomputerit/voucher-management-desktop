@@ -78,3 +78,35 @@ def test_windows_ci_executes_real_installer_acl_integration():
     assert "S-1-1-0" in integration
     assert "S-1-5-11" in integration
     assert "RemoveData" in integration
+
+
+
+def test_windows_ci_runs_ruff_correctness_gate():
+    workflow = (ROOT / ".github" / "workflows" / "build-windows.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Check Python correctness with Ruff" in workflow
+    assert "ruff==0.12.11" in workflow
+    assert "ruff.exe" in workflow
+    assert "check --select F,E9 src launcher.py" in workflow
+
+
+def test_setup_completion_text_matches_builtin_users_architecture():
+    source = (ROOT / "tools" / "SetupBootstrapper.cs").read_text(
+        encoding="utf-8"
+    )
+
+    assert "appena aggiunto al gruppo operatori" not in source
+    assert "utenti locali Windows" in source
+    assert "ProgramData" in source
+
+
+def test_setup_quote_handles_trailing_backslash_before_closing_quote():
+    source = (ROOT / "tools" / "SetupBootstrapper.cs").read_text(
+        encoding="utf-8"
+    )
+
+    assert "int trailingBackslashes = 0;" in source
+    assert "value[index] == '\\\\'" in source
+    assert "new string('\\\\', trailingBackslashes)" in source
