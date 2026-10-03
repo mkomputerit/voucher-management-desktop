@@ -419,6 +419,22 @@ def legacy_migration_plan_needs_reconciliation(
         if existing_status == "RESOLVED":
             if existing["materialized_at"] is None:
                 return True
+            existing_identity = database.connection.execute(
+                """SELECT v.unifi_id, c.api_root
+                   FROM vouchers AS v
+                   JOIN controllers AS c ON c.id=v.controller_id
+                   WHERE v.id=?""",
+                (int(existing_voucher_id),),
+            ).fetchone()
+            existing_is_placeholder = bool(
+                existing_identity is not None
+                and str(existing_identity["api_root"] or "").startswith(
+                    "legacy-backup://"
+                )
+                and str(existing_identity["unifi_id"] or "").startswith(
+                    "legacy-backup-"
+                )
+            )
             if (
                 wanted_status == "RESOLVED"
                 and existing_voucher_id != wanted_voucher_id
@@ -433,9 +449,13 @@ def legacy_migration_plan_needs_reconciliation(
                     "Una risoluzione legacy positiva esistente confligge con "
                     "una diversa identità voucher non provvisoria"
                 )
-            # Positive legacy identity is monotonic. Never ask the operator to
-            # regress it merely because a later controller snapshot cannot
-            # reproduce the original candidate set.
+            if wanted_status == "AMBIGUOUS" and existing_is_placeholder:
+                raise LegacyMigrationError(
+                    "Il placeholder legacy corrisponde ora a più identità "
+                    "voucher live: la riconciliazione automatica è bloccata"
+                )
+            # Positive real-voucher identity is monotonic. If the current
+            # candidate set merely lost information, never regress it.
             continue
 
         if wanted_status == "RESOLVED":
