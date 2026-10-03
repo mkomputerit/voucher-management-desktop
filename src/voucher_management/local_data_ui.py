@@ -572,9 +572,9 @@ class AlignmentDialog(tk.Toplevel):
             text=(
                 "Sono voucher trovati sulla controller per cui il nuovo database "
                 "non possiede ancora tutte le informazioni locali. Seleziona uno "
-                "o più voucher e indica la nominalità. Per i voucher creati fuori "
-                "da Voucher Management la stampa resta 'Non determinabile' salvo "
-                "evidenza verificata nello storico."
+                "o più voucher e indica la nominalità. Una stampa verificata "
+                "nello storico prevale; in assenza di prova positiva, un voucher "
+                "trovato sulla controller viene allineato come Non stampato."
             ),
             style="Muted.TLabel",
             wraplength=790,
@@ -663,7 +663,7 @@ class AlignmentDialog(tk.Toplevel):
             elif str(item.print_state or "").strip().upper() == PRINT_STATE_PRINTED:
                 print_label = "Stampato • data non determinabile"
             elif str(item.origin or "").strip().upper() == "CONTROLLER":
-                print_label = "Non determinabile"
+                print_label = "Nessuna stampa verificata"
             else:
                 print_label = "Da dichiarare"
             iid = str(item.voucher_id)
@@ -736,8 +736,8 @@ class AlignmentDialog(tk.Toplevel):
         if positive_print and all(positive_print):
             self.print_state.set("Stampato")
             self.print_combo.configure(state="disabled")
-        elif origins == {"CONTROLLER"}:
-            self.print_state.set("Non determinabile")
+        elif not any(positive_print) and origins == {"CONTROLLER"}:
+            self.print_state.set("Non stampato")
             self.print_combo.configure(state="disabled")
         else:
             self.print_state.set("")
@@ -883,6 +883,28 @@ class AlignmentDialog(tk.Toplevel):
                 "Allinea voucher",
                 "La selezione contiene una prova positiva di stampa nello storico. "
                 "Per questi voucher lo stato deve rimanere Stampato.",
+                parent=self,
+            )
+            return
+
+        controller_without_positive_print = [
+            item
+            for item, has_positive_print in zip(
+                selected_candidates,
+                positive_print_flags,
+                strict=True,
+            )
+            if str(item.origin or "").strip().upper() == "CONTROLLER"
+            and not has_positive_print
+        ]
+        if (
+            controller_without_positive_print
+            and requested_print != PRINT_STATE_NOT_PRINTED
+        ):
+            messagebox.showerror(
+                "Allinea voucher",
+                "I voucher trovati sulla controller senza una stampa verificata "
+                "devono essere allineati come Non stampati.",
                 parent=self,
             )
             return
