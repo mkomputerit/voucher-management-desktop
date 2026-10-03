@@ -113,9 +113,6 @@ class ReportRow:
     created_at: str
     imported_at: str
     expires_at: str
-    activated_at: str
-    duration_minutes: int
-    authorized_guest_limit: int | None
     authorized_guest_count: int
     ever_used: bool
     usage_observed: bool
@@ -132,6 +129,9 @@ class ReportRow:
     status: str
     origin: str
     is_nominal: bool | None
+    activated_at: str = ""
+    duration_minutes: int = 0
+    authorized_guest_limit: int | None = None
     last_seen_at: str = ""
     last_synced_at: str = ""
     nominality_redacted: bool = False
