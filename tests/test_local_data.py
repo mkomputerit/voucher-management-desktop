@@ -525,3 +525,35 @@ def test_align_action_passes_workspace_selection_to_dialog(monkeypatch):
 
     assert len(opened) == 1
     assert opened[0][1]["target_unifi_ids"] == ("remote-a", "remote-b")
+
+
+
+def test_expired_workspace_selection_keeps_local_metadata_but_disables_alignment(
+    monkeypatch,
+    tmp_path,
+):
+    db, controller = _db(tmp_path)
+    try:
+        _voucher(db, controller, "expired", "7777788888")
+        expired = SimpleNamespace(id="expired", status="EXPIRED")
+        app = SimpleNamespace(
+            active_controller_id=controller,
+            database=db,
+            checked_ids={"expired"},
+            vouchers=(expired,),
+        )
+        monkeypatch.setattr(
+            local_data_ui,
+            "alignment_candidates",
+            lambda *args, **kwargs: (
+                SimpleNamespace(unifi_id="expired"),
+            ),
+        )
+
+        assert voucher_action_states(app) == {
+            "align": False,
+            "nominality": True,
+            "notes": True,
+        }
+    finally:
+        db.close()
