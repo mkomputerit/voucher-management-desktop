@@ -16,6 +16,7 @@ from voucher_management.legacy_migration import (
     apply_legacy_migration_plan,
     build_legacy_migration_plan,
     execute_legacy_migration,
+    legacy_migration_plan_needs_reconciliation,
     materialize_resolved_legacy_events,
 )
 from voucher_management.database import Database
@@ -504,6 +505,115 @@ def test_apply_persists_resolved_and_unresolved_evidence_atomically(tmp_path):
         ).fetchone()
         assert run["status"] == "EVIDENCE_READY"
         assert run["source_history_sha256"] == plan.source_history_sha256
+    finally:
+        db.close()
+
+
+def test_reconciliation_gate_stops_after_resolved_evidence_is_materialized(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "print",
+                "voucher_id": _digest("12345-67890"),
+                "timestamp": "2026-09-20T10:05:00+00:00",
+                "output_file": "Voucher_Legacy.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+                "print_job_id": "legacy-gate-print",
+            }
+        ],
+    )
+    db, controller_id, _voucher_id = _database_with_voucher(tmp_path)
+    try:
+        plan = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    controller_id,
+                    "legacy-voucher-1",
+                    "1234567890",
+                )
+            ],
+        )
+        assert legacy_migration_plan_needs_reconciliation(db, plan) is True
+
+        apply_legacy_migration_plan(
+            database=db,
+            plan=plan,
+            migration_uuid="gate-run",
+            applied_at="2026-09-26T10:05:00+00:00",
+        )
+        assert legacy_migration_plan_needs_reconciliation(db, plan) is True
+
+        materialize_resolved_legacy_events(
+            database=db,
+            materialized_at="2026-09-26T10:06:00+00:00",
+            migration_uuid="gate-run",
+        )
+        assert legacy_migration_plan_needs_reconciliation(db, plan) is False
+    finally:
+        db.close()
+
+
+def test_reconciliation_gate_reopens_when_unresolved_evidence_becomes_resolvable(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "later-resolvable",
+                "voucher_id": _digest("99999-00000"),
+                "timestamp": "2026-09-20T10:00:00+00:00",
+            }
+        ],
+    )
+    db, _controller_id, _voucher_id = _database_with_voucher(tmp_path)
+    try:
+        unresolved = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[],
+        )
+        apply_legacy_migration_plan(
+            database=db,
+            plan=unresolved,
+            migration_uuid="unresolved-run",
+            applied_at="2026-09-26T10:05:00+00:00",
+        )
+        assert (
+            legacy_migration_plan_needs_reconciliation(db, unresolved)
+            is False
+        )
+
+        controller_id = db.connection.execute(
+            "SELECT id FROM controllers LIMIT 1"
+        ).fetchone()["id"]
+        db.upsert_voucher(
+            controller_id=int(controller_id),
+            unifi_id="later-voucher",
+            code="9999900000",
+            imported_at="2026-09-27T08:00:00+00:00",
+            last_synced_at="2026-09-27T08:00:00+00:00",
+        )
+        resolved = build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    int(controller_id),
+                    "later-voucher",
+                    "9999900000",
+                )
+            ],
+        )
+        assert legacy_migration_plan_needs_reconciliation(db, resolved) is True
     finally:
         db.close()
 
