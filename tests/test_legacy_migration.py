@@ -93,6 +93,97 @@ def test_plan_resolves_generate_and_print_rows_from_known_code(tmp_path):
     assert plan.unresolved == ()
 
 
+def test_plan_ignores_modern_rows_with_stable_voucher_identity(tmp_path):
+    history = tmp_path / "history.jsonl"
+    code = "12345-67890"
+    modern_ref = "a" * 64
+    _write_history(
+        history,
+        [
+            {
+                "event": "generate",
+                "event_id": "modern-event",
+                "voucher_id": _digest(code),
+                "voucher_ref": modern_ref,
+                "timestamp": "2026-09-20T09:00:00+00:00",
+                "output_file": "Voucher_Modern.pdf",
+            },
+            {
+                "event": "print",
+                "voucher_id": _digest(code),
+                "timestamp": "2026-09-20T09:05:00+00:00",
+                "output_file": "Voucher_Modern.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+                "print_job_id": "modern-print",
+                "voucher_ref": modern_ref,
+            },
+            {
+                "event": "print",
+                "voucher_id": _digest(code),
+                "timestamp": "2026-09-19T10:05:00+00:00",
+                "output_file": "Voucher_Legacy.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+                "print_job_id": "legacy-print",
+            },
+        ],
+    )
+
+    plan = build_legacy_migration_plan(
+        history_path=history,
+        expected_fingerprint=FINGERPRINT,
+        secret=FIXTURE_KEY,
+        candidates=[
+            LegacyVoucherCandidate(
+                controller_id=7,
+                unifi_id="voucher-1",
+                code=code,
+            )
+        ],
+    )
+
+    assert plan.total_rows == 1
+    assert len(plan.resolved) == 1
+    assert plan.resolved[0].row.payload["print_job_id"] == "legacy-print"
+
+
+def test_plan_rejects_malformed_modern_stable_identity(tmp_path):
+    history = tmp_path / "history.jsonl"
+    _write_history(
+        history,
+        [
+            {
+                "event": "print",
+                "voucher_id": _digest("12345-67890"),
+                "voucher_ref": "not-a-valid-hmac",
+                "timestamp": "2026-09-20T10:05:00+00:00",
+                "output_file": "Voucher_Modern.pdf",
+                "document_copies": 1,
+                "physical_copies": 1,
+                "print_job_id": "modern-print",
+            }
+        ],
+    )
+
+    with pytest.raises(
+        LegacyMigrationError,
+        match="Identità voucher moderna non valida",
+    ):
+        build_legacy_migration_plan(
+            history_path=history,
+            expected_fingerprint=FINGERPRINT,
+            secret=FIXTURE_KEY,
+            candidates=[
+                LegacyVoucherCandidate(
+                    controller_id=7,
+                    unifi_id="voucher-1",
+                    code="12345-67890",
+                )
+            ],
+        )
+
+
 def test_plan_preserves_unknown_hmac_as_unresolved_evidence(tmp_path):
     history = tmp_path / "history.jsonl"
     _write_history(
