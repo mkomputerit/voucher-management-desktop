@@ -19,7 +19,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -28,7 +27,7 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 
-from .backup import BackupError, BackupService
+from .backup import BackupService
 from .database import Database
 from .identity import LEGACY_BACKUP_API_ROOT_PREFIX
 from .legacy_migration import (
@@ -43,7 +42,6 @@ from .legacy_migration import (
     materialize_resolved_legacy_events,
 )
 from .security.history_key import HistoryKeyStore
-from .settings import SettingsStore
 
 
 _CODE_PATTERN = re.compile(r"(?<!\d)(\d{5})\s*-?\s*(\d{5})(?!\d)")
