@@ -1,4 +1,5 @@
 from voucher_management.alignment import (
+    PRINT_STATE_NOT_PRINTED,
     PRINT_STATE_PRINTED,
     PRINT_STATE_UNKNOWN,
     align_vouchers,
@@ -57,7 +58,7 @@ def test_controller_import_requires_alignment(tmp_path):
         db.close()
 
 
-def test_controller_discovered_voucher_cannot_claim_unverified_print(tmp_path):
+def test_controller_discovered_voucher_aligns_unverified_print_as_not_printed(tmp_path):
     db, controller = _db(tmp_path)
     try:
         persist_successful_snapshot(
@@ -73,29 +74,31 @@ def test_controller_discovered_voucher_cannot_claim_unverified_print(tmp_path):
             ).fetchone()["id"]
         )
 
-        try:
-            align_vouchers(
-                db,
-                controller_id=controller,
-                voucher_ids=[voucher_id],
-                is_nominal=True,
-                print_state=PRINT_STATE_PRINTED,
-                aligned_at="2026-10-01T09:00:00+00:00",
-                windows_user="PC\\operatore",
-            )
-        except ValueError as exc:
-            assert "Non determinabile" in str(exc)
-        else:
-            raise AssertionError(
-                "controller-discovered voucher must not invent print evidence"
-            )
+        for rejected_state in (PRINT_STATE_PRINTED, PRINT_STATE_UNKNOWN):
+            try:
+                align_vouchers(
+                    db,
+                    controller_id=controller,
+                    voucher_ids=[voucher_id],
+                    is_nominal=True,
+                    print_state=rejected_state,
+                    aligned_at="2026-10-01T09:00:00+00:00",
+                    windows_user="PC\\operatore",
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(
+                    "controller-discovered voucher without print evidence "
+                    "must align as NOT_PRINTED"
+                )
 
         result = align_vouchers(
             db,
             controller_id=controller,
             voucher_ids=[voucher_id],
             is_nominal=True,
-            print_state=PRINT_STATE_UNKNOWN,
+            print_state=PRINT_STATE_NOT_PRINTED,
             aligned_at="2026-10-01T09:05:00+00:00",
             windows_user="PC\\operatore",
         )
@@ -106,27 +109,32 @@ def test_controller_discovered_voucher_cannot_claim_unverified_print(tmp_path):
             (voucher_id,),
         ).fetchone()
         assert row["is_nominal"] == 1
-        assert row["print_state"] == PRINT_STATE_UNKNOWN
+        assert row["print_state"] == PRINT_STATE_NOT_PRINTED
         assert row["alignment_completed_at"] == "2026-10-01T09:05:00+00:00"
     finally:
         db.close()
 
 
-def test_explicit_unknown_print_state_can_complete_alignment(tmp_path):
+def test_historical_unknown_origin_can_keep_unknown_print_state(tmp_path):
     db, controller = _db(tmp_path)
     try:
         persist_successful_snapshot(
             db,
             controller_id=controller,
-            vouchers=[_voucher("external-3")],
+            vouchers=[_voucher("historical-unknown")],
             observed_at="2026-10-01T08:00:00+00:00",
             sync_uuid="discover",
         )
         voucher_id = int(
             db.connection.execute(
-                "SELECT id FROM vouchers WHERE unifi_id='external-3'"
+                "SELECT id FROM vouchers WHERE unifi_id='historical-unknown'"
             ).fetchone()["id"]
         )
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE vouchers SET origin='UNKNOWN' WHERE id=?",
+                (voucher_id,),
+            )
 
         align_vouchers(
             db,
