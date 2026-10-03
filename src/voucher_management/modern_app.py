@@ -1778,9 +1778,9 @@ class ModernVoucherApp(
         ttk.Label(
             actions,
             text=(
-                "Riepilogo aggregato, creazioni VM confermate, mai osservati "
-                "utilizzati, utilizzati, scaduti, stampati, nominali, dati non "
-                "determinabili e storico completo."
+                "I report operativi raccolgono riepilogo, utilizzo, scadenza, "
+                "stampa, nominalità e revisioni. Qualità dati, UUID e Storico "
+                "completo sono separati nel livello Audit / diagnostica tecnica."
             ),
             style="Muted.TLabel",
             wraplength=720,
