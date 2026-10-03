@@ -37,6 +37,164 @@ REPORT_CHOICES = (
 )
 REPORT_KIND_BY_LABEL = dict(REPORT_CHOICES)
 
+REPORT_GUIDE_CHOICES = (
+    (
+        "Panoramica dello storico locale",
+        ReportKind.SUMMARY,
+        "Usa il Riepilogo storico per una vista aggregata senza dettaglio voucher.",
+    ),
+    (
+        "Voucher creati dal software",
+        ReportKind.GENERATED,
+        "Mostra le creazioni confermate da Voucher Management nello storico locale.",
+    ),
+    (
+        "Voucher creati ma mai osservati usati",
+        ReportKind.GENERATED_UNUSED,
+        (
+            "Individua i voucher creati dal software per cui non è mai stata "
+            "osservata evidenza positiva di utilizzo."
+        ),
+    ),
+    (
+        "Voucher stampati ma senza uso osservato",
+        ReportKind.PRINTED_UNUSED,
+        (
+            "Serve per la revisione operativa dei voucher stampati che non "
+            "risultano mai osservati come utilizzati."
+        ),
+    ),
+    (
+        "Voucher creati ma non stampati oltre soglia",
+        ReportKind.UNPRINTED_WARNING,
+        "Mostra i candidati all'avviso operativo per mancata stampa.",
+    ),
+    (
+        "Voucher da rivedere per revoca di sicurezza",
+        ReportKind.SECURITY_REVIEW,
+        (
+            "Mostra i voucher stampati e mai usati che hanno superato la "
+            "soglia di sicurezza configurata."
+        ),
+    ),
+    (
+        "Controllare nominalità e classificazioni mancanti",
+        ReportKind.UNCLASSIFIED,
+        "Mostra i voucher che richiedono ancora una classificazione locale.",
+    ),
+    (
+        "Controllare dati non determinabili",
+        ReportKind.USAGE_UNKNOWN,
+        (
+            "Parte dai voucher con uso non determinabile; dal menu report puoi "
+            "poi scegliere anche origine o stato stampa non determinabili."
+        ),
+    ),
+    (
+        "Audit completo dello storico",
+        ReportKind.FULL_HISTORY,
+        (
+            "Usa lo Storico completo per la verifica amministrativa più ampia. "
+            "I codici restano nascosti salvo richiesta esplicita."
+        ),
+    ),
+)
+REPORT_GUIDE_KIND_BY_LABEL = {
+    label: kind for label, kind, _description in REPORT_GUIDE_CHOICES
+}
+REPORT_GUIDE_DESCRIPTION_BY_LABEL = {
+    label: description for label, _kind, description in REPORT_GUIDE_CHOICES
+}
+
+
+def report_label_for_kind(kind: ReportKind) -> str:
+    for label, candidate in REPORT_CHOICES:
+        if candidate is kind:
+            return label
+    return REPORT_CHOICES[0][0]
+
+
+class ReportGuideDialog(tk.Toplevel):
+    """Guide the operator from a practical question to the right report."""
+
+    def __init__(self, app, *, initial_kind: ReportKind | None = None):
+        super().__init__(app)
+        self.app = app
+        self.title("Guida alla scelta del report")
+        self.transient(app)
+        self.grab_set()
+        self.resizable(False, False)
+
+        self.choice_var = tk.StringVar(value=REPORT_GUIDE_CHOICES[0][0])
+        self.description_var = tk.StringVar()
+
+        shell = ttk.Frame(self, padding=20)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(
+            shell,
+            text="Quale report ti serve?",
+            style="PageTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            shell,
+            text=(
+                "Scegli l'obiettivo operativo: la guida apre il generatore con "
+                "il report più adatto già selezionato. Potrai comunque cambiarlo."
+            ),
+            style="Muted.TLabel",
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w", pady=(3, 16))
+
+        combo = ttk.Combobox(
+            shell,
+            textvariable=self.choice_var,
+            values=tuple(label for label, _kind, _desc in REPORT_GUIDE_CHOICES),
+            state="readonly",
+            width=58,
+        )
+        combo.pack(fill="x")
+        combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_description())
+
+        ttk.Label(
+            shell,
+            textvariable=self.description_var,
+            style="Muted.TLabel",
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w", pady=(14, 0))
+
+        actions = ttk.Frame(shell)
+        actions.pack(fill="x", pady=(22, 0))
+        ttk.Button(
+            actions,
+            text="Annulla",
+            command=self.destroy,
+        ).pack(side="right")
+        ttk.Button(
+            actions,
+            text="Apri questo report",
+            style="Accent.TButton",
+            command=self._open_report,
+        ).pack(side="right", padx=(0, 8))
+        self._sync_description()
+
+    def _sync_description(self) -> None:
+        self.description_var.set(
+            REPORT_GUIDE_DESCRIPTION_BY_LABEL.get(
+                self.choice_var.get(),
+                "",
+            )
+        )
+
+    def _open_report(self) -> None:
+        kind = REPORT_GUIDE_KIND_BY_LABEL.get(
+            self.choice_var.get(),
+            ReportKind.SUMMARY,
+        )
+        self.destroy()
+        ReportDialog(self.app, initial_kind=kind)
+
 
 class ReportDialog(tk.Toplevel):
     """Small operator-facing report export workflow."""
@@ -50,7 +208,11 @@ class ReportDialog(tk.Toplevel):
         self._busy = False
         self.protocol("WM_DELETE_WINDOW", self._close)
 
-        self.kind_var = tk.StringVar(value=REPORT_CHOICES[0][0])
+        self.kind_var = tk.StringVar(
+            value=report_label_for_kind(initial_kind)
+            if initial_kind is not None
+            else REPORT_CHOICES[0][0]
+        )
         self.scope_var = tk.StringVar(value="Tutto lo storico locale")
         self.format_var = tk.StringVar(value="PDF")
         self.include_codes_var = tk.BooleanVar(value=False)
