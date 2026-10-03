@@ -19,6 +19,7 @@ from .alignment import (
     alignment_candidates,
 )
 from .local_data import LocalVoucherPatch, apply_local_voucher_patch_to_path
+from .ui_layout import fit_toplevel_to_content
 
 
 _NOMINAL_VALUES = {
@@ -557,8 +558,6 @@ class AlignmentDialog(tk.Toplevel):
         self.title("Allinea voucher")
         self.transient(app)
         self.grab_set()
-        self.geometry("850x540")
-        self.minsize(720, 460)
 
         shell = ttk.Frame(self, padding=18)
         shell.pack(fill="both", expand=True)
@@ -592,10 +591,12 @@ class AlignmentDialog(tk.Toplevel):
         self.tree.column("name", width=350)
         self.tree.column("created", width=180, anchor="center")
         self.tree.column("print", width=180, anchor="center")
-        self.tree.pack(fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", self._sync_alignment_fields)
 
-        fields = ttk.Frame(shell)
+        footer = ttk.Frame(shell)
+        footer.pack(side="bottom", fill="x")
+
+        fields = ttk.Frame(footer)
         fields.pack(fill="x", pady=(12, 0))
         ttk.Label(fields, text="Nominalità").grid(row=0, column=0, sticky="w")
         self.nominal_combo = ttk.Combobox(
@@ -616,10 +617,10 @@ class AlignmentDialog(tk.Toplevel):
         )
         self.print_combo.grid(row=0, column=3, sticky="w", padx=(8, 0))
 
-        ttk.Label(shell, textvariable=self.status, style="Muted.TLabel").pack(
+        ttk.Label(footer, textvariable=self.status, style="Muted.TLabel").pack(
             anchor="w", pady=(10, 0)
         )
-        actions = ttk.Frame(shell)
+        actions = ttk.Frame(footer)
         actions.pack(fill="x", pady=(12, 0))
         ttk.Button(actions, text="Chiudi", command=self.destroy).pack(side="right")
         self.save_button = ttk.Button(
@@ -635,7 +636,16 @@ class AlignmentDialog(tk.Toplevel):
             command=self._delete_invalid_selected,
         )
         self.delete_invalid_button.pack(side="left")
+
+        self.tree.pack(fill="both", expand=True)
         self._refresh()
+        fit_toplevel_to_content(
+            self,
+            preferred_width=850,
+            preferred_height=540,
+            min_width=720,
+            min_height=460,
+        )
 
     def _refresh(self) -> None:
         self.tree.delete(*self.tree.get_children())
