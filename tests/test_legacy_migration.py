@@ -231,6 +231,15 @@ def test_materialized_placeholder_converges_to_live_unifi_identity(tmp_path):
             imported_at="2026-10-01T08:00:00+00:00",
             last_synced_at="2026-10-01T08:00:00+00:00",
         )
+        db.record_print_audit(
+            controller_id=live_controller,
+            audit_id="current-live-print",
+            codes=["12345-67890"],
+            output_file="current.pdf",
+            document_copies=1,
+            printed_at="2026-10-01T08:02:00+00:00",
+            windows_user=r"PC\operator",
+        )
 
         current_plan = build_legacy_migration_plan(
             history_path=history,
@@ -272,10 +281,17 @@ def test_materialized_placeholder_converges_to_live_unifi_identity(tmp_path):
                 "SELECT voucher_id FROM legacy_audit_events"
             ).fetchall()
         } == {live_id}
-        assert db.connection.execute(
-            "SELECT COUNT(*) FROM voucher_prints WHERE voucher_id=?",
+        prints = db.connection.execute(
+            """SELECT print_sequence, printed_at, is_reprint
+               FROM voucher_prints
+               WHERE voucher_id=?
+               ORDER BY print_sequence""",
             (live_id,),
-        ).fetchone()[0] == 1
+        ).fetchall()
+        assert [tuple(row) for row in prints] == [
+            (1, "2026-09-20T10:05:00+00:00", 0),
+            (2, "2026-10-01T08:02:00+00:00", 1),
+        ]
         live = db.connection.execute(
             "SELECT print_state FROM vouchers WHERE id=?",
             (live_id,),
