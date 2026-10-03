@@ -187,7 +187,7 @@ def _candidate_rows(
                 v.created_at,
                 v.imported_at,
                 v.expires_at,
-                COALESCE(v.expires_at, v.created_at, v.imported_at) AS age_basis,
+                COALESCE(v.created_at, v.imported_at) AS age_basis,
                 v.last_synced_at
            FROM vouchers AS v
            JOIN controllers AS c ON c.id=v.controller_id
@@ -196,13 +196,14 @@ def _candidate_rows(
              AND v.usage_observed=1
              AND v.ever_used=0
              AND v.authorized_guest_count=0
-             AND v.expired=1
-             AND v.expires_at IS NOT NULL
-             AND julianday(v.last_seen_at) >= julianday(v.expires_at)
+             AND v.expired=0
+             AND v.expires_at IS NULL
+             AND v.alignment_completed_at IS NOT NULL
+             AND v.print_state='NOT_PRINTED'
              AND NOT EXISTS (
                  SELECT 1 FROM voucher_prints AS vp WHERE vp.voucher_id=v.id
              )
-             AND COALESCE(v.expires_at, v.created_at, v.imported_at) <= ?
+             AND COALESCE(v.created_at, v.imported_at) <= ?
              {controller_clause}
            ORDER BY age_basis ASC, v.id ASC""",
         tuple(params),
