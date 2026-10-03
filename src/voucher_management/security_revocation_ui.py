@@ -311,6 +311,7 @@ class SecurityRevocationDialog(tk.Toplevel):
                 ]
             ui_refreshed = self.app._finalize_voucher_operation_ui(
                 operation="security_revocation",
+                refresh_reports=False,
             )
             self._refresh()
             # Preserve the pre-existing automatic UniFi reread after a remote
