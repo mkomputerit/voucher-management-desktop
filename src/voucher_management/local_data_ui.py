@@ -403,10 +403,12 @@ class NominalityDialog(tk.Toplevel):
             )
 
         def completed(result) -> None:
-            refresh = getattr(self.app, "_refresh_report_summary", None)
-            if callable(refresh):
-                refresh()
             self.destroy()
+            refreshed = self.app._finalize_voucher_operation_ui(
+                operation="nominality",
+            )
+            if not refreshed:
+                return
             messagebox.showinfo(
                 "Nominalità",
                 (
@@ -517,10 +519,12 @@ class NotesDialog(tk.Toplevel):
             )
 
         def completed(result) -> None:
-            refresh = getattr(self.app, "_refresh_report_summary", None)
-            if callable(refresh):
-                refresh()
             self.destroy()
+            refreshed = self.app._finalize_voucher_operation_ui(
+                operation="notes",
+            )
+            if not refreshed:
+                return
             messagebox.showinfo(
                 "Note voucher",
                 (
@@ -944,10 +948,12 @@ class AlignmentDialog(tk.Toplevel):
             )
 
         def completed(result) -> None:
-            refresh = getattr(self.app, "_refresh_report_summary", None)
-            if callable(refresh):
-                refresh()
+            refreshed = self.app._finalize_voucher_operation_ui(
+                operation="alignment",
+            )
             self._refresh()
+            if not refreshed:
+                return
             messagebox.showinfo(
                 "Allinea voucher",
                 (
