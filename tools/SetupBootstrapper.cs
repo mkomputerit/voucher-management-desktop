@@ -118,9 +118,6 @@ namespace VoucherManagementSetup
                     psArgs.Append(" -DataRoot ");
                     psArgs.Append(Quote(dataRoot));
                 }
-
-                AppendOption(psArgs, options, "OperatorGroup", "-OperatorGroup");
-                AppendOption(psArgs, options, "OperatorUser", "-OperatorUser");
                 if (HasFlag(args, "SkipShortcut"))
                 {
                     psArgs.Append(" -SkipShortcut");
@@ -293,24 +290,6 @@ namespace VoucherManagementSetup
                 return value.Trim();
             }
             return defaultValue;
-        }
-
-        private static void AppendOption(
-            StringBuilder command,
-            Dictionary<string, string> options,
-            string name,
-            string switchName
-        )
-        {
-            string value;
-            if (!options.TryGetValue(name, out value) || String.IsNullOrWhiteSpace(value))
-            {
-                return;
-            }
-            command.Append(" ");
-            command.Append(switchName);
-            command.Append(" ");
-            command.Append(Quote(value.Trim()));
         }
 
         private static string Quote(string value)
