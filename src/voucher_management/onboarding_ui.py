@@ -21,7 +21,6 @@ from .onboarding import (
     OnboardingDraft,
     OnboardingState,
     begin_onboarding,
-    choose_shared_fresh_start,
     complete_onboarding,
     legacy_installation_has_evidence,
     onboarding_state,
