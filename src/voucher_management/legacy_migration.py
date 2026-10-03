@@ -333,6 +333,72 @@ def build_legacy_migration_plan(
     )
 
 
+def legacy_migration_plan_needs_reconciliation(
+    database: "Database",
+    plan: LegacyMigrationPlan,
+) -> bool:
+    """Return whether a verified plan would add or improve durable evidence.
+
+    Already-resolved/materialized evidence is monotonic and remains valid even
+    if a later candidate snapshot can no longer reproduce the old association.
+    Unresolved/ambiguous evidence is reconsidered whenever new authoritative
+    UniFi identities make a unique resolution possible.
+    """
+
+    desired: list[tuple[LegacyAuditRow, str, int | None]] = []
+    for item in plan.resolved:
+        row = database.connection.execute(
+            """SELECT id FROM vouchers
+               WHERE controller_id=? AND unifi_id=?""",
+            (item.candidate.controller_id, item.candidate.unifi_id),
+        ).fetchone()
+        if row is None:
+            return True
+        desired.append((item.row, "RESOLVED", int(row["id"])))
+    desired.extend(
+        (item.row, "AMBIGUOUS", None)
+        for item in plan.ambiguous
+    )
+    desired.extend(
+        (item.row, "UNRESOLVED", None)
+        for item in plan.unresolved
+    )
+
+    for row, wanted_status, wanted_voucher_id in desired:
+        existing = database.connection.execute(
+            """SELECT resolution_status, voucher_id, materialized_at
+               FROM legacy_audit_events
+               WHERE legacy_event_key=?""",
+            (row.event_key,),
+        ).fetchone()
+        if existing is None:
+            return True
+
+        existing_status = str(existing["resolution_status"])
+        existing_voucher_id = (
+            None
+            if existing["voucher_id"] is None
+            else int(existing["voucher_id"])
+        )
+
+        if existing_status == "RESOLVED":
+            if existing["materialized_at"] is None:
+                return True
+            # Positive legacy identity is monotonic. Never ask the operator to
+            # regress it merely because a later controller snapshot cannot
+            # reproduce the original candidate set.
+            continue
+
+        if wanted_status == "RESOLVED":
+            return True
+        if existing_status != wanted_status:
+            return True
+        if existing_voucher_id != wanted_voucher_id:
+            return True
+
+    return False
+
+
 @dataclass(frozen=True)
 class LegacyMigrationApplyResult:
     """Result of one atomic evidence-persistence transaction."""
