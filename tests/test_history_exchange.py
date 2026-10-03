@@ -799,3 +799,39 @@ def test_empty_second_station_adopts_then_both_diverge_and_converge(
     assert final_plan.new_events == 0
     assert final_plan.duplicate_events == 3
     assert final_plan.conflict_events == 0
+
+
+
+def test_history_export_rejects_duplicate_modern_event_identity(tmp_path):
+    _, settings_store, history = make_history(
+        tmp_path,
+        "duplicate-export",
+        "duplicate-export-history-key",
+    )
+    add_generated(
+        history,
+        settings_store,
+        code="91919-29292",
+        recipient="Duplicate",
+    )
+    row = list(history._items())[0]
+    history.history_path.write_text(
+        "".join(
+            json.dumps(
+                row,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+            for _ in range(2)
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(HistoryExchangeError, match="duplicato"):
+        HistoryExchangeService(history).export(
+            tmp_path / "duplicate.vmhx",
+            exchange_password("d"),
+        )
+
+    assert not (tmp_path / "duplicate.vmhx").exists()

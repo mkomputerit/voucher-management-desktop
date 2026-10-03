@@ -20,6 +20,7 @@ from voucher_management.legacy_backup_import import (
     inspect_legacy_backup,
 )
 from voucher_management.legacy_migration import LegacyMigrationError
+from voucher_management.reporting import ReportKind, build_report_dataset
 from voucher_management.security.history_key import HistoryKeyStore
 
 
@@ -204,16 +205,32 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
             "SELECT COUNT(*) FROM voucher_prints"
         ).fetchone()[0] == 2
         rows = database.connection.execute(
-            """SELECT code, present_on_controller, expired, archived_at
+            """SELECT code, name, assigned_to, created_at,
+                       present_on_controller, expired, expiry_observed,
+                       archived_at, origin, is_nominal, print_state,
+                       usage_observed
                FROM vouchers ORDER BY code"""
         ).fetchall()
         assert [row["code"] for row in rows] == [
             "12345-67890",
             "98765-43210",
         ]
+        assert [row["name"] for row in rows] == [
+            "Ospite 1",
+            "Ospite 2",
+        ]
+        assert all(row["assigned_to"] == "" for row in rows)
+        assert all(row["created_at"] is None for row in rows)
         assert all(row["present_on_controller"] == 0 for row in rows)
-        assert all(row["expired"] == 1 for row in rows)
+        assert all(row["expired"] == 0 for row in rows)
+        assert all(row["expiry_observed"] == 0 for row in rows)
         assert all(row["archived_at"] is None for row in rows)
+        assert all(row["origin"] == "UNKNOWN" for row in rows)
+        assert all(row["is_nominal"] is None for row in rows)
+        assert all(row["print_state"] == "PRINTED" for row in rows)
+        assert all(row["usage_observed"] == 0 for row in rows)
+        # Legacy "generate" rows prove PDF generation, not who created the
+        # voucher on UniFi; creation provenance must therefore not be invented.
         imported_pdf = (
             paths.prints
             / "Imported"
@@ -224,6 +241,44 @@ def test_import_materializes_prints_without_controller_presence(tmp_path):
         )
         assert imported_pdf.is_file()
         assert result.pdfs_copied == 1
+    finally:
+        database.close()
+
+
+def test_legacy_prints_appear_in_printed_without_positive_use_report(tmp_path):
+    source = _legacy_backup(tmp_path)
+    paths, database = _live(tmp_path)
+    try:
+        execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=source,
+            safety_backup_destination=tmp_path / "pre-import-report.vmbk",
+            safety_backup_password="a" * 24,
+            imported_at="2026-09-28T08:00:00+00:00",
+            migration_uuid="legacy-import-report",
+        )
+
+        dataset = build_report_dataset(
+            database,
+            kind=ReportKind.PRINTED_UNUSED,
+            generated_at="2026-10-01T09:00:00+00:00",
+        )
+
+        assert len(dataset.rows) == 2
+        assert all(row.print_jobs > 0 for row in dataset.rows)
+        assert {row.recipient for row in dataset.rows} == {
+            "Ospite 1",
+            "Ospite 2",
+        }
+        assert len({row.unifi_id for row in dataset.rows}) == 2
+        assert {row.unifi_name for row in dataset.rows} == {
+            "Ospite 1",
+            "Ospite 2",
+        }
+        assert all(row.usage_observed is False for row in dataset.rows)
+        assert dataset.totals.printed_never_used == 0
+        assert dataset.totals.printed_usage_unknown == 2
     finally:
         database.close()
 
@@ -294,12 +349,60 @@ def test_import_reuses_unique_current_voucher_when_available(tmp_path):
         )
 
         assert result.reused_vouchers == 1
-        current_id = database.connection.execute(
-            """SELECT id FROM vouchers
+        current = database.connection.execute(
+            """SELECT id, name, assigned_to, print_state FROM vouchers
                WHERE controller_id=? AND unifi_id='current-voucher'""",
             (controller,),
-        ).fetchone()["id"]
+        ).fetchone()
+        current_id = int(current["id"])
+        assert current["name"] == "Current"
+        assert current["assigned_to"] == ""
+        assert current["print_state"] == "PRINTED"
         assert database.print_summary(current_id).print_jobs == 1
+    finally:
+        database.close()
+
+
+def test_legacy_import_never_overwrites_existing_controller_recipient(tmp_path):
+    source = _legacy_backup(tmp_path)
+    paths, database = _live(tmp_path)
+    try:
+        controller = database.create_controller(
+            name="Reception",
+            api_root="https://controller.example",
+            created_at="2026-09-28T07:00:00+00:00",
+        )
+        voucher_id = database.upsert_voucher(
+            controller_id=controller,
+            unifi_id="current-voucher",
+            code="1234567890",
+            name="Descrizione controller",
+            imported_at="2026-09-28T07:01:00+00:00",
+            last_synced_at="2026-09-28T07:01:00+00:00",
+        )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET assigned_to=? WHERE id=?",
+                ("Destinatario scelto operatore", voucher_id),
+            )
+
+        execute_legacy_backup_import(
+            database=database,
+            live_backup_service=BackupService(paths),
+            source=source,
+            safety_backup_destination=tmp_path / "pre-import-preserve.vmbk",
+            safety_backup_password="a" * 24,
+            imported_at="2026-09-28T08:00:00+00:00",
+            migration_uuid="legacy-import-preserve-local",
+            preferred_controller_id=controller,
+        )
+
+        row = database.connection.execute(
+            "SELECT name, assigned_to FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["name"] == "Descrizione controller"
+        assert row["assigned_to"] == "Destinatario scelto operatore"
     finally:
         database.close()
 

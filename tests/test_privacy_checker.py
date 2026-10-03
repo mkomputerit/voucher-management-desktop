@@ -109,3 +109,29 @@ def test_require_markers_rejects_empty_file(tmp_path: Path):
         assert exc.code == 2
     else:
         raise AssertionError("--require-markers accepted an empty marker file")
+
+
+
+def test_scan_checks_setup_source_and_manifest_text(tmp_path: Path):
+    root = tmp_path / "tree"
+    tools = root / "tools"
+    tools.mkdir(parents=True)
+    private_ip = "192" + ".168.44.5"
+    (tools / "SetupBootstrapper.cs").write_text(
+        "// synthetic " + private_ip,
+        encoding="utf-8",
+    )
+    (tools / "SetupBootstrapper.manifest").write_text(
+        "<!-- synthetic " + private_ip + " -->",
+        encoding="utf-8",
+    )
+
+    violations = scan(root)
+
+    matched = [
+        item for item in violations
+        if item.startswith("private IPv4 address:")
+    ]
+    assert len(matched) == 2
+    assert any("SetupBootstrapper.cs" in item for item in matched)
+    assert any("SetupBootstrapper.manifest" in item for item in matched)

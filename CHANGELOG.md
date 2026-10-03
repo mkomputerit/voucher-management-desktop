@@ -2,168 +2,132 @@
 
 ## 5.1.0 - Unreleased
 
-- Print only the recipient value inside each cut voucher, without the
-  "Destinatario:" prefix.
-- Complete first-run setup with a backup step for the default folder and the
-  optional shutdown proposal; expose these preferences in Settings > Backup.
-- Show the last verified successful backup in Home with a manual backup action.
-- Offer per-copy destination and optional password protection for manual and
-  shutdown backups. Protection is selected by default; creating a readable ZIP
-  requires an explicit opt-out, while .vmbk copies retain authenticated encryption.
-  Closing also offers skip/cancel,
-  and a one-off directory override never updates the saved default.
-- Clear machine-specific backup destinations from portable settings and retain
-  validated restore compatibility for both ZIP and .vmbk files.
-
-- Reconnect from Home through a compact saved-controller summary asking only
-  for the session API key, without opening Settings. Healthy active sessions
-  still synchronize directly; failed sessions can enter a fresh key through
-  the same TLS verification and background connection workflow.
-- Give the Home table priority for a complete ten-voucher batch, compact the
-  controller summary, remove redundant area shortcuts and collapse recent
-  activity by default into an optional two-row panel.
-
-- Explain in the privacy documentation and print preview that the recipient
-  stays on newly generated cut vouchers handed to guests.
-- Replace legacy-conflict instructions for a nonexistent in-app repair flow
-  with explicit technical-assistance guidance; ambiguous imports remain blocked.
-- Clarify the 5.1.0 release-candidate status and outstanding Windows visual/DPI
-  acceptance checks without claiming automatic per-monitor DPI support.
-
-- Keep Home and Voucher keyboard highlighting aligned with the actual print
-  selection: arrows move focus and Space toggles the focused voucher, preserving
-  hidden selections and excluding expired vouchers without selection-event loops.
-- Add vertical and horizontal scrolling to both Home tables and correct recovery
-  instructions to point to Settings > Manutenzione.
-
-- Begin the operator-first desktop redesign with first-class Home, Voucher,
-  Report and Settings workspaces.
-- Move controller URL/API-key controls out of the main operational surface and
-  into the Controller settings area.
-- Add concise controller synchronization states (ready, local snapshot,
-  synchronizing, unreachable, not configured) backed by the durable
-  last-successful-sync timestamp.
-- Add Home operational metrics/recent activity and an embedded Report overview.
-- Make voucher row highlighting track the actual print selection so the
-  operator sees one unambiguous selection concept.
-- Add explicit first-start choices when legacy per-user data is detected:
-  migrate it, restore a backup, or deliberately begin a separate new shared
-  installation without deleting the old profile data.
-- Make the Home synchronization action context-sensitive: synchronize an active
-  session, otherwise guide the operator directly to Controller settings.
-- Refine the Home into a professional operator dashboard with recent vouchers,
-  controller health, last synchronization time, durable recent activity and
-  quick actions.
-- Split the main Settings workspace into Generali, Controller, PDF / stampa,
-  Retention and Backup sections; routine operator screens no longer mix
-  controller, retention and recovery concepts together.
-- Surface backup recency and current retention policy in plain operator
-  language while keeping recovery/migration tools in a separate maintenance
-  area.
-- Make startup window mapping deterministic on Windows before maximizing or
-  opening first-run/retention modals, preventing a live background process with
-  no visible top-level window on affected sessions.
-- Add explicit green/red controller connection indicators in Home and sidebar.
-- Use a high-contrast Windows-blue voucher selection in both light and dark
-  themes and reorganize the Voucher workspace around the print workflow.
-- Preserve automatic selection of newly created vouchers and expose the same
-  audited print/reprint flow directly from Home.
-- Replace text-symbol navigation with theme-aware drawn sidebar icons and allow
-  operators to assign a persistent descriptive name to the controller.
-- Increase the voucher logo and immediate heading text while preserving the
-  established A4 and cutting geometry.
-- Guide restore of pre-SQLite backups through the required second phase:
-  reconnect/synchronize UniFi and migrate the verified legacy print history
-  into SQLite before relying on 5.x reports.
-- Add direct import of pre-SQLite ZIP backups: voucher codes are recovered
-  from the archived PDFs, verified against HMAC print history, materialized
-  into SQLite, and the archived PDFs are copied into the current print archive
-  without overwriting current application settings.
-- Move initial and manual controller snapshot persistence off the Tk thread so
-  large UniFi responses cannot block the operator window after connection.
-- Refresh report aggregates only when the Report workspace is opened instead
-  of rebuilding them during every voucher-table population.
-- Prevent Home/Voucher selection feedback from recursively generating Tk
-  Treeview selection events after controller refreshes; Home selection now
-  changes only from real operator row clicks.
-- Add a post-connection event-loop heartbeat to field diagnostics so a future
-  UI stall can be distinguished from network/database completion.
-- Harden pre-SQLite backup import after engineering review: only clear PDF
-  codes that resolve against HMAC history can create historical voucher rows,
-  unrelated ten-digit text is reported and ignored, legacy-import rows no
-  longer misuse retention's archived_at marker, individual PDFs are capped at
-  64 MiB, copied paths are revalidated locally, and partial-import failures are
-  explicitly documented as safe to retry.
-- Show the source ZIP SHA-256 before legacy import and recommend a fresh .vmbk
-  export after successful conversion because the old ZIP format is not
-  externally authenticated.
-- Make retention minimization irreversible across legacy reimports: a
-  previously scrubbed credential/recipient is never reconstructed, and early
-  5.1 rows accidentally rehydrated after retention are scrubbed again from the
-  durable RETENTION_ARCHIVED audit fact.
-- Treat both materialized legacy PDF-generation events and resolved pre-
-  materialization legacy evidence as retention blockers, even when the current
-  installation's HMAC history file contains no corresponding event.
-- Preserve specific legacy-import validation errors after the pre-import safety
-  backup instead of replacing them with a generic partial-import message.
-- Exclude synthetic legacy-backup controllers from Home's "Voucher rilevato"
-  feed so importing historical data is not presented as a new controller
-  discovery in local-only mode.
-- Preserve retention-minimized legacy identities across later ZIPs whose
-  history has grown: stable HMAC evidence is rebound to the existing archived
-  voucher without restoring its clear code or creating a duplicate, while
-  conflicting code reuse fails closed before candidate creation.
-- Document and surface the retention boundary for imported legacy evidence:
-  verified generated/printed archive rows stay protected from ordinary
-  minimization, and an explicitly imported old ZIP may restore data that the
-  current database can no longer cryptographically link to a minimized row.
-- Centralize the synthetic legacy-controller API-root prefix so import and Home
-  filtering cannot drift onto different string literals.
-- Refine the operator shell for Windows scaling and clearer status semantics:
-  sidebar icons follow Tk DPI scaling, warning/local controller states use
-  amber instead of error red, Settings shows the same status dot, the active
-  navigation item uses the primary blue accent and the main-window minimum no
-  longer assumes a 740-pixel-tall desktop.
-- Move recovery/history tools out of the routine Backup tab into a dedicated
-  Settings > Manutenzione page and explain that verified imported legacy
-  generation/print evidence remains outside ordinary retention.
-- Make the legacy-import completion counter report distinct minimized vouchers
-  represented by the current ZIP only, excluding unrelated historical repairs
-  and duplicate accounting across repair/resolution phases.
-- Make fail-closed legacy identity conflicts actionable without silently
-  skipping evidence, and render sidebar icons from supersampled geometry at the
-  requested DPI size instead of enlarging a fixed 20-pixel bitmap.
-- Rebalance the Home workspace for daily operation: give recent vouchers and
-  durable activity more space, compact the shell for short displays, keep
-  create/print/sync actions beside their actual context, and turn the former
-  duplicated quick-action card into simple navigation to Voucher, Report and
-  Settings.
-- Refine the Voucher workspace for constrained Windows displays: separate the
-  destructive delete action, let search expand naturally, and add horizontal
-  scrolling so the full operational table remains reachable at higher DPI or
-  narrower window sizes without changing print-selection behavior.
-- Refine Report and General settings without changing their data paths: make
-  report/export scope and privacy explicit, and show theme choices as
-  operator-facing Italian labels while persisting the existing system/light/
-  dark values for backward compatibility.
-- Regenerate sidebar icons when Tk exposes a changed display scaling value
-  after root-window move/resize events, so per-monitor DPI changes do not leave
-  raster navigation icons at the previous monitor's size.
-- Rework Home toward a UniFi-portal-style dashboard with controller health as
-  the first card, operational counters beneath it, a full-width recent-voucher
-  workspace and a cleaner activity/navigation footer.
-- Replace theme-dependent text glyphs for controller health with real coloured
-  connection indicators: green when connected, amber for local/unconfigured,
-  red for connection failure and blue only while synchronizing.
-- Simplify the Voucher command bar and replace the internal-sounding
-  "PREPARA STAMPA" action with the explicit operator action "Stampa
-  selezionati", preserving the same audited print/reprint workflow.
-- Keep the configured logo inside every physical voucher label and move the
-  recipient from the sheet-only strip into the cut area, preserving the proven
-  2-column × 5-row A4 geometry and dashed cutting guides.
-- Align package, window title and Windows executable metadata to 5.1.0 for the
-  5.1 field/release candidate instead of continuing to identify test builds as
-  5.0.0.
+- Redesign the Windows operator interface around first-class **Home**, **Voucher**,
+  **Report** and **Settings** workspaces, with UniFi-portal-inspired Home layout,
+  DPI-aware sidebar icons, keyboard-safe voucher selection and clearer
+  green/amber/red controller health indicators.
+- Make **Home strictly live**: operational counters are shown only from an
+  authoritative UniFi snapshot in the current session. Retryable transport loss
+  enters a finite amber automatic-reconnect state; after the retry budget is
+  exhausted the state turns red and requires an explicit reconnect.
+- Keep **Report strictly historical/local**: SQLite-backed administrative views
+  remain available offline, expose controller-data freshness and distinguish
+  positive evidence from indeterminate/negative observations.
+- Restore the operator-facing **report guide** and preview-first PDF workflow:
+  the guide starts from the operator's goal, preselects the matching report,
+  and generated PDFs open in preview before optional save or print.
+- Consolidate Voucher local actions into one dynamic **Allinea / modifica**
+  menu driven by the blue workspace selection. Alignment, nominality and notes
+  no longer open a second selector; unavailable actions are disabled
+  fail-closed. Expired rows may still be selected for permitted local metadata
+  corrections, while print/delete continue to exclude them defensively.
+- Upgrade the SQLite model to **schema 9**, preserving durable controller/Site
+  identity, voucher provenance, explicit print state/alignment, monotonic
+  positive-use evidence, conservative absence tracking and migration
+  compatibility with older databases.
+- Identify a controller by **API root + verified UniFi Site UUID**. First
+  association must be unambiguous; later sessions reconnect only to the same
+  Site UUID instead of silently selecting another Site hosted at the same URL.
+- Keep UniFi-owned voucher fields read-only. Voucher Management no longer uses a
+  second editable recipient field: the UniFi description/name is the
+  recipient/destinatario, while local metadata is limited to nominality, notes
+  and audit/classification facts.
+- Add explicit **Voucher nominale / Non nominale** classification for reporting.
+  Nominality is never sent to UniFi, supports multi-selection, and cannot be set
+  to Nominale when the UniFi description/destinatario is empty. Notes remain
+  single-voucher only.
+- Treat controller-discovered vouchers conservatively. Without verified print
+  evidence they keep **Stampa non determinabile** rather than being guessed as
+  printed or not printed. Printing such a voucher requires explicit operator
+  acknowledgement; a successful physical print then becomes verified and is
+  auditable as having started from indeterminate prior history.
+- Add a narrow controlled cleanup path for an unusable controller-created
+  voucher with empty recipient, positive unused observation and no verified
+  print. The operator must provide a deletion reason; no recipient or print
+  history is invented.
+- Harden non-idempotent voucher creation. Before POST, Voucher Management writes
+  an anti-repeat guard plus a privacy-safe recovery intent. After an uncertain
+  outcome, even an exact set of compatible new UUIDs is **never associated
+  automatically**: the operator must explicitly associate it with the
+  interrupted request or leave it as controller-created.
+- Require an authoritative live snapshot before starting voucher creation and
+  preserve confirmed POST UUIDs/classification through stale follow-up reads or
+  later local-persistence recovery.
+- Harden controller absence handling. A missing row in one list is only
+  suspicious; repeated absence triggers a direct voucher-UUID read and only a
+  typed not-found result proves external deletion. Confirmed app DELETE
+  responses are persisted immediately and do not depend on read-after-write
+  list consistency.
+- Distinguish **cancellation requested by Voucher Management** from
+  **deletion observed on the controller** in local audit/reporting. External
+  deletion records the fact and timestamp without inventing an operator reason.
+- Keep ordinary preparation-error deletion separate from **security revocation**.
+  Ordinary deletion is restricted to eligible unused/unprinted preparation
+  mistakes (plus the narrow invalid-external exception). Security revocation
+  re-reads the voucher directly from UniFi before DELETE and preserves the
+  complete local historical record.
+- Add two independent operator-defined thresholds with no invented defaults:
+  **created but never printed** for operational review and **printed but without
+  positive-use evidence** for security review. A reprint restarts the latter
+  from the latest verified physical print; a positive legacy PRINTED fact whose
+  print date is not determinable is surfaced immediately for review because its
+  security age cannot be calculated.
+- Keep multi-use semantics simple: a voucher belongs to **Utilizzati** from the
+  first positive authorization, while the n/quota value remains the quantitative
+  reference. No separate business state is created for “quota exhausted”.
+- Clarify UniFi validity semantics in the UI: the configured duration is
+  **validity from first use**, not an absolute expiry date derived from voucher
+  creation.
+- Rework print identity around the stable **Site UUID + voucher UUID** for new
+  HMAC history rows and SQLite physical-print audit, while retaining legacy
+  code-HMAC compatibility. This prevents future code reuse from conflating
+  distinct modern vouchers.
+- Make **Apri PDF storico** consultation-only. All physical reprints now pass
+  through **Stampa selezionati**, preventing accidental reprint of an entire
+  historical batch when only one voucher was requested.
+- Preserve the proven physical-print crash boundary: PDF generation alone is
+  not a print; audit intent is durable before Windows submission, submitted
+  prints can be recovered idempotently, and an audit failure never instructs
+  the operator to resend a document that Windows already accepted.
+- Keep the configured logo and UniFi recipient inside each cut voucher while
+  preserving the established 2-column × 5-row A4 layout and cutting guides.
+- Rebuild administrative report semantics around durable facts. Summary is
+  aggregate-only; detailed reports expose source/freshness/nominality/print
+  evidence without inventing a local recipient. Routine reports hide voucher
+  codes; full history can expose preserved clear codes only through the
+  explicit audit-purpose path.
+- Keep report categories intentionally overlapping where useful: for example a
+  nominal expired voucher can appear in both nominality and expired views.
+  Nominality reports use the latest current local classification.
+- Keep privacy minimization **disabled for this release**. Voucher codes and
+  historical metadata are not automatically scrubbed or deleted; security
+  review/revocation is a separate operational workflow.
+- Add first-run **Ripristina backup esistente…** access while retaining the
+  reviewed restore validation/rollback flow. Restore clears saved live API root,
+  Site UUID setting and TLS pin, and backup/restore is blocked while an
+  uncertain create intent still needs reconciliation.
+- Continue supporting password-protected `.vmbk` backups and an explicitly
+  chosen readable ZIP. Password protection is selected by default; passwords
+  remain operation-only and are never persisted.
+- Add a self-contained elevated Windows **Setup.exe** around the reviewed shared
+  deployment path. The Setup embeds the verified portable payload, installs
+  under protected Program Files/ProgramData locations and gives the Windows
+  built-in Users group modify access only to the shared application data; no
+  per-user detection or application-specific local group is required. The same
+  ACL/integration path is exercised by CI.
+- Keep the application API key **memory-only for every session**, including
+  reconnects. TLS remains verified by default with explicit SHA-256 pinning for
+  approved local/self-signed controllers.
+- Add `tools/verify_unifi_contract_live.py`, a privacy-safe read-only smoke
+  test that exercises the production UniFi adapter against a real installation
+  without printing voucher codes, names or raw UUIDs.
+- Field validation remains based on Ubiquiti's documented Network integration
+  API. Unlimited multi-use behavior has been verified with multiple real guest
+  clients when `authorizedGuestLimit` is omitted.
+- Align package, window title and Windows executable metadata to **5.1.0** for
+  field/release-candidate testing. The release remains **Unreleased** until the
+  final external review, exact-head Windows CI, real UniFi field test and Setup
+  verification gates are complete.
 
 ## 5.0.0 - 2026-09-27
 
@@ -176,9 +140,11 @@
 - Added explicit 4.x history migration with verified HMAC association,
   resolved/ambiguous/unresolved evidence, idempotent materialization and
   encrypted pre-migration safety backups.
-- Added installer-controlled shared Windows deployment under ProgramData with a
-  dedicated operator group, machine-wide file locking, restrictive verified
-  NTFS ACLs and explicit LocalAppData-to-ProgramData migration.
+- Added installer-controlled shared Windows deployment under ProgramData with
+  machine-wide file locking, verified NTFS ACLs and explicit
+  LocalAppData-to-ProgramData migration. Current 5.1 setup uses the Windows
+  built-in Users group for shared data access instead of a dedicated local
+  application group.
 - Added first-run onboarding for genuinely new 5.0 installations with
   installation identity, structure/Wi-Fi branding, managed logo selection,
   ephemeral UniFi API-key verification, explicit TLS trust, a persistent

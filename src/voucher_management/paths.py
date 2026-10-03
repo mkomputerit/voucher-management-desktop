@@ -55,7 +55,8 @@ class AppPaths:
                 for name in LEGACY_PRODUCT_DIR_NAMES
             )
 
-        marker_mode = self._deployment_mode()
+        deployment = self._deployment_marker_payload()
+        marker_mode = self._deployment_mode(deployment)
         self.shared_mode = (
             shared_root_override is not None
             or marker_mode == self.SHARED_MODE
@@ -69,7 +70,17 @@ class AppPaths:
                     raise RuntimeError(
                         "Installazione condivisa non valida: PROGRAMDATA mancante"
                     )
-                self.user_root = Path(program_data) / PRODUCT_DIR_NAME
+                configured_root = str(
+                    deployment.get("data_root", "") or ""
+                ).strip()
+                self.user_root = (
+                    self._validated_shared_data_root(
+                        configured_root,
+                        Path(program_data),
+                    )
+                    if configured_root
+                    else Path(program_data) / PRODUCT_DIR_NAME
+                )
             # These roots are migration candidates only. Shared mode never
             # imports them implicitly during ensure_writable().
             self.legacy_user_roots = (
@@ -103,16 +114,18 @@ class AppPaths:
         # Fast User Switching sessions.
         self.instance_lock = self.user_root / "application.instance.lock"
         self.pending_create = self.data / "pending_create_guard"
+        self.pending_create_intent = self.data / "pending_create_intent.json"
+        self.pending_create_reporting = self.data / "pending_create_reporting.json"
         self.database = self.data / "voucher_management.db"
         self.settings = self.config / "settings.json"
         self._logo_warning = ""
 
-    def _deployment_mode(self) -> str:
-        """Read the installer-owned deployment marker without side effects."""
+    def _deployment_marker_payload(self) -> dict:
+        """Read and validate the installer-owned, non-secret deployment marker."""
 
         marker = self.base / self.DEPLOYMENT_MARKER
         if not marker.exists():
-            return ""
+            return {}
         try:
             payload = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -123,12 +136,40 @@ class AppPaths:
             raise RuntimeError(
                 "Marker di installazione Voucher Management non supportato"
             )
-        mode = str(payload.get("mode", "") or "").strip()
+        return payload
+
+    def _deployment_mode(self, payload: dict | None = None) -> str:
+        """Return the validated deployment mode from an installer marker."""
+
+        marker_payload = (
+            self._deployment_marker_payload()
+            if payload is None
+            else payload
+        )
+        mode = str(marker_payload.get("mode", "") or "").strip()
         if mode not in {"", self.SHARED_MODE}:
             raise RuntimeError(
                 "Modalità di installazione Voucher Management non supportata"
             )
         return mode
+
+    @staticmethod
+    def _validated_shared_data_root(value: str, program_data: Path) -> Path:
+        """Accept only one direct ProgramData child from the elevated marker."""
+
+        try:
+            root = Path(value).expanduser().resolve(strict=False)
+            parent = Path(program_data).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(
+                "DataRoot nel marker di installazione non valido"
+            ) from exc
+        if root == parent or root.parent != parent:
+            raise RuntimeError(
+                "DataRoot nel marker di installazione deve essere una "
+                "sottocartella diretta di PROGRAMDATA"
+            )
+        return root
 
     @staticmethod
     def _copy_file_if_missing(source: Path, target: Path) -> None:

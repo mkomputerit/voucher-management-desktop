@@ -5,11 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from voucher_management.database import PRINT_STATE_NOT_PRINTED, PRINT_STATE_PRINTED, PRINT_STATE_UNKNOWN
 from voucher_management.history import HistoryError, PrintStats
 from voucher_management.unifi_api import (
     ApiVoucher,
     UniFiApiError,
     UniFiMutationUncertain,
+    UniFiVoucherNotFound,
 )
 from voucher_management.workflows import (
     ExistingPdfResolutionError,
@@ -25,6 +27,7 @@ from voucher_management.workflows import (
     resolve_existing_pdf,
     validate_create_params,
     verify_print_history_ready,
+    verify_snapshot_absences,
 )
 
 
@@ -57,11 +60,13 @@ class FakeClient:
         self.create_error: UniFiApiError | None = None
         self.current_by_id: dict[str, ApiVoucher] = {}
         self.create_calls = 0
+        self.last_create_params = None
         self.get_calls: list[str] = []
         self.delete_calls: list[list[str]] = []
 
     def create_vouchers(self, **params):
         self.create_calls += 1
+        self.last_create_params = dict(params)
         if self.create_error is not None:
             raise self.create_error
         return list(self.created)
@@ -87,6 +92,64 @@ def test_refresh_vouchers_is_controller_state_not_cached_state():
     assert refresh_vouchers(client) == [fresh]
 
 
+def test_verify_snapshot_absence_accepts_only_typed_uuid_not_found():
+    current = voucher("present", "1111122222")
+    client = FakeClient()
+
+    def missing(_voucher_id):
+        raise UniFiVoucherNotFound("missing")
+
+    client.get_voucher = missing
+    outcome = verify_snapshot_absences(
+        client,
+        [current],
+        ["missing"],
+    )
+
+    assert outcome.vouchers == (current,)
+    assert outcome.confirmed_absent_ids == frozenset({"missing"})
+    assert outcome.unresolved_ids == frozenset()
+    assert outcome.recovered_ids == frozenset()
+
+
+def test_verify_snapshot_absence_merges_directly_recovered_voucher():
+    current = voucher("present", "1111122222")
+    recovered = voucher("missing", "3333344444")
+    client = FakeClient()
+    client.get_voucher = lambda voucher_id: recovered
+
+    outcome = verify_snapshot_absences(
+        client,
+        [current],
+        ["missing"],
+    )
+
+    assert {item.id for item in outcome.vouchers} == {"present", "missing"}
+    assert outcome.confirmed_absent_ids == frozenset()
+    assert outcome.unresolved_ids == frozenset()
+    assert outcome.recovered_ids == frozenset({"missing"})
+
+
+def test_verify_snapshot_absence_keeps_transport_failure_unresolved():
+    current = voucher("present", "1111122222")
+    client = FakeClient()
+
+    def unavailable(_voucher_id):
+        raise UniFiApiError("Controller UniFi non raggiungibile")
+
+    client.get_voucher = unavailable
+    outcome = verify_snapshot_absences(
+        client,
+        [current],
+        ["missing"],
+    )
+
+    assert outcome.vouchers == (current,)
+    assert outcome.confirmed_absent_ids == frozenset()
+    assert outcome.unresolved_ids == frozenset({"missing"})
+    assert outcome.recovered_ids == frozenset()
+
+
 def test_create_success_refresh_failure_merges_created_without_recreating():
     cached = voucher("cached", "1111122222")
     created = voucher("created", "3333344444")
@@ -104,6 +167,28 @@ def test_create_success_refresh_failure_merges_created_without_recreating():
     assert outcome.created == (created,)
     assert {item.id for item in outcome.vouchers} == {"cached", "created"}
     assert str(outcome.refresh_error) == "refresh unavailable"
+    assert outcome.snapshot_complete is False
+    assert outcome.reconciliation_required is True
+
+
+def test_nominal_flag_is_application_only_and_never_sent_to_unifi():
+    created = voucher("created-nominal", "1212121212")
+    client = FakeClient()
+    client.created = [created]
+    client.list_result = [created]
+
+    outcome = create_vouchers_and_refresh(
+        client,
+        [],
+        {"recipient": "Pinco Pallino", "quantity": 1, "is_nominal": True},
+    )
+
+    assert outcome.created == (created,)
+    assert client.last_create_params == {
+        "recipient": "Pinco Pallino",
+        "quantity": 1,
+    }
+
 
 
 def test_uncertain_create_never_replays_post_and_refreshes_controller_state():
@@ -145,6 +230,26 @@ def test_uncertain_create_refresh_failure_keeps_cache_without_replaying_post():
     assert str(outcome.refresh_error) == "refresh unavailable"
 
 
+def test_create_successful_but_stale_list_keeps_confirmed_post_rows_visible():
+    created = voucher("created", "3333344444")
+    stale_other = voucher("other", "5555566666")
+    client = FakeClient()
+    client.created = [created]
+    client.list_result = [stale_other]
+
+    outcome = create_vouchers_and_refresh(
+        client,
+        [],
+        {"recipient": "Guest", "quantity": 1},
+    )
+
+    assert outcome.refresh_error is None
+    assert outcome.snapshot_complete is False
+    assert outcome.reconciliation_required is True
+    assert {item.id for item in outcome.vouchers} == {"created", "other"}
+    assert outcome.created == (created,)
+
+
 def test_create_success_prefers_fresh_controller_list():
     created = voucher("created", "3333344444")
     server_copy = voucher(
@@ -164,6 +269,8 @@ def test_create_success_prefers_fresh_controller_list():
     )
 
     assert outcome.refresh_error is None
+    assert outcome.snapshot_complete is True
+    assert outcome.reconciliation_required is False
     assert outcome.vouchers == (server_copy, other)
 
 
@@ -182,6 +289,9 @@ def test_delete_candidates_are_reread_before_policy():
     blocked = evaluate_delete_candidates(
         current,
         {now_used.code_formatted: PrintStats()},
+        historically_used_ids=frozenset(),
+        local_print_states={"v1": PRINT_STATE_NOT_PRINTED},
+        aligned_ids=frozenset({"v1"}),
     )
 
     assert client.get_calls == ["v1"]
@@ -190,6 +300,20 @@ def test_delete_candidates_are_reread_before_policy():
     assert blocked[0].voucher is now_used
     assert blocked[0].policy.reason == "in_use"
     assert client.delete_calls == []
+
+
+def test_delete_policy_blocks_voucher_with_durable_historical_use():
+    current = voucher("v1", "1111122222", used=0, status="VALID_MULTI")
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        historically_used_ids=frozenset({"v1"}),
+        local_print_states={"v1": PRINT_STATE_NOT_PRINTED},
+        aligned_ids=frozenset({"v1"}),
+    )
+
+    assert len(blocked) == 1
+    assert blocked[0].policy.reason == "in_use"
 
 
 def test_delete_policy_also_blocks_locally_printed_voucher():
@@ -202,10 +326,70 @@ def test_delete_policy_also_blocks_locally_printed_voucher():
                 printed_copies=1,
             )
         },
+        historically_used_ids=frozenset(),
+        local_print_states={"v1": PRINT_STATE_PRINTED},
+        aligned_ids=frozenset({"v1"}),
     )
 
     assert len(blocked) == 1
     assert blocked[0].policy.reason == "printed"
+
+
+def test_delete_policy_blocks_unknown_print_state():
+    current = voucher("v1", "1111122222")
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        historically_used_ids=frozenset(),
+        local_print_states={"v1": PRINT_STATE_UNKNOWN},
+        aligned_ids=frozenset({"v1"}),
+    )
+    assert len(blocked) == 1
+    assert blocked[0].policy.reason == "print_unknown"
+
+
+def test_delete_policy_blocks_unaligned_voucher_even_if_state_says_unprinted():
+    current = voucher("v1", "1111122222")
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        historically_used_ids=frozenset(),
+        local_print_states={"v1": PRINT_STATE_NOT_PRINTED},
+        aligned_ids=frozenset(),
+    )
+    assert len(blocked) == 1
+    assert blocked[0].policy.reason == "not_aligned"
+
+
+def test_delete_policy_allows_aligned_unprinted_unused_voucher():
+    current = voucher("v1", "1111122222")
+    blocked = evaluate_delete_candidates(
+        [current],
+        {current.code_formatted: PrintStats()},
+        historically_used_ids=frozenset(),
+        local_print_states={"v1": PRINT_STATE_NOT_PRINTED},
+        aligned_ids=frozenset({"v1"}),
+    )
+    assert blocked == []
+
+
+def test_delete_success_filters_stale_deleted_row_and_marks_snapshot_non_authoritative():
+    deleted = voucher("delete-me", "1111122222")
+    survivor = voucher("keep-me", "3333344444")
+    client = FakeClient()
+    # Simulate read-after-delete lag: the list still contains the deleted UUID.
+    client.list_result = [deleted, survivor]
+
+    outcome = delete_vouchers_and_refresh(
+        client,
+        [deleted, survivor],
+        [deleted],
+    )
+
+    assert client.delete_calls == [["delete-me"]]
+    assert outcome.vouchers == (survivor,)
+    assert outcome.refresh_error is None
+    assert outcome.reconciliation_required is True
 
 
 def test_delete_success_refresh_failure_removes_deleted_rows_from_cache():
@@ -267,6 +451,21 @@ def test_build_print_batch_does_not_repeat_normal_multi_selection():
     assert [item.recipient for item in batch.vouchers] == ["Guest", "Guest B"]
 
 
+def test_build_print_batch_rejects_duplicate_voucher_identity():
+    current = voucher("v1", "1111122222")
+
+    with pytest.raises(ValueError, match="Selezione voucher duplicata"):
+        build_print_batch([current, current])
+
+
+def test_build_print_batch_rejects_same_code_for_distinct_vouchers():
+    first = voucher("v1", "1111122222")
+    second = voucher("v2", "1111122222")
+
+    with pytest.raises(ValueError, match="duplicato o ambiguo"):
+        build_print_batch([first, second])
+
+
 @pytest.mark.parametrize("copies", (0, 1000))
 def test_build_print_batch_rejects_invalid_unlimited_copy_count(copies):
     current = voucher("v1", "1111122222", quota=0)
@@ -309,6 +508,7 @@ def test_validate_create_params_normalizes_usage_modes(
         "data_mb": 1024,
         "down_mbps": 50,
         "up_mbps": 25,
+        "is_nominal": False,
     }
 
 

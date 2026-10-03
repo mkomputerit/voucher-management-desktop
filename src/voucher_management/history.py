@@ -70,7 +70,7 @@ class PendingPrintAudit:
 
 @dataclass(frozen=True)
 class ResolvedPendingPrint:
-    """Pending print reconstructed from HMAC records and known voucher codes."""
+    """Pending print reconstructed from HMAC records and known voucher identity."""
 
     state: str
     audit_id: str
@@ -78,6 +78,7 @@ class ResolvedPendingPrint:
     output_file: str
     document_copies: int
     submitted_at: str
+    unifi_ids: tuple[str, ...] = ()
 
 
 class HistoryService:
@@ -304,6 +305,25 @@ class HistoryService:
             settings["history_key_fingerprint"] = fp
             self.settings_store.save(settings)
 
+    def correlation_digest(
+        self,
+        namespace: str,
+        value: str,
+        settings: dict | None = None,
+    ) -> str:
+        """Return a keyed digest for privacy-safe local correlation markers."""
+
+        label = str(namespace or "").strip()
+        if not label:
+            raise ValueError("namespace is required")
+        payload = str(value or "")
+        secret = self._secret(settings)
+        return hmac.new(
+            secret,
+            f"{label}\n{payload}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
     def _secret(self, settings: dict | None = None) -> bytes:
         """Return a usable audit key or raise instead of failing silently."""
         current = self.settings_store.load()
@@ -321,6 +341,30 @@ class HistoryService:
     @staticmethod
     def _digest(code: str, secret: bytes) -> str:
         return hmac.new(secret, code.encode("ascii"), hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _stable_identity(site_id: str, unifi_id: str) -> str:
+        site = str(site_id or "").strip()
+        voucher = str(unifi_id or "").strip()
+        if not site or not voucher:
+            return ""
+        return f"site:{site}|voucher:{voucher}"
+
+    @classmethod
+    def _stable_digest(
+        cls,
+        site_id: str,
+        unifi_id: str,
+        secret: bytes,
+    ) -> str:
+        identity = cls._stable_identity(site_id, unifi_id)
+        if not identity:
+            return ""
+        return hmac.new(
+            secret,
+            identity.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
 
     def _items(self):
         """Yield audit rows, failing closed if any persistent row is corrupt.
@@ -370,6 +414,56 @@ class HistoryService:
                 hits[code] = DuplicateHit(digest=digest, recipient=item.get("recipient", ""), timestamp=item.get("timestamp", ""), output_file=item.get("output_file", ""))
         return hits
 
+    def find_duplicates_for_batch(
+        self,
+        batch: VoucherBatch,
+        settings: dict,
+    ) -> dict[str, DuplicateHit]:
+        """Find prior generated documents using stable UUID identity when present.
+
+        New rows are matched by HMAC(Site UUID + Voucher UUID). Legacy rows that
+        predate this identity remain readable through their code HMAC. A modern
+        row carrying voucher_ref never falls back to its code HMAC, preventing a
+        future reused code from conflating two distinct UniFi voucher UUIDs.
+        """
+
+        secret = self._secret(settings)
+        ref_targets: dict[str, str] = {}
+        code_targets: dict[str, str] = {}
+        for voucher in batch.vouchers:
+            code = str(voucher.code).strip()
+            if not code:
+                continue
+            code_targets[self._digest(code, secret)] = code
+            stable = self._stable_digest(
+                batch.site_id,
+                voucher.unifi_id,
+                secret,
+            )
+            if stable:
+                ref_targets[stable] = code
+
+        hits: dict[str, DuplicateHit] = {}
+        for item in self._items() or ():
+            if item.get("event", "generate") != "generate":
+                continue
+            stable_value = str(item.get("voucher_ref", "") or "")
+            if stable_value:
+                code = ref_targets.get(stable_value)
+                digest = stable_value
+            else:
+                legacy_value = str(item.get("voucher_id", "") or "")
+                code = code_targets.get(legacy_value)
+                digest = legacy_value
+            if code:
+                hits[code] = DuplicateHit(
+                    digest=digest,
+                    recipient=str(item.get("recipient", "") or ""),
+                    timestamp=str(item.get("timestamp", "") or ""),
+                    output_file=str(item.get("output_file", "") or ""),
+                )
+        return hits
+
     def stats_for_codes(self, codes: list[str], settings: dict) -> dict[str, PrintStats]:
         """Summarise PDF generation, first print and physical print counters."""
         secret = self._secret(settings)
@@ -410,6 +504,60 @@ class HistoryService:
             if value:
                 names.add(Path(value).name)
         return names
+
+    def voucher_links_for_output(
+        self,
+        candidate_vouchers: list[tuple[str, str]],
+        site_id: str,
+        output_path: Path,
+        settings: dict,
+    ) -> list[tuple[str, str]]:
+        """Resolve one PDF to stable voucher UUID/code pairs.
+
+        Modern rows prefer voucher_ref. Legacy rows without a stable reference
+        fall back to the historical code HMAC and fail closed if that code is
+        ambiguous among the supplied vouchers.
+        """
+
+        secret = self._secret(settings)
+        output_name = Path(output_path).name
+        ref_targets: dict[str, tuple[str, str]] = {}
+        legacy_targets: dict[str, list[tuple[str, str]]] = {}
+        for unifi_id, code in candidate_vouchers:
+            remote = str(unifi_id or "").strip()
+            display = str(code or "").strip()
+            if not remote or not display:
+                continue
+            stable = self._stable_digest(site_id, remote, secret)
+            if stable:
+                ref_targets[stable] = (remote, display)
+            legacy_targets.setdefault(
+                self._digest(display, secret),
+                [],
+            ).append((remote, display))
+
+        linked: list[tuple[str, str]] = []
+        for item in self._items() or ():
+            if item.get("event", "generate") != "generate":
+                continue
+            if Path(str(item.get("output_file", "") or "")).name != output_name:
+                continue
+            stable_value = str(item.get("voucher_ref", "") or "")
+            if stable_value:
+                match = ref_targets.get(stable_value)
+                if match is not None:
+                    linked.append(match)
+                continue
+
+            legacy_value = str(item.get("voucher_id", "") or "")
+            matches = legacy_targets.get(legacy_value, [])
+            if len(matches) > 1:
+                raise HistoryError(
+                    "Collegamento PDF legacy ambiguo per codice voucher"
+                )
+            if matches:
+                linked.append(matches[0])
+        return linked
 
     def codes_for_output(
         self,
@@ -454,6 +602,21 @@ class HistoryService:
                 "event": "generate",
                 "event_id": secrets.token_hex(16),
                 "voucher_id": self._digest(v.code, secret),
+                **(
+                    {
+                        "voucher_ref": self._stable_digest(
+                            batch.site_id,
+                            v.unifi_id,
+                            secret,
+                        )
+                    }
+                    if self._stable_digest(
+                        batch.site_id,
+                        v.unifi_id,
+                        secret,
+                    )
+                    else {}
+                ),
                 "recipient": v.recipient or batch.recipient,
                 "duration_minutes": v.duration_minutes,
                 "timestamp": now,
@@ -574,6 +737,9 @@ class HistoryService:
         self,
         candidate_codes: list[str],
         settings: dict,
+        *,
+        site_id: str = "",
+        candidate_unifi_ids: list[str] | None = None,
     ) -> ResolvedPendingPrint | None:
         """Resolve HMAC-only pending rows against independently known codes.
 
@@ -588,7 +754,18 @@ class HistoryService:
 
         secret = self._secret(settings)
         digest_to_code: dict[str, str] = {}
-        for code in candidate_codes:
+        stable_to_identity: dict[str, tuple[str, str]] = {}
+        normalized_ids = (
+            [str(value).strip() for value in candidate_unifi_ids]
+            if candidate_unifi_ids is not None
+            else []
+        )
+        if candidate_unifi_ids is not None and len(normalized_ids) != len(candidate_codes):
+            raise HistoryError(
+                "Identità voucher incoerenti nella risoluzione della stampa pendente"
+            )
+
+        for index, code in enumerate(candidate_codes):
             normalized = str(code).strip()
             if not normalized:
                 continue
@@ -600,11 +777,18 @@ class HistoryService:
                 )
             digest_to_code[digest] = normalized
 
+            if normalized_ids:
+                remote_id = normalized_ids[index]
+                stable = self._stable_digest(site_id, remote_id, secret)
+                if stable:
+                    stable_to_identity[stable] = (normalized, remote_id)
+
         first = pending.records[0]
         output_file = str(first["output_file"])
         document_copies = int(first["document_copies"])
         submitted_at = str(first["timestamp"])
         resolved_codes: list[str] = []
+        resolved_unifi_ids: list[str] = []
 
         for record in pending.records:
             if (
@@ -615,25 +799,38 @@ class HistoryService:
                 raise HistoryError(
                     "Registrazione stampa pendente con metadati incoerenti"
                 )
-            code = digest_to_code.get(str(record["voucher_id"]))
-            if code is None:
-                raise HistoryError(
-                    "Impossibile associare un voucher della stampa pendente "
-                    "all'archivio locale"
-                )
+            stable_value = str(record.get("voucher_ref", "") or "")
+            remote_id = ""
+            if stable_value:
+                match = stable_to_identity.get(stable_value)
+                if match is None:
+                    raise HistoryError(
+                        "Impossibile associare l'UUID della stampa pendente "
+                        "all'archivio locale"
+                    )
+                code, remote_id = match
+            else:
+                code = digest_to_code.get(str(record["voucher_id"]))
+                if code is None:
+                    raise HistoryError(
+                        "Impossibile associare un voucher della stampa pendente "
+                        "all'archivio locale"
+                    )
             physical_copies = int(record["physical_copies"])
             if physical_copies % document_copies:
                 raise HistoryError(
                     "Registrazione stampa pendente con conteggio copie incoerente"
                 )
-            resolved_codes.extend(
-                [code] * (physical_copies // document_copies)
-            )
+            labels = physical_copies // document_copies
+            resolved_codes.extend([code] * labels)
+            if remote_id:
+                resolved_unifi_ids.extend([remote_id] * labels)
 
         return ResolvedPendingPrint(
             state=pending.state,
             audit_id=pending.audit_id,
             codes=tuple(resolved_codes),
+            unifi_ids=tuple(resolved_unifi_ids),
             output_file=output_file,
             document_copies=document_copies,
             submitted_at=submitted_at,
@@ -751,6 +948,8 @@ class HistoryService:
         *,
         audit_id: str,
         submitted_at: str,
+        site_id: str = "",
+        unifi_ids: list[str] | None = None,
     ) -> list[dict]:
         secret = self._secret(settings)
         if document_copies < 1:
@@ -770,10 +969,31 @@ class HistoryService:
         if not timestamp:
             raise ValueError("Timestamp audit stampa non valido")
 
-        counts = Counter(codes)
+        normalized_ids = (
+            [str(value).strip() for value in unifi_ids]
+            if unifi_ids is not None
+            else []
+        )
+        if unifi_ids is not None and (
+            len(normalized_ids) != len(codes)
+            or any(not value for value in normalized_ids)
+        ):
+            raise ValueError(
+                "unifi_ids must identify every printed voucher label"
+            )
+
+        identities = [
+            (
+                str(code),
+                normalized_ids[index] if normalized_ids else "",
+            )
+            for index, code in enumerate(codes)
+        ]
+        counts = Counter(identities)
         output_name = Path(output_path).name
-        return [
-            {
+        records: list[dict] = []
+        for (code, remote_id), labels in counts.items():
+            record = {
                 "event": "print",
                 "voucher_id": self._digest(code, secret),
                 "timestamp": timestamp,
@@ -782,8 +1002,11 @@ class HistoryService:
                 "physical_copies": labels * document_copies,
                 "print_job_id": audit_id,
             }
-            for code, labels in counts.items()
-        ]
+            stable = self._stable_digest(site_id, remote_id, secret)
+            if stable:
+                record["voucher_ref"] = stable
+            records.append(record)
+        return records
 
     def prepare_print_audit(
         self,
@@ -794,6 +1017,8 @@ class HistoryService:
         *,
         audit_id: str,
         submitted_at: str,
+        site_id: str = "",
+        unifi_ids: list[str] | None = None,
     ) -> None:
         """Persist print intent before entering the OS printer submission."""
 
@@ -805,6 +1030,8 @@ class HistoryService:
             settings,
             audit_id=audit_id,
             submitted_at=submitted_at,
+            site_id=site_id,
+            unifi_ids=unifi_ids,
         )
         self._persist_pending_print(
             records,
@@ -946,6 +1173,8 @@ class HistoryService:
         audit_id: str | None = None,
         submitted_at: str | None = None,
         clear_pending: bool = True,
+        site_id: str = "",
+        unifi_ids: list[str] | None = None,
     ) -> None:
         """Record a print already known to have been submitted to Windows.
 
@@ -970,6 +1199,8 @@ class HistoryService:
             settings,
             audit_id=normalized_audit_id,
             submitted_at=timestamp,
+            site_id=site_id,
+            unifi_ids=unifi_ids,
         )
         self._persist_pending_print(
             records,

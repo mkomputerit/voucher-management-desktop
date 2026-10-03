@@ -51,8 +51,8 @@ The documented response includes:
 
 - applicationVersion
 
-The test tool calls this first so the observed Network application version is
-recorded before voucher assumptions are evaluated.
+The read-only live contract tool calls this first so the observed Network
+application version is recorded before voucher assumptions are evaluated.
 
 ### Sites
 
@@ -65,8 +65,11 @@ paginated. In v10.4.57:
 - limit default: 25
 - limit maximum: 200
 
-The test tool enumerates sites from the API rather than assuming the legacy
-site name "default".
+The application and the read-only live contract tool enumerate Sites from the
+API rather than assuming the legacy site name "default". Voucher Management now
+persists the verified Site UUID with the controller identity and reuses that
+UUID on later sessions; an unknown first association is still required to be
+unambiguous.
 
 ## Voucher creation contract
 
@@ -117,10 +120,12 @@ The official schema does **not** accept authorizedGuestLimit=0; its minimum is
 1 and the field is optional. Therefore the legacy convention quota=0 must not
 be copied into the official payload.
 
-Before migration, the field test must confirm that omitting
-authorizedGuestLimit produces the same operational behavior that the current UI
-calls "Multiuso illimitato". This is intentionally treated as a behavior to
-verify on the installed controller rather than an assumption.
+Field validation subsequently confirmed the operational behavior used by the
+UI label "Multiuso illimitato": omitting authorizedGuestLimit allowed two real
+guest clients to authorize with the same voucher, and UniFi reported both
+through authorizedGuestCount. The production adapter therefore continues to
+represent the omitted field internally as quota=0 while never transmitting zero
+to UniFi.
 
 ## Voucher detail contract
 
@@ -140,8 +145,10 @@ The documented voucher-detail object contains:
 - rxRateLimitKbps (optional)
 - txRateLimitKbps (optional)
 
-The test tool never prints or writes the voucher "code" value. It validates only
-that the property is present when required.
+Engineering contract checks never print or write the voucher "code" value.
+The current Python smoke tool reports only version, a shortened one-way Site
+fingerprint and aggregate voucher shape/state counts; it performs at most one
+read-only voucher-detail lookup to verify list/detail consistency.
 
 ## Mapping to the existing application model
 
@@ -216,61 +223,62 @@ https://CONTROLLER/proxy/network/integration/v1
 but the tool treats the value supplied from the installed documentation as
 authoritative.
 
-## TLS policy for testing
+## TLS policy
 
 Certificate validation is ON by default.
 
-The test tool offers -SkipCertificateCheck only as an explicit diagnostic
-switch for controllers using a local/self-signed certificate. This switch is
-not a proposed production security design.
+The production adapter supports local/self-signed controllers only through
+explicit SHA-256 certificate pinning. The fingerprint is shown to the operator
+before the application stores the non-secret pin, and a changed fingerprint is
+blocked before the API key is sent until the new value is independently
+approved. No process-wide certificate verification bypass is used.
 
-The public application's official adapter must use verified TLS by default and,
-if local self-signed certificates must be supported, use a deliberate scoped
-trust mechanism.
+The read-only Python contract smoke tool follows the same adapter behavior and
+accepts only an explicitly supplied, already verified SHA-256 pin when one is
+needed.
 
-## Test sequence
+## Current contract-test sequence
 
-The accompanying Test-OfficialUniFiVoucherApi.ps1 performs:
+`tools/verify_unifi_contract_live.py` is the current privacy-safe, read-only
+smoke check for a real controller:
 
-Read-only default:
+1. GET /info;
+2. enumerate and resolve the Site through the same production adapter;
+3. GET all voucher pages with the production pagination validator;
+4. map all returned voucher objects through the production mapper;
+5. when at least one voucher exists, GET that voucher again by UUID and require
+   list/detail identity consistency;
+6. print only aggregate counts plus Network version and a shortened one-way Site
+   fingerprint.
 
-1. GET /info
-2. GET all /sites pages
-3. select/validate one site UUID
-4. GET all voucher pages
-5. validate the documented voucher response shape without displaying codes
-6. GET one voucher detail when a voucher exists
+The API key is entered with a hidden prompt and remains process-memory-only.
+Codes, names and raw voucher/Site UUIDs are not emitted.
 
-Optional mutation test, requiring -AllowWriteTests and an additional typed
-confirmation:
+Mutation behavior remains covered by the automated adapter/workflow tests and by
+controlled field testing. The production software itself never uses a test
+mutation path to probe a live installation.
 
-1. POST exactly one five-minute single-use test voucher
-2. require HTTP 201 and one voucher object
-3. validate its documented fields without exposing the code
-4. GET the new voucher by UUID
-5. DELETE that exact voucher by UUID
-6. require HTTP 200 and inspect vouchersDeleted
-7. list vouchers again and verify the test UUID is absent from returned pages
+## Field-test contract retained for release validation
 
-A cleanup DELETE is attempted in a finally block if a test voucher was created
-and an intermediate validation step fails.
+Before a new Network application version is considered field-validated, the
+release process should re-check:
 
-## What the field test must answer before migration
+- the exact local Integration API root documented by that installation;
+- /info and Site discovery through the production adapter;
+- voucher list/detail response shape and pagination;
+- authorizedGuestCount semantics for single-, multi- and unlimited-use
+  vouchers;
+- activatedAt/expiresAt/expired lifecycle behavior, including that validity
+  starts with first authorization rather than voucher creation;
+- data/rx/tx limit round-tripping when those options are used;
+- single-UUID DELETE behavior during a controlled operator-approved mutation
+  test.
 
-- Does the installed Network version expose all five documented voucher
-  operations?
-- Which exact local API root does its own Integrations page document?
-- Does the API key accepted by that installation authorize both reads and
-  voucher writes?
-- Does omitting authorizedGuestLimit behave as unlimited multi-use?
-- Are createdAt/activatedAt/expiresAt values sufficient for the current table
-  and lifecycle display?
-- Does authorizedGuestCount match the usage semantics expected by the current
-  UI?
-- Do data/rx/tx limits round-trip with the documented units?
-- Does the single-voucher DELETE behave consistently for unused vouchers?
-
-Only after those observations should the production UniFi adapter be changed.
+Voucher Management deliberately does not maintain an arbitrary version
+allowlist. Compatibility is established by the documented API contract,
+automated parser/workflow tests and an explicit read-only smoke against the
+target installation; mutation field tests are performed separately when a new
+controller line needs release validation.
 
 
 ## Field validation result — Network 10.6.106
@@ -316,12 +324,10 @@ The full write test additionally validated:
 
 All created test vouchers were removed.
 
-### Remaining operational observation
+### Subsequent unlimited-use field observation
 
-The controller accepts and returns a voucher with no explicit
-authorizedGuestLimit. A real multi-client authorization test is still pending
-because the operator was not physically at the guest network during this review.
-
-That pending observation does not block implementation of the documented API
-mapping, but it remains a release/field-test item for the UI label
-"Multiuso illimitato".
+A later real-client test completed the remaining operational observation: two
+guest clients successfully used the same voucher created with
+authorizedGuestLimit omitted, and the controller reflected the increasing
+authorizedGuestCount. This matches the application's "Multiuso illimitato"
+mapping and removes the earlier pending observation.

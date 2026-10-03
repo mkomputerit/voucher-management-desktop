@@ -22,19 +22,33 @@ from .identity import (
     PRODUCT_NAME,
 )
 from .logo_validation import LogoValidationError, validate_logo_image
+from .local_data_ui import LocalDataMixin
 from .onboarding import OnboardingState, choose_shared_fresh_start
-from .onboarding_ui import schedule_first_run_onboarding, startup_onboarding_state
+from .onboarding_ui import (
+    FirstRunWizard,
+    schedule_first_run_onboarding,
+)
+from .operational_alerts import (
+    unprinted_warning_candidates,
+    unprinted_warning_days,
+)
+from .operational_alerts_ui import OperationalAlertsMixin
 from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
-from .report_ui import ReportDialog
-from .reporting import ReportKind, build_report_dataset
-from .retention_ui import RetentionMixin
+from .report_ui import ReportDialog, ReportGuideDialog
+from .reporting import ReportKind, build_report_dataset_from_path
+from .security_revocation import (
+    security_revocation_candidates,
+    security_revoke_days,
+)
+from .security_revocation_ui import SecurityRevocationMixin
 from .utils import format_fingerprint
 from .data_maintenance_ui import DataMaintenanceMixin
 from .backup_options_ui import default_backup_directory, validate_backup_directory
 from .controller_connection_ui import ControllerConnectionMixin
 from .voucher_deletion_ui import VoucherDeletionMixin
 from .workspace_state import build_controller_workspace_status
+from .unifi_api import UniFiTransportError
 from .workspace_overview import load_recent_workspace_activity
 
 
@@ -183,7 +197,9 @@ def _controller_status_color_key(status_key: str) -> str:
     return {
         "connected": "green",
         "syncing": "blue",
+        "retrying": "orange",
         "error": "red",
+        "stale": "orange",
         "local": "orange",
         "unconfigured": "orange",
     }.get(status_key, "red")
@@ -207,11 +223,23 @@ def _controller_status_style_names(
             "BusyDot.TLabel",
             "SidebarBusyDot.TLabel",
         ),
+        "retrying": (
+            "Warning.Status.TLabel",
+            "SidebarWarning.TLabel",
+            "WarningDot.TLabel",
+            "SidebarWarningDot.TLabel",
+        ),
         "error": (
             "Error.Status.TLabel",
             "SidebarError.TLabel",
             "DisconnectedDot.TLabel",
             "SidebarDisconnectedDot.TLabel",
+        ),
+        "stale": (
+            "Warning.Status.TLabel",
+            "SidebarWarning.TLabel",
+            "WarningDot.TLabel",
+            "SidebarWarningDot.TLabel",
         ),
         "local": (
             "Warning.Status.TLabel",
@@ -554,25 +582,32 @@ class SettingsDialog(tk.Toplevel):
         ttk.Separator(frame).pack(fill="x", pady=22)
         ttk.Label(
             frame,
-            text="Conservazione voucher",
+            text="Soglie voucher",
             style="SectionTitle.TLabel",
         ).pack(anchor="w")
         ttk.Label(
             frame,
             text=(
-                "I voucher usati o stampati sono sempre protetti. I voucher "
-                "mai usati e mai stampati vengono proposti per la minimizzazione "
-                "solo quando non sono più presenti sul controller e superano "
-                "la soglia configurata. Nessuna pulizia è automatica."
+                "Le soglie operative segnalano voucher creati ma non stampati "
+                "e voucher stampati ma mai utilizzati. Nessuna cancellazione è "
+                "automatica; la minimizzazione dello storico locale è disabilitata "
+                "in questa release."
             ),
             style="Muted.TLabel",
             wraplength=560,
         ).pack(anchor="w", pady=(3, 10))
+        threshold_actions = ttk.Frame(frame)
+        threshold_actions.pack(anchor="w")
         ttk.Button(
-            frame,
-            text="Rivedi conservazione…",
-            command=lambda: self.app.open_retention_review(parent=self),
-        ).pack(anchor="w")
+            threshold_actions,
+            text="Creati ma non stampati…",
+            command=lambda: self.app.open_operational_alerts(parent=self),
+        ).pack(side="left")
+        ttk.Button(
+            threshold_actions,
+            text="Revoca di sicurezza…",
+            command=lambda: self.app.open_security_revocation(parent=self),
+        ).pack(side="left", padx=(8, 0))
 
         ttk.Separator(frame).pack(fill="x", pady=22)
         ttk.Label(frame, text="Backup e ripristino", style="SectionTitle.TLabel").pack(anchor="w")
@@ -946,7 +981,9 @@ class MigrationRequiredDialog(tk.Toplevel):
 
 
 class ModernVoucherApp(
-    RetentionMixin,
+    LocalDataMixin,
+    OperationalAlertsMixin,
+    SecurityRevocationMixin,
     DataMaintenanceMixin,
     ControllerConnectionMixin,
     VoucherDeletionMixin,
@@ -955,12 +992,9 @@ class ModernVoucherApp(
     """Windows 11 operator shell around the stable voucher engine."""
 
     def _retention_intro_allowed_on_startup(self) -> bool:
-        """Only legacy/existing installs need the separate retention intro."""
+        """Privacy minimization is intentionally outside the current release."""
 
-        return (
-            startup_onboarding_state(self)
-            is OnboardingState.EXISTING_INSTALLATION
-        )
+        return False
 
     def __init__(self):
         super().__init__()
@@ -989,7 +1023,14 @@ class ModernVoucherApp(
         self.after(80, self._show_initial_window)
 
         self._controller_status_failed = False
+        self._controller_status_stale = False
+        self._archive_status_failed = False
         self._controller_busy_label = ""
+        self._controller_retrying = False
+        self._controller_retry_attempt = 0
+        self._controller_retry_after = None
+        self._controller_retry_dot_after = None
+        self._controller_retry_dot_phase = False
         self.workspace_title_var = tk.StringVar(value="Home")
         self.workspace_subtitle_var = tk.StringVar(
             value="Panoramica generale e accesso rapido alle funzioni principali"
@@ -1029,10 +1070,19 @@ class ModernVoucherApp(
         self.home_active_var = tk.StringVar(value="0")
         self.home_used_var = tk.StringVar(value="0")
         self.home_expired_var = tk.StringVar(value="0")
+        self.home_unprinted_alert_var = tk.StringVar(value="—")
+        self.home_security_alert_var = tk.StringVar(value="—")
         self.report_total_var = tk.StringVar(value="0")
-        self.report_printed_var = tk.StringVar(value="0")
+        self.report_generated_var = tk.StringVar(value="0")
         self.report_used_var = tk.StringVar(value="0")
+        self.report_never_used_var = tk.StringVar(value="0")
+        self.report_printed_var = tk.StringVar(value="0")
         self.report_expired_var = tk.StringVar(value="0")
+        self.report_nominal_var = tk.StringVar(value="0")
+        self.report_unclassified_var = tk.StringVar(value="0")
+        self.report_data_quality_var = tk.StringVar(
+            value="Dati non determinabili: uso 0 • nominalità 0"
+        )
 
         root = ttk.Frame(self, padding=0)
         root.pack(fill="both", expand=True)
@@ -1197,10 +1247,12 @@ class ModernVoucherApp(
             self.home_sync_button,
             self.sidebar_action_button,
             self.refresh_button,
+            self.voucher_actions_button,
             self.delete_button,
             self.print_button,
             self.open_pdf_button,
             self.report_button,
+            self.report_guide_button,
         ]
         self._search_after = None
         self._show_workspace("home")
@@ -1210,7 +1262,7 @@ class ModernVoucherApp(
         """Build a portal-like dashboard around the operator's daily tasks."""
 
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(2, weight=1)
+        frame.rowconfigure(3, weight=1)
 
         # A short connection strip leaves the workspace to the voucher batch.
         connection = ttk.Frame(frame, padding=(12, 8))
@@ -1253,7 +1305,7 @@ class ModernVoucherApp(
             ("Da stampare", self.home_to_print_var, "pronti per la stampa"),
             ("Attivi", self.home_active_var, "disponibili sul controller"),
             ("Utilizzati", self.home_used_var, "con almeno un utilizzo"),
-            ("Scaduti", self.home_expired_var, "nello storico locale"),
+            ("Scaduti", self.home_expired_var, "segnalati scaduti dal controller"),
         )):
             card = ttk.Labelframe(
                 metrics,
@@ -1278,6 +1330,44 @@ class ModernVoucherApp(
                 style="Muted.TLabel",
             ).pack(anchor="w", pady=(2, 0))
 
+        alerts = ttk.Labelframe(
+            frame,
+            text="Avvisi operativi",
+            style="Card.TLabelframe",
+            padding=(12, 9),
+        )
+        alerts.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        alerts.columnconfigure(1, weight=1)
+        alerts.columnconfigure(4, weight=1)
+
+        ttk.Label(alerts, text="Creati ma non stampati", style="Muted.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            alerts,
+            textvariable=self.home_unprinted_alert_var,
+            style="Body.TLabel",
+        ).grid(row=0, column=1, sticky="w", padx=(8, 16))
+        ttk.Button(
+            alerts,
+            text="Rivedi…",
+            command=self.open_operational_alerts,
+        ).grid(row=0, column=2, sticky="w", padx=(0, 28))
+
+        ttk.Label(alerts, text="Stampati ma non usati", style="Muted.TLabel").grid(
+            row=0, column=3, sticky="w"
+        )
+        ttk.Label(
+            alerts,
+            textvariable=self.home_security_alert_var,
+            style="Body.TLabel",
+        ).grid(row=0, column=4, sticky="w", padx=(8, 16))
+        ttk.Button(
+            alerts,
+            text="Rivedi…",
+            command=self.open_security_revocation,
+        ).grid(row=0, column=5, sticky="e")
+
         recent = ttk.Labelframe(
             frame,
             text="Voucher recenti",
@@ -1285,7 +1375,7 @@ class ModernVoucherApp(
             padding=(12, 10),
         )
         recent.grid(
-            row=2,
+            row=3,
             column=0,
             sticky="nsew",
             pady=(0, 10),
@@ -1362,7 +1452,7 @@ class ModernVoucherApp(
         )
         self.home_activity_frame = activity
         home_footer = ttk.Frame(frame)
-        home_footer.grid(row=3, column=0, sticky="ew", pady=(2, 4))
+        home_footer.grid(row=4, column=0, sticky="ew", pady=(2, 4))
         ttk.Button(home_footer, text="Crea backup…", command=self.create_backup).pack(side="right")
         ttk.Label(home_footer, textvariable=self.home_backup_summary_var,
                   style="Muted.TLabel", wraplength=420).pack(side="right", padx=12)
@@ -1370,7 +1460,7 @@ class ModernVoucherApp(
             home_footer, text="Mostra attività recenti", command=self._toggle_home_activity,
         )
         self.home_activity_toggle.pack(side="left")
-        activity.grid(row=4, column=0, sticky="ew")
+        activity.grid(row=5, column=0, sticky="ew")
         activity.grid_remove()
         activity.columnconfigure(0, weight=1)
         activity.rowconfigure(0, weight=1)
@@ -1436,6 +1526,32 @@ class ModernVoucherApp(
             text="Seleziona tutti da stampare",
             command=self.select_unprinted,
         ).pack(side="left", padx=(8, 0))
+        self.voucher_actions_button = ttk.Menubutton(
+            primary_actions,
+            text="Allinea / modifica ▾",
+        )
+        self.voucher_actions_menu = tk.Menu(
+            self.voucher_actions_button,
+            tearoff=False,
+        )
+        self.voucher_actions_menu.add_command(
+            label="Allinea stato locale…",
+            command=self.align_pending_vouchers,
+        )
+        self.voucher_actions_menu.add_separator()
+        self.voucher_actions_menu.add_command(
+            label="Nominalità…",
+            command=self.edit_selected_nominality,
+        )
+        self.voucher_actions_menu.add_command(
+            label="Note…",
+            command=self.edit_selected_notes,
+        )
+        self.voucher_actions_menu.configure(
+            postcommand=self._refresh_voucher_actions_menu,
+        )
+        self.voucher_actions_button.configure(menu=self.voucher_actions_menu)
+        self.voucher_actions_button.pack(side="left", padx=(8, 0))
 
         secondary_actions = ttk.Frame(toolbar)
         secondary_actions.grid(row=0, column=1, sticky="e")
@@ -1536,7 +1652,7 @@ class ModernVoucherApp(
             ("created", "Creazione", 132, False),
             ("firstprint", "Prima stampa", 132, False),
             ("duration", "Durata", 78, False),
-            ("usage", "Utilizzi", 86, False),
+            ("usage", "Guest autorizzati", 118, False),
             ("printstatus", "Stato stampa", 118, False),
             ("copies", "Copie", 65, False),
             ("expires", "Scadenza", 132, False),
@@ -1581,6 +1697,18 @@ class ModernVoucherApp(
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(8, 0))
 
+    def _refresh_voucher_actions_menu(self) -> None:
+        """Enable only local actions valid for the current blue selection."""
+
+        states = self.voucher_action_states()
+        menu = self.voucher_actions_menu
+        menu.entryconfigure(0, state="normal" if states["align"] else "disabled")
+        menu.entryconfigure(
+            2,
+            state="normal" if states["nominality"] else "disabled",
+        )
+        menu.entryconfigure(3, state="normal" if states["notes"] else "disabled")
+
     def _build_report_workspace(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(0, weight=1)
         ttk.Label(
@@ -1602,18 +1730,25 @@ class ModernVoucherApp(
         metrics.grid(row=2, column=0, sticky="ew")
         for column in range(4):
             metrics.columnconfigure(column, weight=1)
-        for column, (label, variable) in enumerate((
-            ("Voucher", self.report_total_var),
-            ("Stampati", self.report_printed_var),
+        report_metrics = (
+            ("Conservati", self.report_total_var),
+            ("Creazione VM conf.", self.report_generated_var),
             ("Utilizzati", self.report_used_var),
+            ("Mai osservati usati", self.report_never_used_var),
+            ("Stampati", self.report_printed_var),
             ("Scaduti", self.report_expired_var),
-        )):
+            ("Nominali", self.report_nominal_var),
+            ("Non classificati", self.report_unclassified_var),
+        )
+        for index, (label, variable) in enumerate(report_metrics):
+            row, column = divmod(index, 4)
             card = ttk.Labelframe(metrics, text=label, padding=(16, 12))
             card.grid(
-                row=0,
+                row=row,
                 column=column,
                 sticky="nsew",
                 padx=(0 if column == 0 else 6, 0 if column == 3 else 6),
+                pady=(0 if row == 0 else 8, 0),
             )
             ttk.Label(
                 card,
@@ -1621,13 +1756,19 @@ class ModernVoucherApp(
                 style="Metric.TLabel",
             ).pack(anchor="w")
 
+        ttk.Label(
+            frame,
+            textvariable=self.report_data_quality_var,
+            style="Muted.TLabel",
+        ).grid(row=3, column=0, sticky="w", pady=(8, 0))
+
         actions = ttk.Labelframe(
             frame,
             text="Esportazione",
             style="Card.TLabelframe",
             padding=(18, 14),
         )
-        actions.grid(row=3, column=0, sticky="ew", pady=(16, 0))
+        actions.grid(row=4, column=0, sticky="ew", pady=(16, 0))
         actions.columnconfigure(0, weight=1)
         ttk.Label(
             actions,
@@ -1637,19 +1778,28 @@ class ModernVoucherApp(
         ttk.Label(
             actions,
             text=(
-                "Riepilogo, utilizzati, scaduti, stampati mai utilizzati, "
-                "mai stampati, nominali e storico completo."
+                "I report operativi raccolgono riepilogo, utilizzo, scadenza, "
+                "stampa, nominalità e revisioni. Qualità dati, UUID e Storico "
+                "completo sono separati nel livello Audit / diagnostica tecnica."
             ),
             style="Muted.TLabel",
             wraplength=720,
         ).grid(row=1, column=0, sticky="w", pady=(3, 12))
-        self.report_button = ttk.Button(
-            actions,
-            text="Crea / esporta report…",
-            command=lambda: ReportDialog(self),
+        report_actions = ttk.Frame(actions)
+        report_actions.grid(row=2, column=0, sticky="w")
+        self.report_guide_button = ttk.Button(
+            report_actions,
+            text="Guida alla scelta…",
+            command=lambda: ReportGuideDialog(self),
             style="Accent.TButton",
         )
-        self.report_button.grid(row=2, column=0, sticky="w")
+        self.report_guide_button.pack(side="left")
+        self.report_button = ttk.Button(
+            report_actions,
+            text="Crea report direttamente…",
+            command=lambda: ReportDialog(self),
+        )
+        self.report_button.pack(side="left", padx=(8, 0))
 
         privacy = ttk.Labelframe(
             frame,
@@ -1657,7 +1807,7 @@ class ModernVoucherApp(
             style="Card.TLabelframe",
             padding=(18, 12),
         )
-        privacy.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        privacy.grid(row=5, column=0, sticky="ew", pady=(12, 0))
         ttk.Label(
             privacy,
             text=(
@@ -1686,7 +1836,8 @@ class ModernVoucherApp(
         self.settings_save_status_var = tk.StringVar()
         self.settings_backup_summary_var = tk.StringVar()
         self.settings_legacy_history_summary_var = tk.StringVar()
-        self.settings_retention_summary_var = tk.StringVar()
+        self.settings_operational_threshold_var = tk.StringVar()
+        self.settings_security_threshold_var = tk.StringVar()
 
         notebook = ttk.Notebook(frame)
         notebook.grid(row=0, column=0, sticky="nsew")
@@ -1701,7 +1852,7 @@ class ModernVoucherApp(
         notebook.add(general, text="Generali")
         notebook.add(controller, text="Controller")
         notebook.add(pdf_print, text="PDF / stampa")
-        notebook.add(retention, text="Retention")
+        notebook.add(retention, text="Soglie / sicurezza")
         notebook.add(backup, text="Backup")
         notebook.add(maintenance_page, text="Manutenzione")
 
@@ -1905,33 +2056,77 @@ class ModernVoucherApp(
 
         ttk.Label(
             retention,
-            text="Conservazione dello storico",
+            text="Creati ma non stampati",
             style="SectionTitle.TLabel",
         ).pack(anchor="w")
         ttk.Label(
             retention,
-            textvariable=self.settings_retention_summary_var,
+            textvariable=self.settings_operational_threshold_var,
             style="Body.TLabel",
             wraplength=760,
-        ).pack(anchor="w", pady=(8, 12))
+        ).pack(anchor="w", pady=(8, 8))
         ttk.Label(
             retention,
             text=(
-                "Voucher utilizzati, stampati o con PDF generato restano "
-                "protetti. Le evidenze legacy importate sono anch'esse "
-                "conservate fuori dalla retention ordinaria. Gli altri voucher "
-                "possono diventare candidati solo dopo il periodo configurato "
-                "e vengono sempre mostrati prima di qualsiasi minimizzazione."
+                "La soglia parte dalla data di creazione UniFi e segnala solo "
+                "voucher ancora presenti, mai osservati utilizzati e positivamente "
+                "classificati come Non stampati. È un avviso: non elimina nulla."
             ),
             style="Muted.TLabel",
             wraplength=760,
-        ).pack(anchor="w", pady=(0, 14))
+        ).pack(anchor="w", pady=(0, 12))
         ttk.Button(
             retention,
-            text="Rivedi conservazione…",
-            command=lambda: self.open_retention_review(parent=self),
+            text="Configura e rivedi avvisi…",
+            command=lambda: self.open_operational_alerts(parent=self),
+        ).pack(anchor="w")
+
+        ttk.Separator(retention).pack(fill="x", pady=18)
+        ttk.Label(
+            retention,
+            text="Revoca di sicurezza",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            retention,
+            textvariable=self.settings_security_threshold_var,
+            style="Body.TLabel",
+            wraplength=760,
+        ).pack(anchor="w", pady=(8, 8))
+        ttk.Label(
+            retention,
+            text=(
+                "La soglia parte dall'ultima stampa. Una ristampa fa ripartire "
+                "il conteggio. Se un voucher è noto come Stampato ma la data di "
+                "stampa non è determinabile, viene proposto subito alla revisione. "
+                "Prima della DELETE viene eseguita una nuova lettura live; codice "
+                "e storico locale restano conservati."
+            ),
+            style="Muted.TLabel",
+            wraplength=760,
+        ).pack(anchor="w", pady=(0, 12))
+        ttk.Button(
+            retention,
+            text="Configura e rivedi revoche…",
+            command=lambda: self.open_security_revocation(parent=self),
             style="Accent.TButton",
         ).pack(anchor="w")
+
+        ttk.Separator(retention).pack(fill="x", pady=18)
+        ttk.Label(
+            retention,
+            text="Minimizzazione dello storico locale",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            retention,
+            text=(
+                "Disabilitata in questa release. Nessun codice voucher o metadato "
+                "storico viene rimosso dal database locale tramite retention."
+            ),
+            style="Muted.TLabel",
+            wraplength=760,
+        ).pack(anchor="w", pady=(8, 0))
 
         ttk.Label(
             backup,
@@ -2062,7 +2257,7 @@ class ModernVoucherApp(
         self._load_settings_workspace_values()
         self._refresh_backup_summary()
         self._refresh_legacy_history_summary()
-        self._refresh_retention_summary()
+        self._refresh_threshold_summary()
 
     def _load_settings_workspace_values(self) -> None:
         if not hasattr(self, "settings_structure_name_var"):
@@ -2280,18 +2475,20 @@ class ModernVoucherApp(
             "sincronizzato il controller."
         )
 
-    def _refresh_retention_summary(self) -> None:
-        if not hasattr(self, "settings_retention_summary_var"):
+    def _refresh_threshold_summary(self) -> None:
+        if not hasattr(self, "settings_operational_threshold_var"):
             return
-        policy = self.database.retention_policy()
-        if policy is None:
-            self.settings_retention_summary_var.set(
-                "Conservazione voucher non ancora configurata."
-            )
-            return
-        self.settings_retention_summary_var.set(
-            "I voucher mai usati e mai stampati diventano candidati dopo "
-            f"{int(policy['unused_unprinted_days'])} giorni."
+        unprinted_days = unprinted_warning_days(self.database)
+        security_days = security_revoke_days(self.database)
+        self.settings_operational_threshold_var.set(
+            "Soglia non ancora configurata."
+            if unprinted_days is None
+            else f"Avviso dopo {unprinted_days} giorni dalla creazione."
+        )
+        self.settings_security_threshold_var.set(
+            "Soglia non ancora configurata."
+            if security_days is None
+            else f"Revisione dopo {security_days} giorni dall'ultima stampa."
         )
 
     def _show_workspace(self, key: str) -> None:
@@ -2310,7 +2507,7 @@ class ModernVoucherApp(
             ),
             "settings": (
                 "Impostazioni",
-                "Generali, controller, PDF, retention, backup e manutenzione",
+                "Generali, controller, PDF, soglie, sicurezza, backup e manutenzione",
             ),
         }
         if key not in self._workspace_pages:
@@ -2324,13 +2521,14 @@ class ModernVoucherApp(
             )
         if key == "home":
             self._refresh_backup_summary()
+            self._refresh_home_threshold_alerts()
         elif key == "report":
             self._refresh_report_summary()
         elif key == "settings":
             self._load_settings_workspace_values()
             self._refresh_backup_summary()
             self._refresh_legacy_history_summary()
-            self._refresh_retention_summary()
+            self._refresh_threshold_summary()
         self._refresh_controller_workspace_status()
 
     def _build_status_dot(
@@ -2431,7 +2629,12 @@ class ModernVoucherApp(
             controller_name=name,
             last_successful_sync_at=last_sync,
             busy_label=self._controller_busy_label,
+            retrying=bool(getattr(self, "_controller_retrying", False)),
+            retry_attempt=int(getattr(self, "_controller_retry_attempt", 0) or 0),
+            retry_total=len(self._CONTROLLER_RETRY_DELAYS_MS),
             failed=self._controller_status_failed,
+            stale=self._controller_status_stale,
+            archive_failed=self._archive_status_failed,
         )
         friendly_sync = audit_time_label(last_sync) if last_sync else "Mai"
         self.controller_health_var.set(status.title)
@@ -2472,7 +2675,9 @@ class ModernVoucherApp(
             if dot is not None:
                 self._paint_status_dot(dot, status.key)
 
-        if status.key == "connected":
+        if status.key == "retrying":
+            self.home_sync_action_var.set("Riconnessione…")
+        elif status.key in {"connected", "stale"} and self.client is not None:
             self.home_sync_action_var.set("Sincronizza")
         elif status.key == "unconfigured":
             self.home_sync_action_var.set("Configura controller")
@@ -2491,7 +2696,12 @@ class ModernVoucherApp(
         if self._background_results is not None:
             self.bell()
             return
-        if self.client is not None and not self._controller_status_failed:
+        if bool(getattr(self, "_controller_retrying", False)):
+            self.bell()
+            return
+        if self.client is not None:
+            if self._controller_status_failed:
+                self._reset_controller_retry_state()
             self.refresh()
             return
         saved = self.settings_store.load()
@@ -2521,12 +2731,166 @@ class ModernVoucherApp(
             self, api_root=api_root, controller_name=name, last_sync=last_sync,
         )
 
+    _CONTROLLER_RETRY_DELAYS_MS = (5_000, 15_000, 30_000)
+
+    def _cancel_controller_retry_after(self) -> None:
+        handle = getattr(self, "_controller_retry_after", None)
+        if handle is not None:
+            try:
+                self.after_cancel(handle)
+            except (AttributeError, tk.TclError):
+                pass
+        self._controller_retry_after = None
+
+    def _stop_retry_dot_animation(self) -> None:
+        handle = getattr(self, "_controller_retry_dot_after", None)
+        if handle is not None:
+            try:
+                self.after_cancel(handle)
+            except (AttributeError, tk.TclError):
+                pass
+        self._controller_retry_dot_after = None
+        self._controller_retry_dot_phase = False
+        for dot_name in (
+            "home_status_dot",
+            "settings_status_dot",
+            "sidebar_status_dot",
+        ):
+            dot = getattr(self, dot_name, None)
+            if dot is not None:
+                try:
+                    dot.coords("status-dot", 2, 2, 12, 12)
+                except (AttributeError, tk.TclError):
+                    pass
+
+    def _animate_retry_dot(self) -> None:
+        if not bool(getattr(self, "_controller_retrying", False)):
+            self._stop_retry_dot_animation()
+            return
+        self._controller_retry_dot_phase = not bool(
+            getattr(self, "_controller_retry_dot_phase", False)
+        )
+        coords = (
+            (3, 3, 11, 11)
+            if self._controller_retry_dot_phase
+            else (1, 1, 13, 13)
+        )
+        for dot_name in (
+            "home_status_dot",
+            "settings_status_dot",
+            "sidebar_status_dot",
+        ):
+            dot = getattr(self, dot_name, None)
+            if dot is not None:
+                try:
+                    dot.coords("status-dot", *coords)
+                except (AttributeError, tk.TclError):
+                    pass
+        try:
+            self._controller_retry_dot_after = self.after(
+                550,
+                self._animate_retry_dot,
+            )
+        except (AttributeError, tk.TclError):
+            self._controller_retry_dot_after = None
+
+    def _reset_controller_retry_state(self) -> None:
+        self._cancel_controller_retry_after()
+        self._controller_retrying = False
+        self._controller_retry_attempt = 0
+        self._stop_retry_dot_animation()
+
+    def _handle_controller_refresh_failure(self, exc: Exception) -> bool:
+        """Automatically retry only transport loss from a live session."""
+
+        if not isinstance(exc, UniFiTransportError) or self.client is None:
+            return False
+
+        self.controller_snapshot_live = False
+        delays = self._CONTROLLER_RETRY_DELAYS_MS
+        attempt = int(getattr(self, "_controller_retry_attempt", 0) or 0)
+        if attempt >= len(delays):
+            self._reset_controller_retry_state()
+            self._controller_status_failed = True
+            self._controller_status_stale = False
+            self._refresh_controller_workspace_status()
+            populate = getattr(self, "populate", None)
+            if callable(populate):
+                populate()
+            self.logger.warning(
+                "controller_auto_retry_exhausted attempts=%s",
+                len(delays),
+            )
+            self._show_network_error(
+                "Sincronizzazione",
+                exc,
+                prefix=(
+                    "I tentativi automatici di riconnessione sono terminati. "
+                    "La spia è rossa: usare Riconnetti per avviare manualmente "
+                    "un nuovo tentativo.\n\n"
+                ),
+            )
+            return True
+
+        self._controller_retrying = True
+        self._controller_status_failed = False
+        self._controller_status_stale = True
+        self._controller_retry_attempt = attempt + 1
+        delay_ms = delays[attempt]
+        self._refresh_controller_workspace_status()
+        populate = getattr(self, "populate", None)
+        if callable(populate):
+            populate()
+
+        self._cancel_controller_retry_after()
+        if getattr(self, "_controller_retry_dot_after", None) is None:
+            self._animate_retry_dot()
+
+        def retry() -> None:
+            self._controller_retry_after = None
+            if (
+                not bool(getattr(self, "_controller_retrying", False))
+                or self.client is None
+            ):
+                return
+            self.logger.info(
+                "controller_auto_retry attempt=%s total=%s",
+                self._controller_retry_attempt,
+                len(delays),
+            )
+            self.refresh()
+
+        try:
+            self._controller_retry_after = self.after(delay_ms, retry)
+        except (AttributeError, tk.TclError):
+            self._controller_retry_after = None
+            self._reset_controller_retry_state()
+            return False
+        return True
+
     def _controller_operation_failed(self) -> None:
+        self._reset_controller_retry_state()
         self._controller_status_failed = True
+        self._controller_status_stale = False
+        self.controller_snapshot_live = False
+        self._refresh_controller_workspace_status()
+        populate = getattr(self, "populate", None)
+        if callable(populate):
+            populate()
+
+    def _controller_operation_stale(self, *, archive_failed: bool = False) -> None:
+        self._reset_controller_retry_state()
+        self._controller_status_failed = False
+        self._controller_status_stale = True
+        if archive_failed:
+            self._archive_status_failed = True
         self._refresh_controller_workspace_status()
 
     def _controller_operation_succeeded(self) -> None:
+        self._reset_controller_retry_state()
         self._controller_status_failed = False
+        self._controller_status_stale = False
+        self._archive_status_failed = False
         self._refresh_controller_workspace_status()
 
     def _set_background_busy(self, busy: bool, label: str = "") -> None:
@@ -2899,28 +3263,95 @@ class ModernVoucherApp(
     def _refresh_report_summary(self) -> None:
         if not hasattr(self, "report_total_var"):
             return
-        try:
-            dataset = build_report_dataset(
-                self.database,
+        variables = (
+            self.report_total_var,
+            self.report_generated_var,
+            self.report_used_var,
+            self.report_never_used_var,
+            self.report_printed_var,
+            self.report_expired_var,
+            self.report_nominal_var,
+            self.report_unclassified_var,
+        )
+        if getattr(self, "_background_results", None) is not None:
+            return
+
+        for variable in variables:
+            variable.set("…")
+        self.report_data_quality_var.set("Calcolo archivio locale…")
+
+        database_path = Path(self.paths.database)
+        generated_at = datetime.now().astimezone().isoformat()
+
+        def worker():
+            return build_report_dataset_from_path(
+                database_path,
                 kind=ReportKind.SUMMARY,
-                generated_at=datetime.now().astimezone().isoformat(),
+                generated_at=generated_at,
                 controller_id=None,
             )
-        except Exception as exc:
+
+        def completed(dataset) -> None:
+            totals = dataset.totals
+            self.report_total_var.set(str(totals.vouchers))
+            self.report_generated_var.set(str(totals.generated_vouchers))
+            self.report_used_var.set(str(totals.used_vouchers))
+            self.report_never_used_var.set(str(totals.never_used_vouchers))
+            self.report_printed_var.set(str(totals.printed_vouchers))
+            self.report_expired_var.set(str(totals.expired_vouchers))
+            self.report_nominal_var.set(str(totals.nominal_vouchers))
+            self.report_unclassified_var.set(str(totals.unclassified_vouchers))
+            self.report_data_quality_var.set(
+                "Dati non determinabili: "
+                f"uso {totals.usage_unknown_vouchers} • "
+                f"origine {totals.unknown_origin_vouchers} • "
+                f"stampa {totals.print_unknown_vouchers} • "
+                f"nominalità {totals.unclassified_vouchers} • "
+                f"rimossa per privacy {totals.redacted_nominality_vouchers} • "
+                f"dati controller fino a {audit_time_label(dataset.data_as_of)}"
+            )
+
+        def failed(exc: Exception) -> None:
             self.logger.warning(
                 "report_workspace_summary_failed type=%s",
                 type(exc).__name__,
             )
-            return
-        totals = dataset.totals
-        self.report_total_var.set(str(totals.vouchers))
-        self.report_printed_var.set(str(totals.printed_vouchers))
-        self.report_used_var.set(str(totals.used_vouchers))
-        self.report_expired_var.set(str(totals.expired_vouchers))
+            for variable in variables:
+                variable.set("—")
+            self.report_data_quality_var.set(
+                "Archivio report non disponibile: nessun dato precedente "
+                "viene mostrato come valido."
+            )
+
+        self._run_background_task(
+            "Calcolo report…",
+            worker,
+            completed,
+            failed,
+        )
 
     def _update_operator_summary(self, stats) -> None:
         if not hasattr(self, "home_to_print_var"):
             return
+
+        if not bool(getattr(self, "controller_snapshot_live", False)):
+            for variable in (
+                self.home_to_print_var,
+                self.home_active_var,
+                self.home_used_var,
+                self.home_expired_var,
+                self.home_unprinted_alert_var,
+                self.home_security_alert_var,
+            ):
+                variable.set("—")
+            if hasattr(self, "home_recent_tree"):
+                for iid in self.home_recent_tree.get_children():
+                    self.home_recent_tree.delete(iid)
+                self._home_voucher_by_iid = {}
+            self._refresh_home_activity()
+            self._refresh_controller_workspace_status()
+            return
+
         active = 0
         expired_count = 0
         used = 0
@@ -2929,12 +3360,12 @@ class ModernVoucherApp(
         for voucher in self.vouchers:
             expired = self._is_expired(voucher)
             stat = stats.get(voucher.code_formatted)
-            state = "SCADUTO" if expired else self._print_state(stat)
+            state = "SCADUTO" if expired else self._workspace_print_state(voucher, stat)
             if expired:
                 expired_count += 1
             else:
                 active += 1
-                if state != "STAMPATO":
+                if state in {"DA STAMPARE", "PDF CREATO"}:
                     to_print += 1
             if voucher.used > 0:
                 used += 1
@@ -2987,7 +3418,56 @@ class ModernVoucherApp(
             # Selection is synchronized after the table rebuild by
             # _sync_selection_ui(), with Home events temporarily suppressed.
         self._refresh_home_activity()
+        self._refresh_home_threshold_alerts()
         self._refresh_controller_workspace_status()
+
+    def _refresh_home_threshold_alerts(self) -> None:
+        """Show threshold candidates only when Home has a live controller snapshot."""
+
+        if not hasattr(self, "home_unprinted_alert_var"):
+            return
+        if (
+            not bool(getattr(self, "controller_snapshot_live", False))
+            or self.active_controller_id is None
+        ):
+            self.home_unprinted_alert_var.set("—")
+            self.home_security_alert_var.set("—")
+            return
+
+        now = datetime.now().astimezone().isoformat()
+        try:
+            unprinted_days = unprinted_warning_days(self.database)
+            if unprinted_days is None:
+                self.home_unprinted_alert_var.set("Soglia da configurare")
+            else:
+                unprinted = unprinted_warning_candidates(
+                    self.database,
+                    now=now,
+                    controller_id=self.active_controller_id,
+                )
+                self.home_unprinted_alert_var.set(
+                    f"{len(unprinted)} oltre {unprinted_days} gg"
+                )
+
+            security_days = security_revoke_days(self.database)
+            if security_days is None:
+                self.home_security_alert_var.set("Soglia da configurare")
+            else:
+                security = security_revocation_candidates(
+                    self.database,
+                    now=now,
+                    controller_id=self.active_controller_id,
+                )
+                self.home_security_alert_var.set(
+                    f"{len(security)} da rivedere"
+                )
+        except Exception as exc:
+            self.logger.warning(
+                "home_threshold_alerts_failed type=%s",
+                type(exc).__name__,
+            )
+            self.home_unprinted_alert_var.set("Non disponibile")
+            self.home_security_alert_var.set("Non disponibile")
 
     def _on_home_recent_click(self, event):
         """Toggle one Home voucher only for a real operator row click.
@@ -3007,7 +3487,7 @@ class ModernVoucherApp(
             return "break"
         tree.focus_set()
         tree.focus(iid)
-        if self._is_expired(voucher):
+        if self._is_expired(voucher) or not self._voucher_alignment_ready(voucher):
             self.bell()
             return "break"
 
@@ -3021,20 +3501,29 @@ class ModernVoucherApp(
     def _on_voucher_selection_key(self, event):
         """Toggle the focused voucher without a second native selection model.
 
-        Both voucher trees use selectmode=none: arrow keys move focus only,
-        while Space changes the same print selection as a pointer click.
+        Both voucher trees use selectmode=none: arrow keys move focus only.
+        Home keeps print-only eligibility, while the full Voucher workspace
+        allows broader blue selection for safe local metadata actions.
         Programmatic highlights stay one-way to avoid refresh event loops.
         """
 
         tree = event.widget
+        is_home = tree is self.home_recent_tree
         mapping = (
             getattr(self, "_home_voucher_by_iid", {})
-            if tree is self.home_recent_tree else self.by_iid
+            if is_home else self.by_iid
         )
         voucher = mapping.get(tree.focus())
         if voucher is None:
             return "break"
-        if self._is_expired(voucher):
+        if is_home and self._is_expired(voucher):
+            self.bell()
+            return "break"
+        # Home remains a print shortcut and therefore requires alignment.
+        # The full Voucher table must still allow selecting an unaligned active
+        # row so the operator can inspect it and receive an explicit action-time
+        # alignment message instead of an apparently dead table.
+        if is_home and not self._voucher_alignment_ready(voucher):
             self.bell()
             return "break"
         if voucher.id in self.checked_ids:
@@ -3069,7 +3558,15 @@ class ModernVoucherApp(
         # No <<TreeviewSelect>> handler is bound to this Treeview: highlighting
         # is one-way presentation state and cannot recursively mutate selection.
         self.home_recent_tree.selection_set(selected)
-        count = len(self.checked_ids)
+        vouchers = getattr(self, "vouchers", None)
+        if vouchers is None:
+            count = len(self.checked_ids)
+        else:
+            count = sum(
+                1
+                for voucher in vouchers
+                if voucher.id in self.checked_ids and not self._is_expired(voucher)
+            )
         self.home_print_action_var.set(
             f"Stampa {count} voucher" if count else "Stampa voucher"
         )
@@ -3112,6 +3609,9 @@ class ModernVoucherApp(
             if voucher.id in self.checked_ids
         ]
         self.tree.selection_set(selected_iids)
+        printable = getattr(self, "selected", None)
+        if callable(printable):
+            self.action_var.set(print_action_label(len(printable())))
         self._sync_home_selection_ui()
 
     def on_tree_click(self, event):
@@ -3125,9 +3625,12 @@ class ModernVoucherApp(
         self.tree.focus_set()
         self.tree.focus(iid)
         voucher = self.by_iid[iid]
-        if self._is_expired(voucher):
-            self.bell()
-            return "break"
+        # Voucher workspace selection is broader than print eligibility:
+        # expired rows may still need local notes/nominality corrections.
+        # Print/delete remain fail-closed in VoucherApp.selected().
+        # Row selection is an operator navigation concept. Alignment is checked
+        # at the action boundary (printing/deletion), so an active voucher must
+        # remain selectable even when it still needs local alignment.
         if voucher.id in self.checked_ids:
             self.checked_ids.remove(voucher.id)
         else:
@@ -3178,25 +3681,85 @@ class ModernVoucherApp(
         self._search_after = None
         self.populate()
 
+    def _refresh_workspace_print_state_cache(self) -> None:
+        """Load the local alignment/print facts for the active UniFi snapshot."""
+
+        if self.active_controller_id is None:
+            self._workspace_print_state_by_unifi_id = {}
+            return
+        rows = self.database.connection.execute(
+            """SELECT unifi_id, alignment_completed_at, print_state
+               FROM vouchers
+               WHERE controller_id=? AND archived_at IS NULL""",
+            (int(self.active_controller_id),),
+        ).fetchall()
+        self._workspace_print_state_by_unifi_id = {
+            str(row["unifi_id"]): (
+                bool(str(row["alignment_completed_at"] or "").strip()),
+                str(row["print_state"] or "UNKNOWN").strip().upper(),
+            )
+            for row in rows
+        }
+
+    def _workspace_print_state(self, voucher, stat) -> str:
+        """Resolve operator state from durable alignment facts, never by guess."""
+
+        local = getattr(
+            self,
+            "_workspace_print_state_by_unifi_id",
+            {},
+        ).get(str(voucher.id))
+        if local is None or not local[0]:
+            return "DA ALLINEARE"
+
+        print_state = local[1]
+        # A confirmed physical-print audit is stronger evidence than any older
+        # classification value that may have survived an import.
+        if stat and stat.print_jobs:
+            return "STAMPATO"
+        if print_state == "PRINTED":
+            return "STAMPATO"
+        if print_state == "UNKNOWN":
+            return "NON DETERMINABILE"
+        if print_state != "NOT_PRINTED":
+            return "NON DETERMINABILE"
+
+        # Once the local lifecycle positively says NOT_PRINTED, the HMAC/PDF
+        # history can refine preparation state without inventing a print.
+        if stat and stat.generated_documents:
+            return "PDF CREATO"
+        return "DA STAMPARE"
+
+    def _voucher_alignment_ready(self, voucher) -> bool:
+        local = getattr(
+            self,
+            "_workspace_print_state_by_unifi_id",
+            {},
+        ).get(str(voucher.id))
+        return bool(local is not None and local[0])
+
     def populate(self) -> None:
         """Render vouchers newest-first using UniFi creation time as reference."""
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.by_iid = {}
         filt, query = self.filter_var.get(), self.search_var.get().strip().lower()
+        self._refresh_workspace_print_state_cache()
         stats = self._history_stats_for(self.vouchers)
         if stats is None:
             self.count_var.set("Cronologia non disponibile  •  0 selezionati")
             self._refresh_controller_workspace_status()
             return
-        valid_ids = {v.id for v in self.vouchers if not self._is_expired(v)}
+        valid_ids = {v.id for v in self.vouchers}
         self.checked_ids.intersection_update(valid_ids)
         candidates = []
         for voucher in self.vouchers:
             expired = self._is_expired(voucher)
             stat = stats.get(voucher.code_formatted)
-            state = "SCADUTO" if expired else self._print_state(stat)
-            if filt == "Da stampare" and (expired or state == "STAMPATO"):
+            state = "SCADUTO" if expired else self._workspace_print_state(voucher, stat)
+            if filt == "Da stampare" and (
+                expired or state not in {"DA STAMPARE", "PDF CREATO"}
+            ):
                 continue
             if filt == "Attivi" and expired:
                 continue
@@ -3225,7 +3788,16 @@ class ModernVoucherApp(
         stats = self._history_stats_for(self.vouchers)
         if stats is None:
             return
-        self.checked_ids = {v.id for v in self.vouchers if not self._is_expired(v) and self._print_state(stats.get(v.code_formatted)) in {"DA STAMPARE", "PDF CREATO"}}
+        self._refresh_workspace_print_state_cache()
+        self.checked_ids = {
+            v.id
+            for v in self.vouchers
+            if not self._is_expired(v)
+            and self._workspace_print_state(
+                v,
+                stats.get(v.code_formatted),
+            ) in {"DA STAMPARE", "PDF CREATO"}
+        }
         self.filter_var.set("Da stampare")
         self.populate()
 

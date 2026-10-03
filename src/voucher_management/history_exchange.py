@@ -192,6 +192,32 @@ def _modern_event_key(row: dict) -> tuple[str, ...] | None:
     )
 
 
+def _assert_unique_modern_events(
+    rows: list[dict],
+    *,
+    context: str,
+) -> None:
+    """Reject duplicate/conflicting stable event identities before exchange."""
+
+    seen: dict[tuple[str, ...], str] = {}
+    for row in rows:
+        key = _modern_event_key(row)
+        if key is None:
+            continue
+        canonical = _canonical_row(row)
+        previous = seen.get(key)
+        if previous is None:
+            seen[key] = canonical
+            continue
+        if previous != canonical:
+            raise HistoryExchangeError(
+                f"{context} contiene un conflitto di identificativo evento"
+            )
+        raise HistoryExchangeError(
+            f"{context} contiene un identificativo evento duplicato"
+        )
+
+
 def _merge_delta(
     local_rows: list[dict],
     incoming_rows: list[dict],
@@ -315,6 +341,10 @@ class HistoryExchangeService:
             raise HistoryExchangeError(
                 "Non ci sono eventi di cronologia da esportare"
             )
+        _assert_unique_modern_events(
+            rows,
+            context="La cronologia locale",
+        )
 
         destination = Path(destination)
         try:

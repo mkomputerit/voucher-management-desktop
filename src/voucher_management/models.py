@@ -12,6 +12,7 @@ class VoucherRecord:
     page_number: int = 0
     duration_minutes: int | None = None
     recipient: str = ""
+    unifi_id: str = ""
 
     @property
     def duration_label(self) -> str:
@@ -34,6 +35,7 @@ class VoucherBatch:
     source_path: Path
     vouchers: list[VoucherRecord] = field(default_factory=list)
     recipient: str = ""
+    site_id: str = ""
 
     @property
     def count(self) -> int:

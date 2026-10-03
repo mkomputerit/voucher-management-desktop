@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from .database import PRINT_STATE_NOT_PRINTED, PRINT_STATE_PRINTED, PRINT_STATE_UNKNOWN
 from .history import PrintStats
 from .models import VoucherBatch, VoucherRecord
 from .policy import DeletePolicyResult, evaluate_delete_policy
@@ -21,6 +22,7 @@ from .unifi_api import (
     UniFiApiError,
     UniFiClient,
     UniFiMutationUncertain,
+    UniFiVoucherNotFound,
 )
 from .utils import find_file_by_exact_name
 
@@ -33,6 +35,10 @@ class CreateOutcome:
     vouchers: tuple[ApiVoucher, ...]
     refresh_error: UniFiApiError | None = None
     uncertain_error: UniFiMutationUncertain | None = None
+    local_persistence_error: Exception | None = None
+    recovery_marker_error: Exception | None = None
+    snapshot_complete: bool = True
+    reconciliation_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,10 +51,12 @@ class DeleteBlock:
 
 @dataclass(frozen=True)
 class DeleteOutcome:
-    """Result of a successful controller delete operation."""
+    """Result of a confirmed controller delete and its local reconciliation."""
 
     vouchers: tuple[ApiVoucher, ...]
     refresh_error: UniFiApiError | None = None
+    local_persistence_error: Exception | None = None
+    reconciliation_required: bool = False
 
 
 
@@ -75,6 +83,17 @@ class ExistingPdfResolution:
 
     path: Path
     linked_codes: tuple[str, ...]
+    linked_voucher_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SnapshotAbsenceOutcome:
+    """Result of direct checks for repeatedly omitted voucher UUIDs."""
+
+    vouchers: tuple[ApiVoucher, ...]
+    confirmed_absent_ids: frozenset[str]
+    unresolved_ids: frozenset[str]
+    recovered_ids: frozenset[str]
 
 
 class ExistingPdfResolutionError(RuntimeError):
@@ -128,6 +147,7 @@ def validate_create_params(
     data_mb: object = None,
     down_mbps: object = None,
     up_mbps: object = None,
+    is_nominal: object = False,
 ) -> dict[str, object]:
     """Normalize and validate CreateDialog values without any Tk dependency."""
 
@@ -187,6 +207,7 @@ def validate_create_params(
         "data_mb": data_limit,
         "down_mbps": download_limit,
         "up_mbps": upload_limit,
+        "is_nominal": bool(is_nominal),
     }
 
 
@@ -210,12 +231,14 @@ def prepare_print_job(
     *,
     unlimited_copies: int = 1,
     now: datetime,
+    site_id: str = "",
 ) -> PrintJob:
     """Resolve selected vouchers to one deterministic PDF-generation job."""
 
     batch = build_print_batch(
         selected,
         unlimited_copies=unlimited_copies,
+        site_id=site_id,
     )
     output = build_voucher_pdf_path(
         Path(prints_root),
@@ -235,12 +258,17 @@ def execute_print_job(
     """Render and audit one print job without any Tk dependency."""
 
     render_pdf(job.batch, job.output, settings)
-    reprint = bool(
-        history.find_duplicates(
+    if hasattr(history, "find_duplicates_for_batch"):
+        duplicates = history.find_duplicates_for_batch(
+            job.batch,
+            settings,
+        )
+    else:
+        duplicates = history.find_duplicates(
             job.batch.codes,
             settings,
         )
-    )
+    reprint = bool(duplicates)
     history.record_batch(
         job.batch,
         job.output,
@@ -261,6 +289,7 @@ def resolve_existing_pdf(
     history,
     settings: Mapping[str, object],
     prints_root: Path,
+    site_id: str = "",
     finder: Callable[[Path, str], Sequence[Path]] = find_file_by_exact_name,
 ) -> ExistingPdfResolution:
     """Resolve and verify the archived PDF linked to one selected voucher."""
@@ -290,19 +319,42 @@ def resolve_existing_pdf(
             path=path,
         )
 
-    linked_codes = tuple(
-        history.codes_for_output(
-            [item.code_formatted for item in all_vouchers],
-            path,
-            settings,
+    if hasattr(history, "voucher_links_for_output"):
+        links = tuple(
+            history.voucher_links_for_output(
+                [
+                    (str(item.id), item.code_formatted)
+                    for item in all_vouchers
+                ],
+                site_id,
+                path,
+                settings,
+            )
         )
-    )
-    if voucher.code_formatted not in linked_codes:
-        raise ExistingPdfResolutionError("linkage_mismatch")
+        linked_voucher_ids = tuple(item[0] for item in links)
+        linked_codes = tuple(item[1] for item in links)
+        if str(voucher.id) not in linked_voucher_ids:
+            raise ExistingPdfResolutionError("linkage_mismatch")
+    else:
+        linked_codes = tuple(
+            history.codes_for_output(
+                [item.code_formatted for item in all_vouchers],
+                path,
+                settings,
+            )
+        )
+        linked_voucher_ids = tuple(
+            str(item.id)
+            for item in all_vouchers
+            if item.code_formatted in linked_codes
+        )
+        if voucher.code_formatted not in linked_codes:
+            raise ExistingPdfResolutionError("linkage_mismatch")
 
     return ExistingPdfResolution(
         path=path,
         linked_codes=linked_codes,
+        linked_voucher_ids=linked_voucher_ids,
     )
 
 
@@ -310,6 +362,51 @@ def refresh_vouchers(client: UniFiClient) -> list[ApiVoucher]:
     """Fetch the current controller voucher list."""
 
     return client.list_vouchers()
+
+
+def verify_snapshot_absences(
+    client: UniFiClient,
+    snapshot: Sequence[ApiVoucher],
+    candidate_ids: Sequence[str],
+) -> SnapshotAbsenceOutcome:
+    """Directly verify UUIDs omitted by repeated complete list snapshots.
+
+    Positive GET results are merged back into the working snapshot. A typed
+    voucher 404 is the only evidence accepted as confirmed absence. Transport
+    failures remain unresolved and are never converted into deletion facts.
+    """
+
+    by_id = {
+        str(voucher.id): voucher
+        for voucher in snapshot
+    }
+    confirmed: set[str] = set()
+    unresolved: set[str] = set()
+    recovered: set[str] = set()
+
+    for value in candidate_ids:
+        remote_id = str(value or "").strip()
+        if not remote_id or remote_id in by_id:
+            continue
+        try:
+            live = client.get_voucher(remote_id)
+        except UniFiVoucherNotFound:
+            confirmed.add(remote_id)
+        except UniFiApiError:
+            unresolved.add(remote_id)
+        else:
+            if str(live.id).strip() != remote_id:
+                unresolved.add(remote_id)
+                continue
+            by_id[remote_id] = live
+            recovered.add(remote_id)
+
+    return SnapshotAbsenceOutcome(
+        vouchers=tuple(by_id.values()),
+        confirmed_absent_ids=frozenset(confirmed),
+        unresolved_ids=frozenset(unresolved),
+        recovered_ids=frozenset(recovered),
+    )
 
 
 def create_vouchers_and_refresh(
@@ -324,8 +421,14 @@ def create_vouchers_and_refresh(
     report "created, refresh failed" rather than encouraging a duplicate create.
     """
 
+    controller_params = dict(params)
+    # Nominality is an application-only reporting classification. UniFi has no
+    # corresponding field and must receive exactly the same voucher payload as
+    # before this feature existed.
+    controller_params.pop("is_nominal", None)
+
     try:
-        created = tuple(client.create_vouchers(**dict(params)))
+        created = tuple(client.create_vouchers(**controller_params))
     except UniFiMutationUncertain as exc:
         # Never retry a non-idempotent POST automatically. A fresh GET is safe
         # and gives the operator the best available controller state, but in a
@@ -348,7 +451,28 @@ def create_vouchers_and_refresh(
 
     try:
         refreshed = tuple(client.list_vouchers())
-        return CreateOutcome(created=created, vouchers=refreshed)
+        refreshed_by_id = {voucher.id: voucher for voucher in refreshed}
+        missing_created = [
+            voucher for voucher in created if voucher.id not in refreshed_by_id
+        ]
+        if missing_created:
+            # A successful HTTP response is not enough to assume read-after-write
+            # consistency. Keep every confirmed POST result visible and avoid
+            # treating this list as a complete absence-authoritative snapshot.
+            merged = dict(refreshed_by_id)
+            for voucher in missing_created:
+                merged[voucher.id] = voucher
+            return CreateOutcome(
+                created=created,
+                vouchers=tuple(merged.values()),
+                snapshot_complete=False,
+                reconciliation_required=True,
+            )
+        return CreateOutcome(
+            created=created,
+            vouchers=refreshed,
+            snapshot_complete=True,
+        )
     except UniFiApiError as exc:
         merged = {voucher.id: voucher for voucher in cached_vouchers}
         for voucher in created:
@@ -357,6 +481,8 @@ def create_vouchers_and_refresh(
             created=created,
             vouchers=tuple(merged.values()),
             refresh_error=exc,
+            snapshot_complete=False,
+            reconciliation_required=True,
         )
 
 
@@ -372,15 +498,45 @@ def refresh_delete_candidates(
 def evaluate_delete_candidates(
     vouchers: Sequence[ApiVoucher],
     stats_by_code: Mapping[str, PrintStats],
+    *,
+    historically_used_ids: frozenset[str],
+    local_print_states: Mapping[str, str],
+    aligned_ids: frozenset[str],
+    exceptionally_deletable_ids: frozenset[str] = frozenset(),
 ) -> list[DeleteBlock]:
-    """Return every voucher blocked by local/controller lifecycle policy."""
+    """Return every voucher blocked by controller or durable local lifecycle facts.
+
+    Ordinary deletion is a preparation-error correction.  It is available only
+    when the local database positively proves that the voucher is aligned and
+    has print_state=NOT_PRINTED.  Missing/unknown local evidence fails closed.
+    """
 
     blocked: list[DeleteBlock] = []
     for voucher in vouchers:
-        result = evaluate_delete_policy(
-            voucher,
-            stats_by_code.get(voucher.code_formatted),
-        )
+        remote_id = str(voucher.id)
+        if remote_id in historically_used_ids:
+            result = DeletePolicyResult(False, "in_use")
+        elif remote_id in exceptionally_deletable_ids:
+            result = evaluate_delete_policy(
+                voucher,
+                stats_by_code.get(voucher.code_formatted),
+            )
+        elif remote_id not in aligned_ids:
+            result = DeletePolicyResult(False, "not_aligned")
+        else:
+            print_state = str(
+                local_print_states.get(remote_id, PRINT_STATE_UNKNOWN)
+                or PRINT_STATE_UNKNOWN
+            )
+            if print_state == PRINT_STATE_PRINTED:
+                result = DeletePolicyResult(False, "printed")
+            elif print_state != PRINT_STATE_NOT_PRINTED:
+                result = DeletePolicyResult(False, "print_unknown")
+            else:
+                result = evaluate_delete_policy(
+                    voucher,
+                    stats_by_code.get(voucher.code_formatted),
+                )
         if not result.allowed:
             blocked.append(DeleteBlock(voucher=voucher, policy=result))
     return blocked
@@ -403,7 +559,20 @@ def delete_vouchers_and_refresh(
 
     try:
         refreshed = tuple(client.list_vouchers())
-        return DeleteOutcome(vouchers=refreshed)
+        deleted_ids = set(ids)
+        stale_deleted_present = any(
+            voucher.id in deleted_ids
+            for voucher in refreshed
+        )
+        visible = tuple(
+            voucher
+            for voucher in refreshed
+            if voucher.id not in deleted_ids
+        )
+        return DeleteOutcome(
+            vouchers=visible,
+            reconciliation_required=stale_deleted_present,
+        )
     except UniFiApiError as exc:
         deleted_ids = set(ids)
         fallback = tuple(
@@ -421,6 +590,7 @@ def build_print_batch(
     selected: Sequence[ApiVoucher],
     *,
     unlimited_copies: int = 1,
+    site_id: str = "",
 ) -> VoucherBatch:
     """Build controller-independent print records from selected vouchers."""
 
@@ -428,6 +598,23 @@ def build_print_batch(
         raise ValueError("Nessun voucher selezionato")
     if not 1 <= int(unlimited_copies) <= 999:
         raise ValueError("Numero copie non valido")
+
+    voucher_ids = [str(voucher.id).strip() for voucher in selected]
+    if any(not voucher_id for voucher_id in voucher_ids):
+        raise ValueError("Identità voucher mancante nella selezione")
+    if len(set(voucher_ids)) != len(voucher_ids):
+        raise ValueError("Selezione voucher duplicata")
+
+    canonical_codes = [
+        str(voucher.code_formatted).strip().replace("-", "")
+        for voucher in selected
+    ]
+    if any(not code for code in canonical_codes):
+        raise ValueError("Codice voucher mancante nella selezione")
+    if len(set(canonical_codes)) != len(canonical_codes):
+        raise ValueError(
+            "Codice voucher duplicato o ambiguo nella selezione"
+        )
 
     records: list[VoucherRecord] = []
     only_unlimited = len(selected) == 1 and selected[0].quota == 0
@@ -439,6 +626,7 @@ def build_print_batch(
                 code=voucher.code_formatted,
                 duration_minutes=voucher.duration_minutes,
                 recipient=voucher.recipient or "Guest",
+                unifi_id=str(voucher.id),
             )
             for _ in range(repeat)
         )
@@ -447,4 +635,5 @@ def build_print_batch(
         source_path=Path("CONTROLLER_API"),
         vouchers=records,
         recipient=records[0].recipient if records else "",
+        site_id=str(site_id or "").strip(),
     )

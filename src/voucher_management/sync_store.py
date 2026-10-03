@@ -14,6 +14,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from .database import Database
+from .preparation_deletion import reconcile_preparation_delete_requests
+from .security_revocation import reconcile_pending_security_revocations
 from .unifi_api import ApiVoucher
 
 
@@ -24,6 +26,15 @@ class PersistedControllerSnapshot:
     controller_id: int
     controller_name: str
     observed_at: str
+    suspected_absence_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SnapshotAbsencePlan:
+    """Known vouchers omitted by a new list and those ready for direct GET."""
+
+    suspected_ids: tuple[str, ...]
+    confirmation_ids: tuple[str, ...]
 
 
 OBSERVED_FIELDS = (
@@ -31,6 +42,7 @@ OBSERVED_FIELDS = (
     "activated_at",
     "expires_at",
     "expired",
+    "expiry_observed",
     "present_on_controller",
 )
 
@@ -43,6 +55,67 @@ def _iso_from_epoch(value: int) -> str | None:
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
 
 
+def inspect_snapshot_absences(
+    database: Database,
+    *,
+    controller_id: int,
+    present_unifi_ids: set[str] | frozenset[str],
+) -> SnapshotAbsencePlan:
+    """Compare a list snapshot with durable presence without declaring absence.
+
+    The first omission is only a suspicion. A voucher becomes eligible for a
+    direct UUID check after at least one previous complete snapshot also omitted
+    it. Reappearance is handled by the normal upsert path and clears the
+    suspicion without producing an operator-visible historical event.
+    """
+
+    present = {
+        str(value).strip()
+        for value in present_unifi_ids
+        if str(value).strip()
+    }
+    rows = database.connection.execute(
+        """SELECT unifi_id, missing_observation_count
+           FROM vouchers
+           WHERE controller_id=?
+             AND archived_at IS NULL
+             AND present_on_controller=1
+           ORDER BY id""",
+        (int(controller_id),),
+    ).fetchall()
+    suspected: list[str] = []
+    confirmation: list[str] = []
+    for row in rows:
+        remote_id = str(row["unifi_id"] or "").strip()
+        if not remote_id or remote_id in present:
+            continue
+        suspected.append(remote_id)
+        if int(row["missing_observation_count"] or 0) >= 1:
+            confirmation.append(remote_id)
+    return SnapshotAbsencePlan(
+        suspected_ids=tuple(suspected),
+        confirmation_ids=tuple(confirmation),
+    )
+
+
+def inspect_snapshot_absences_to_path(
+    database_path: Path,
+    *,
+    controller_id: int,
+    present_unifi_ids: set[str] | frozenset[str],
+) -> SnapshotAbsencePlan:
+    database = Database(Path(database_path))
+    try:
+        database.initialize()
+        return inspect_snapshot_absences(
+            database,
+            controller_id=int(controller_id),
+            present_unifi_ids=present_unifi_ids,
+        )
+    finally:
+        database.close()
+
+
 def persist_successful_snapshot(
     database: Database,
     *,
@@ -50,6 +123,9 @@ def persist_successful_snapshot(
     vouchers: list[ApiVoucher],
     observed_at: str,
     sync_uuid: str | None = None,
+    application_created_ids: list[str] | tuple[str, ...] = (),
+    application_created_is_nominal: bool | None = None,
+    confirmed_absent_ids: set[str] | frozenset[str] | tuple[str, ...] = (),
 ) -> str:
     """Persist one complete successful UniFi voucher-list snapshot.
 
@@ -73,6 +149,11 @@ def persist_successful_snapshot(
 
     changes: list[tuple[int, str, object, object]] = []
     seen_remote_ids: set[str] = set()
+    confirmed_absent = {
+        str(value).strip()
+        for value in confirmed_absent_ids
+        if str(value).strip()
+    }
 
     with database.transaction() as tx:
         tx.execute(
@@ -108,12 +189,17 @@ def persist_successful_snapshot(
             if old is None:
                 continue
 
+            current_row = tx.execute(
+                """SELECT authorized_guest_count, activated_at, expires_at,
+                          expired, expiry_observed, present_on_controller
+                   FROM vouchers WHERE id=?""",
+                (voucher_id,),
+            ).fetchone()
+            if current_row is None:
+                raise RuntimeError("persisted voucher disappeared during snapshot")
             current = {
-                "authorized_guest_count": voucher.used,
-                "activated_at": _iso_from_epoch(voucher.start_time),
-                "expires_at": _iso_from_epoch(voucher.end_time),
-                "expired": int(voucher.status == "EXPIRED"),
-                "present_on_controller": 1,
+                field: current_row[field]
+                for field in OBSERVED_FIELDS
             }
             for field in OBSERVED_FIELDS:
                 old_value = old[field]
@@ -121,18 +207,89 @@ def persist_successful_snapshot(
                 if old_value != new_value:
                     changes.append((voucher_id, field, old_value, new_value))
 
-        # Absence is meaningful only because this function represents a
-        # complete successful list operation.
+        if application_created_ids:
+            if application_created_is_nominal is None:
+                raise ValueError(
+                    "application-created classification requires nominality"
+                )
+            database.mark_application_created_vouchers(
+                controller_id=controller_id,
+                unifi_ids=application_created_ids,
+                is_nominal=application_created_is_nominal,
+                aligned_at=observed_at,
+                connection=tx,
+            )
+
+        if confirmed_absent & seen_remote_ids:
+            raise ValueError(
+                "confirmed absent voucher is also present in the same snapshot"
+            )
+
+        # Missing list rows are not deletion facts. The first complete omission
+        # is recorded only as an internal suspicion. A later direct UUID GET
+        # must confirm 404 before present_on_controller changes to false.
         for remote_id, old in previous.items():
             if remote_id in seen_remote_ids or not old["present_on_controller"]:
                 continue
+            if remote_id in confirmed_absent:
+                tx.execute(
+                    """UPDATE vouchers
+                       SET present_on_controller=0,
+                           missing_observation_count=0,
+                           missing_since=NULL,
+                           last_synced_at=?
+                       WHERE id=?""",
+                    (observed_at, old["id"]),
+                )
+                changes.append((old["id"], "present_on_controller", 1, 0))
+
+                managed_intent = tx.execute(
+                    """SELECT 1
+                       FROM voucher_events
+                       WHERE voucher_id=?
+                         AND event_type IN (
+                             'PREPARATION_DELETE_REQUESTED',
+                             'SECURITY_REVOKE_REQUESTED'
+                         )
+                       LIMIT 1""",
+                    (old["id"],),
+                ).fetchone()
+                if managed_intent is None:
+                    tx.execute(
+                        """INSERT INTO voucher_events(
+                               event_uuid, voucher_id, event_type, occurred_at,
+                               source, windows_user, details_json
+                           ) VALUES (?, ?, 'CONTROLLER_DELETED', ?, 'UNIFI', NULL, ?)""",
+                        (
+                            str(uuid4()),
+                            old["id"],
+                            observed_at,
+                            Database.encode_event_details(
+                                {
+                                    "confirmation_source": "direct_uuid_not_found",
+                                    "operator_reason_available": False,
+                                }
+                            ),
+                        ),
+                    )
+                continue
+
+            previous_missing = int(
+                old.get("missing_observation_count", 0) or 0
+            )
             tx.execute(
                 """UPDATE vouchers
-                   SET present_on_controller=0, last_synced_at=?
+                   SET missing_observation_count=?,
+                       missing_since=COALESCE(missing_since, ?),
+                       last_synced_at=?
                    WHERE id=?""",
-                (observed_at, old["id"]),
+                (
+                    previous_missing + 1,
+                    observed_at,
+                    observed_at,
+                    old["id"],
+                ),
             )
-            changes.append((old["id"], "present_on_controller", 1, 0))
 
         for voucher_id, field, old_value, new_value in changes:
             tx.execute(
@@ -155,6 +312,24 @@ def persist_successful_snapshot(
                WHERE sync_uuid=?""",
             (len(changes), run_uuid),
         )
+        reconcile_preparation_delete_requests(
+            database,
+            controller_id=controller_id,
+            present_unifi_ids=seen_remote_ids,
+            confirmed_absent_ids=confirmed_absent,
+            observed_at=observed_at,
+            connection=tx,
+        )
+        reconcile_pending_security_revocations(
+            database,
+            controller_id=controller_id,
+            live_voucher_ids=seen_remote_ids,
+            confirmed_absent_ids=confirmed_absent,
+            observed_at=observed_at,
+            windows_user="SYSTEM",
+            connection=tx,
+        )
+
         tx.execute(
             """UPDATE controllers
                SET last_successful_sync_at=? WHERE id=?""",
@@ -173,13 +348,17 @@ def persist_connection_snapshot_to_path(
     site_name: str,
     vouchers: list[ApiVoucher],
     observed_at: str,
+    site_id: str = "",
 ) -> PersistedControllerSnapshot:
     """Persist connection identity/snapshot on a worker-owned SQLite handle."""
 
     database = Database(Path(database_path))
     try:
         database.initialize()
-        existing_id = database.find_controller_by_api_root(api_root)
+        existing_id = database.find_controller_by_identity(
+            api_root=api_root,
+            site_id=site_id,
+        )
         persisted_name = str(requested_name or "").strip()
         if not persisted_name and existing_id is not None:
             persisted_name = database.controller_name(existing_id) or ""
@@ -191,6 +370,17 @@ def persist_connection_snapshot_to_path(
             api_root=api_root,
             observed_at=observed_at,
             cert_sha256=cert_sha256,
+            site_id=site_id,
+        )
+        present_ids = frozenset(
+            str(voucher.id)
+            for voucher in vouchers
+            if str(getattr(voucher, "id", "") or "").strip()
+        )
+        absence_plan = inspect_snapshot_absences(
+            database,
+            controller_id=controller_id,
+            present_unifi_ids=present_ids,
         )
         persist_successful_snapshot(
             database,
@@ -202,6 +392,7 @@ def persist_connection_snapshot_to_path(
             controller_id=controller_id,
             controller_name=persisted_name,
             observed_at=observed_at,
+            suspected_absence_ids=absence_plan.suspected_ids,
         )
     finally:
         database.close()
@@ -213,6 +404,7 @@ def persist_refresh_snapshot_to_path(
     controller_id: int,
     vouchers: list[ApiVoucher],
     observed_at: str,
+    confirmed_absent_ids: set[str] | frozenset[str] | tuple[str, ...] = (),
 ) -> str:
     """Persist one refresh using a worker-owned SQLite connection."""
 
@@ -224,7 +416,80 @@ def persist_refresh_snapshot_to_path(
             controller_id=int(controller_id),
             vouchers=list(vouchers),
             observed_at=observed_at,
+            confirmed_absent_ids=confirmed_absent_ids,
         )
+    finally:
+        database.close()
+
+
+def persist_create_result_to_path(
+    database_path: Path,
+    *,
+    controller_id: int,
+    snapshot: list[ApiVoucher],
+    created: list[ApiVoucher],
+    snapshot_complete: bool,
+    snapshot_observed: bool,
+    is_nominal: bool,
+    observed_at: str,
+) -> None:
+    """Persist a create result without inventing controller facts.
+
+    A successful follow-up GET is a complete controller snapshot and can use the
+    normal synchronization path. If creation succeeded but that GET failed,
+    only the vouchers returned by the successful POST are upserted; absence of
+    any other voucher is deliberately not inferred.
+    """
+
+    database = Database(Path(database_path))
+    try:
+        database.initialize()
+        created_ids = [voucher.id for voucher in created]
+        if snapshot_complete:
+            persist_successful_snapshot(
+                database,
+                controller_id=int(controller_id),
+                vouchers=list(snapshot),
+                observed_at=observed_at,
+                application_created_ids=created_ids,
+                application_created_is_nominal=bool(is_nominal),
+            )
+        elif created:
+            # A stale-but-successful GET is useful positive evidence for rows it
+            # returned, but must not authoritatively mark omitted rows absent.
+            # A failed GET contributes no fresh rows beyond the confirmed POST.
+            partial_rows = list(snapshot) if snapshot_observed else list(created)
+            by_id = {voucher.id: voucher for voucher in partial_rows}
+            for voucher in created:
+                by_id[voucher.id] = voucher
+            with database.transaction() as tx:
+                for voucher in by_id.values():
+                    database.upsert_voucher(
+                        controller_id=int(controller_id),
+                        unifi_id=voucher.id,
+                        code=voucher.code,
+                        name=voucher.recipient,
+                        created_at=_iso_from_epoch(voucher.create_time),
+                        imported_at=observed_at,
+                        duration_minutes=voucher.duration_minutes,
+                        authorized_guest_limit=voucher.quota or None,
+                        authorized_guest_count=voucher.used,
+                        activated_at=_iso_from_epoch(voucher.start_time),
+                        expires_at=_iso_from_epoch(voucher.end_time),
+                        expired=voucher.status == "EXPIRED",
+                        data_limit_mb=voucher.data_mb,
+                        download_limit_kbps=voucher.down_kbps,
+                        upload_limit_kbps=voucher.up_kbps,
+                        last_synced_at=observed_at,
+                        connection=tx,
+                    )
+                database.mark_application_created_vouchers(
+                    controller_id=int(controller_id),
+                    unifi_ids=created_ids,
+                    is_nominal=bool(is_nominal),
+                    aligned_at=observed_at,
+                    connection=tx,
+                )
     finally:
         database.close()
 

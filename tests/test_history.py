@@ -31,6 +31,82 @@ def test_history_has_no_plaintext_code(tmp_path):
     assert hits["93256-35147"].recipient == "TEST01"
 
 
+def test_modern_history_distinguishes_reused_code_by_site_and_voucher_uuid(tmp_path):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    code = "12121-34343"
+    first = VoucherBatch(
+        tmp_path / "source-a.pdf",
+        [
+            VoucherRecord(
+                code,
+                duration_minutes=60,
+                recipient="First",
+                unifi_id="uuid-first",
+            )
+        ],
+        recipient="First",
+        site_id="site-a",
+    )
+    second = VoucherBatch(
+        tmp_path / "source-b.pdf",
+        [
+            VoucherRecord(
+                code,
+                duration_minutes=60,
+                recipient="Second",
+                unifi_id="uuid-second",
+            )
+        ],
+        recipient="Second",
+        site_id="site-a",
+    )
+
+    history.record_batch(
+        first,
+        tmp_path / "Voucher_First.pdf",
+        settings,
+        reprint=False,
+    )
+
+    assert code in history.find_duplicates_for_batch(first, settings)
+    assert history.find_duplicates_for_batch(second, settings) == {}
+
+    raw = history.history_path.read_text(encoding="utf-8")
+    assert code not in raw
+    assert "uuid-first" not in raw
+    assert "site-a" not in raw
+    assert '"voucher_ref":' in raw
+
+
+def test_pending_print_resolves_modern_uuid_identity_not_reused_code(tmp_path):
+    settings_store, history = make_history(tmp_path)
+    settings = settings_store.load()
+    code = "56565-78787"
+    output = tmp_path / "Voucher_Stable.pdf"
+    history.prepare_print_audit(
+        [code],
+        output,
+        1,
+        settings,
+        audit_id="a" * 32,
+        submitted_at="2026-10-02T08:00:00+00:00",
+        site_id="site-a",
+        unifi_ids=["uuid-correct"],
+    )
+
+    resolved = history.resolve_pending_print(
+        [code, code],
+        settings,
+        site_id="site-a",
+        candidate_unifi_ids=["uuid-other", "uuid-correct"],
+    )
+
+    assert resolved is not None
+    assert resolved.codes == (code,)
+    assert resolved.unifi_ids == ("uuid-correct",)
+
+
 def test_missing_local_key_is_recovered_and_new_events_are_counted(tmp_path):
     settings_store, history = make_history(tmp_path)
     settings = settings_store.load()

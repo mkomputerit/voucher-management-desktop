@@ -4,29 +4,241 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from .pdf_preview import PdfPreview
 from .report_render import render_report_csv, render_report_pdf
-from .reporting import ReportKind, build_report_dataset
+from .reporting import ReportKind, build_report_dataset_from_path
 
 
 REPORT_CHOICES = (
-    ("Riepilogo", ReportKind.SUMMARY),
-    ("Voucher utilizzati", ReportKind.USED),
-    ("Voucher scaduti", ReportKind.EXPIRED),
-    ("Stampati mai utilizzati", ReportKind.PRINTED_UNUSED),
+    ("Riepilogo storico", ReportKind.SUMMARY),
+    ("Creazione VM confermata", ReportKind.GENERATED),
+    ("Creazione VM confermata • mai osservati usati", ReportKind.GENERATED_UNUSED),
+    ("Utilizzati almeno una volta", ReportKind.USED),
+    ("Scaduti", ReportKind.EXPIRED),
+    ("Stampati", ReportKind.PRINTED),
+    ("Stampati senza uso positivo osservato", ReportKind.PRINTED_UNUSED),
     ("Mai stampati", ReportKind.NEVER_PRINTED),
+    ("Stato stampa non determinabile", ReportKind.PRINT_UNKNOWN),
+    ("Creati ma non stampati oltre soglia", ReportKind.UNPRINTED_WARNING),
+    ("Da revocare per sicurezza", ReportKind.SECURITY_REVIEW),
     ("Nominali", ReportKind.NOMINAL),
+    ("Non nominali", ReportKind.NON_NOMINAL),
+    ("Non classificati", ReportKind.UNCLASSIFIED),
+    ("Uso non determinabile", ReportKind.USAGE_UNKNOWN),
+    ("Origine creazione non determinabile", ReportKind.ORIGIN_UNKNOWN),
+    ("Nominalità rimossa per privacy", ReportKind.NOMINALITY_REDACTED),
+    ("Revocati per sicurezza", ReportKind.SECURITY_REVOKED),
+    ("Eliminati dalla controller", ReportKind.PREPARATION_DELETED),
     ("Storico completo", ReportKind.FULL_HISTORY),
 )
 REPORT_KIND_BY_LABEL = dict(REPORT_CHOICES)
+
+TECHNICAL_REPORT_KINDS = frozenset(
+    {
+        ReportKind.PRINT_UNKNOWN,
+        ReportKind.USAGE_UNKNOWN,
+        ReportKind.ORIGIN_UNKNOWN,
+        ReportKind.NOMINALITY_REDACTED,
+        ReportKind.FULL_HISTORY,
+    }
+)
+REPORT_OPERATIONAL_CHOICES = tuple(
+    (label, kind)
+    for label, kind in REPORT_CHOICES
+    if kind not in TECHNICAL_REPORT_KINDS
+)
+REPORT_TECHNICAL_CHOICES = tuple(
+    (label, kind)
+    for label, kind in REPORT_CHOICES
+    if kind in TECHNICAL_REPORT_KINDS
+)
+REPORT_LEVEL_OPERATIONAL = "Operativo / titolare"
+REPORT_LEVEL_TECHNICAL = "Audit / diagnostica tecnica"
+
+REPORT_GUIDE_CHOICES = (
+    (
+        "Panoramica dello storico locale",
+        ReportKind.SUMMARY,
+        "Usa il Riepilogo storico per una vista aggregata senza dettaglio voucher.",
+    ),
+    (
+        "Voucher creati dal software",
+        ReportKind.GENERATED,
+        "Mostra le creazioni confermate da Voucher Management nello storico locale.",
+    ),
+    (
+        "Voucher creati ma mai osservati usati",
+        ReportKind.GENERATED_UNUSED,
+        (
+            "Individua i voucher creati dal software per cui non è mai stata "
+            "osservata evidenza positiva di utilizzo."
+        ),
+    ),
+    (
+        "Voucher stampati ma senza uso osservato",
+        ReportKind.PRINTED_UNUSED,
+        (
+            "Serve per la revisione operativa dei voucher stampati che non "
+            "risultano mai osservati come utilizzati."
+        ),
+    ),
+    (
+        "Voucher creati ma non stampati oltre soglia",
+        ReportKind.UNPRINTED_WARNING,
+        "Mostra i candidati all'avviso operativo per mancata stampa.",
+    ),
+    (
+        "Voucher da rivedere per revoca di sicurezza",
+        ReportKind.SECURITY_REVIEW,
+        (
+            "Mostra i voucher stampati e mai usati che hanno superato la "
+            "soglia di sicurezza configurata."
+        ),
+    ),
+    (
+        "Controllare nominalità e classificazioni mancanti",
+        ReportKind.UNCLASSIFIED,
+        "Mostra i voucher che richiedono ancora una classificazione locale.",
+    ),
+    (
+        "Controllare dati non determinabili",
+        ReportKind.USAGE_UNKNOWN,
+        (
+            "Parte dai voucher con uso non determinabile; dal menu report puoi "
+            "poi scegliere anche origine o stato stampa non determinabili."
+        ),
+    ),
+    (
+        "Audit completo dello storico",
+        ReportKind.FULL_HISTORY,
+        (
+            "Usa lo Storico completo per la verifica amministrativa più ampia. "
+            "I codici restano nascosti salvo richiesta esplicita."
+        ),
+    ),
+)
+REPORT_GUIDE_KIND_BY_LABEL = {
+    label: kind for label, kind, _description in REPORT_GUIDE_CHOICES
+}
+REPORT_GUIDE_DESCRIPTION_BY_LABEL = {
+    label: description for label, _kind, description in REPORT_GUIDE_CHOICES
+}
+
+
+def report_label_for_kind(kind: ReportKind) -> str:
+    for label, candidate in REPORT_CHOICES:
+        if candidate is kind:
+            return label
+    return REPORT_CHOICES[0][0]
+
+
+def report_level_for_kind(kind: ReportKind | None) -> str:
+    return (
+        REPORT_LEVEL_TECHNICAL
+        if kind in TECHNICAL_REPORT_KINDS
+        else REPORT_LEVEL_OPERATIONAL
+    )
+
+
+def report_choices_for_level(level: str):
+    return (
+        REPORT_TECHNICAL_CHOICES
+        if level == REPORT_LEVEL_TECHNICAL
+        else REPORT_OPERATIONAL_CHOICES
+    )
+
+
+class ReportGuideDialog(tk.Toplevel):
+    """Guide the operator from a practical question to the right report."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title("Guida alla scelta del report")
+        self.transient(app)
+        self.grab_set()
+        self.resizable(False, False)
+
+        self.choice_var = tk.StringVar(value=REPORT_GUIDE_CHOICES[0][0])
+        self.description_var = tk.StringVar()
+
+        shell = ttk.Frame(self, padding=20)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(
+            shell,
+            text="Quale report ti serve?",
+            style="PageTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            shell,
+            text=(
+                "Scegli l'obiettivo: la guida apre il generatore con il report "
+                "più adatto già selezionato e nel corretto livello operativo o "
+                "tecnico. Potrai comunque cambiarli."
+            ),
+            style="Muted.TLabel",
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w", pady=(3, 16))
+
+        combo = ttk.Combobox(
+            shell,
+            textvariable=self.choice_var,
+            values=tuple(label for label, _kind, _desc in REPORT_GUIDE_CHOICES),
+            state="readonly",
+            width=58,
+        )
+        combo.pack(fill="x")
+        combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_description())
+
+        ttk.Label(
+            shell,
+            textvariable=self.description_var,
+            style="Muted.TLabel",
+            wraplength=620,
+            justify="left",
+        ).pack(anchor="w", pady=(14, 0))
+
+        actions = ttk.Frame(shell)
+        actions.pack(fill="x", pady=(22, 0))
+        ttk.Button(
+            actions,
+            text="Annulla",
+            command=self.destroy,
+        ).pack(side="right")
+        ttk.Button(
+            actions,
+            text="Apri questo report",
+            style="Accent.TButton",
+            command=self._open_report,
+        ).pack(side="right", padx=(0, 8))
+        self._sync_description()
+
+    def _sync_description(self) -> None:
+        self.description_var.set(
+            REPORT_GUIDE_DESCRIPTION_BY_LABEL.get(
+                self.choice_var.get(),
+                "",
+            )
+        )
+
+    def _open_report(self) -> None:
+        kind = REPORT_GUIDE_KIND_BY_LABEL.get(
+            self.choice_var.get(),
+            ReportKind.SUMMARY,
+        )
+        self.destroy()
+        ReportDialog(self.app, initial_kind=kind)
 
 
 class ReportDialog(tk.Toplevel):
     """Small operator-facing report export workflow."""
 
-    def __init__(self, app):
+    def __init__(self, app, *, initial_kind: ReportKind | None = None):
         super().__init__(app)
         self.app = app
         self.title("Report")
@@ -35,15 +247,17 @@ class ReportDialog(tk.Toplevel):
         self._busy = False
         self.protocol("WM_DELETE_WINDOW", self._close)
 
-        self.kind_var = tk.StringVar(value=REPORT_CHOICES[0][0])
-        self.scope_var = tk.StringVar(
-            value=(
-                "Controller attivo"
-                if getattr(app, "active_controller_id", None) is not None
-                else "Tutti i controller"
-            )
+        self.report_level_var = tk.StringVar(
+            value=report_level_for_kind(initial_kind)
         )
+        self.kind_var = tk.StringVar(
+            value=report_label_for_kind(initial_kind)
+            if initial_kind is not None
+            else REPORT_OPERATIONAL_CHOICES[0][0]
+        )
+        self.scope_var = tk.StringVar(value="Tutto lo storico locale")
         self.format_var = tk.StringVar(value="PDF")
+        self.include_codes_var = tk.BooleanVar(value=False)
 
         shell = ttk.Frame(self, padding=20)
         shell.pack(fill="both", expand=True)
@@ -55,8 +269,12 @@ class ReportDialog(tk.Toplevel):
         ttk.Label(
             shell,
             text=(
-                "I report amministrativi sono calcolati dallo storico SQLite "
-                "e non includono il codice voucher in chiaro."
+                "I report Operativi rispondono alle domande del titolare e "
+                "dell'operatore senza esporre dettagli tecnici non necessari. "
+                "Audit / diagnostica tecnica raccoglie invece qualità dati, UUID "
+                "e Storico completo. I codici voucher restano nascosti nei report "
+                "ordinari e sono disponibili nel Full Audit solo su richiesta "
+                "esplicita. Il Riepilogo storico contiene solo aggregati."
             ),
             style="Muted.TLabel",
             wraplength=520,
@@ -65,34 +283,57 @@ class ReportDialog(tk.Toplevel):
         grid = ttk.Frame(shell)
         grid.pack(fill="x")
 
-        ttk.Label(grid, text="Contenuto").grid(
+        ttk.Label(grid, text="Livello").grid(
             row=0, column=0, sticky="w", pady=7, padx=(0, 16)
+        )
+        self.report_level_combo = ttk.Combobox(
+            grid,
+            textvariable=self.report_level_var,
+            state="readonly",
+            values=(REPORT_LEVEL_OPERATIONAL, REPORT_LEVEL_TECHNICAL),
+            width=30,
+        )
+        self.report_level_combo.grid(row=0, column=1, sticky="ew", pady=7)
+        self.report_level_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._update_report_level(),
+        )
+
+        ttk.Label(grid, text="Contenuto").grid(
+            row=1, column=0, sticky="w", pady=7, padx=(0, 16)
         )
         self.kind_combo = ttk.Combobox(
             grid,
             textvariable=self.kind_var,
             state="readonly",
-            values=tuple(label for label, _kind in REPORT_CHOICES),
+            values=tuple(
+                label
+                for label, _kind in report_choices_for_level(
+                    self.report_level_var.get()
+                )
+            ),
             width=30,
         )
-        self.kind_combo.grid(row=0, column=1, sticky="ew", pady=7)
+        self.kind_combo.grid(row=1, column=1, sticky="ew", pady=7)
+        self.kind_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._update_code_option(),
+        )
 
         ttk.Label(grid, text="Ambito").grid(
-            row=1, column=0, sticky="w", pady=7, padx=(0, 16)
+            row=2, column=0, sticky="w", pady=7, padx=(0, 16)
         )
         self.scope_combo = ttk.Combobox(
             grid,
             textvariable=self.scope_var,
             state="readonly",
-            values=("Controller attivo", "Tutti i controller"),
+            values=("Tutto lo storico locale", "Controller attivo"),
             width=30,
         )
-        self.scope_combo.grid(row=1, column=1, sticky="ew", pady=7)
-        if getattr(app, "active_controller_id", None) is None:
-            self.scope_var.set("Tutti i controller")
+        self.scope_combo.grid(row=2, column=1, sticky="ew", pady=7)
 
         ttk.Label(grid, text="Formato").grid(
-            row=2, column=0, sticky="w", pady=7, padx=(0, 16)
+            row=3, column=0, sticky="w", pady=7, padx=(0, 16)
         )
         self.format_combo = ttk.Combobox(
             grid,
@@ -101,15 +342,29 @@ class ReportDialog(tk.Toplevel):
             values=("PDF", "CSV"),
             width=14,
         )
-        self.format_combo.grid(row=2, column=1, sticky="w", pady=7)
+        self.format_combo.grid(row=3, column=1, sticky="w", pady=7)
+
+        ttk.Label(grid, text="Codici voucher").grid(
+            row=4, column=0, sticky="w", pady=7, padx=(0, 16)
+        )
+        self.include_codes_check = ttk.Checkbutton(
+            grid,
+            text="Includi in chiaro nello Storico completo",
+            variable=self.include_codes_var,
+        )
+        self.include_codes_check.grid(row=4, column=1, sticky="w", pady=7)
 
         grid.columnconfigure(1, weight=1)
+        self._update_code_option()
 
         ttk.Label(
             shell,
             text=(
-                "Nota: “Utilizzi” indica il totale osservato dal controller. "
-                "Non viene presentato come ora esatta di utilizzo."
+                "Nota: “mai osservato utilizzato” descrive solo ciò che Voucher "
+                "Management ha visto fino all'ultima osservazione controller "
+                "riportata nel file. Se l'evidenza manca, il voucher resta in "
+                "“Uso non determinabile”. La nominalità è una classificazione "
+                "locale esplicita."
             ),
             style="Muted.TLabel",
             wraplength=520,
@@ -139,6 +394,30 @@ class ReportDialog(tk.Toplevel):
         self.geometry(f"{width}x{height}")
         self.resizable(True, False)
 
+    def _update_report_level(self) -> None:
+        """Keep owner reports and technical diagnostics visibly separated."""
+
+        choices = report_choices_for_level(self.report_level_var.get())
+        labels = tuple(label for label, _kind in choices)
+        self.kind_combo.configure(values=labels)
+        if self.kind_var.get() not in labels:
+            self.kind_var.set(labels[0])
+        self._update_code_option()
+
+    def _update_code_option(self) -> None:
+        """Expose clear-code export only for the explicit full-history report."""
+
+        allowed = (
+            REPORT_KIND_BY_LABEL.get(self.kind_var.get())
+            is ReportKind.FULL_HISTORY
+        )
+        if allowed and not self._busy:
+            self.include_codes_check.state(["!disabled"])
+        else:
+            self.include_codes_check.state(["disabled"])
+            if not allowed:
+                self.include_codes_var.set(False)
+
     def _close(self) -> None:
         """Do not destroy Tk widgets while a renderer callback is pending."""
 
@@ -155,15 +434,19 @@ class ReportDialog(tk.Toplevel):
         if busy:
             self.cancel_button.state(["disabled"])
             self.generate_button.state(["disabled"])
+            self.report_level_combo.state(["disabled"])
             self.kind_combo.state(["disabled"])
             self.scope_combo.state(["disabled"])
             self.format_combo.state(["disabled"])
+            self.include_codes_check.state(["disabled"])
         else:
             self.cancel_button.state(["!disabled"])
             self.generate_button.state(["!disabled"])
+            self.report_level_combo.state(["!disabled", "readonly"])
             self.kind_combo.state(["!disabled", "readonly"])
             self.scope_combo.state(["!disabled", "readonly"])
             self.format_combo.state(["!disabled", "readonly"])
+            self._update_code_option()
 
 
     def _generate(self) -> None:
@@ -174,61 +457,57 @@ class ReportDialog(tk.Toplevel):
             if controller_id is None:
                 messagebox.showinfo(
                     "Report",
-                    "Nessun controller attivo. Selezionare tutti i controller "
+                    "Nessun controller attivo. Usare “Tutto lo storico locale” "
                     "oppure connettersi a un controller.",
                     parent=self,
                 )
                 return
 
         generated_at = datetime.now(timezone.utc).isoformat()
-        try:
-            # SQLite connections stay on their owner Tk thread. Only the
-            # renderer runs in the worker below.
-            dataset = build_report_dataset(
-                self.app.database,
-                kind=kind,
-                generated_at=generated_at,
-                controller_id=controller_id,
-            )
-        except Exception as exc:
-            self.app.logger.error(
-                "report_dataset_failed type=%s",
-                type(exc).__name__,
-            )
-            messagebox.showerror(
-                "Report",
-                "Impossibile preparare i dati del report.",
-                parent=self,
-            )
-            return
-
+        include_codes = bool(
+            kind is ReportKind.FULL_HISTORY
+            and self.include_codes_var.get()
+        )
         extension = ".pdf" if self.format_var.get() == "PDF" else ".csv"
         timestamp = datetime.now().strftime("%Y%m%d-%H%M")
         safe_kind = kind.value.replace("_", "-")
-        target = filedialog.asksaveasfilename(
-            parent=self,
-            title="Salva report",
-            defaultextension=extension,
-            initialfile=f"Report-{safe_kind}-{timestamp}{extension}",
-            filetypes=(
-                ("Documento PDF", "*.pdf"),
-                ("CSV", "*.csv"),
-            )
-            if extension == ".pdf"
-            else (
-                ("CSV", "*.csv"),
-                ("Documento PDF", "*.pdf"),
-            ),
-        )
-        if not target:
-            return
+        suggested_name = f"Report-{safe_kind}-{timestamp}{extension}"
 
-        output = Path(target)
+        if extension == ".pdf":
+            temporary = tempfile.NamedTemporaryFile(
+                prefix="voucher-management-report-",
+                suffix=".pdf",
+                delete=False,
+            )
+            temporary.close()
+            output = Path(temporary.name)
+        else:
+            target = filedialog.asksaveasfilename(
+                parent=self,
+                title="Salva report CSV",
+                defaultextension=extension,
+                initialfile=suggested_name,
+                filetypes=(
+                    ("CSV", "*.csv"),
+                    ("Tutti i file", "*.*"),
+                ),
+            )
+            if not target:
+                return
+            output = Path(target)
         installation_name = str(
             self.app.settings.get("structure_name", "") or ""
         )
+        database_path = Path(self.app.paths.database)
 
         def worker():
+            dataset = build_report_dataset_from_path(
+                database_path,
+                kind=kind,
+                generated_at=generated_at,
+                controller_id=controller_id,
+                include_code_requested=include_codes,
+            )
             if extension == ".pdf":
                 render_report_pdf(
                     dataset,
@@ -240,17 +519,54 @@ class ReportDialog(tk.Toplevel):
             return output
 
         def completed(path: Path) -> None:
+            self._busy = False
+            if extension == ".pdf":
+                app = self.app
+                self.destroy()
+                try:
+                    PdfPreview(
+                        app,
+                        path,
+                        [],
+                        None,
+                        app.settings,
+                        allow_physical_print=True,
+                        report_mode=True,
+                        allow_save_copy=True,
+                        delete_on_close=True,
+                        preview_title="Anteprima report",
+                        preview_note=(
+                            "Controlla il report definitivo. Puoi salvarne una "
+                            "copia oppure inviarlo direttamente alla stampante."
+                        ),
+                        suggested_save_name=suggested_name,
+                    )
+                except Exception as exc:
+                    path.unlink(missing_ok=True)
+                    app.logger.error(
+                        "report_preview_open_failed type=%s",
+                        type(exc).__name__,
+                    )
+                    messagebox.showerror(
+                        "Report",
+                        "Il report è stato generato, ma l'anteprima non può "
+                        "essere aperta.",
+                        parent=app,
+                    )
+                return
+
             messagebox.showinfo(
                 "Report",
-                f"Report creato:\n{path}",
+                f"Report CSV creato:\n{path}",
                 parent=self,
             )
-            self._busy = False
             self.destroy()
 
         def failed(exc: Exception) -> None:
+            if extension == ".pdf":
+                output.unlink(missing_ok=True)
             self.app.logger.error(
-                "report_render_failed type=%s",
+                "report_generation_failed type=%s",
                 type(exc).__name__,
             )
             messagebox.showerror(
@@ -259,10 +575,12 @@ class ReportDialog(tk.Toplevel):
                 parent=self,
             )
 
-        self.app._run_background_task(
+        started = self.app._run_background_task(
             "Generazione report…",
             worker,
             completed,
             failed,
             busy_scope=self._set_busy,
         )
+        if not started and extension == ".pdf":
+            output.unlink(missing_ok=True)

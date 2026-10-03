@@ -11,11 +11,14 @@ The project follows these rules:
 - no authentication secrets in settings, logs, print history or backups;
 - voucher codes are not stored in clear text in `history.jsonl`;
 - no controller address in diagnostic logs;
-- non-idempotent voucher creation is protected by a crash-persistent
-  anti-repeat marker; uncertain POST outcomes are never replayed automatically;
+- non-idempotent voucher creation is protected by crash-persistent anti-repeat
+  and recovery markers; uncertain POST outcomes are never replayed
+  automatically and compatible later rows require an explicit operator
+  association decision;
 - destructive voucher deletion requires explicit confirmation;
-- vouchers are not deletable by the application after their first recorded
-  physical print;
+- ordinary preparation-error deletion is blocked after a verified physical
+  print; printed vouchers use the separate, fresh-GET security-revocation
+  workflow and retain their complete local history;
 - backup extraction rejects traversal paths and unsupported archive content;
 - custom logos are decoded only as PNG/JPEG and are bounded by file size,
   dimensions and pixel count before PDF rendering;
@@ -26,7 +29,7 @@ The project follows these rules:
 
 ## Authentication
 
-Voucher Management 5.0.0 uses the documented UniFi Network API and X-API-Key
+Voucher Management 5.1 uses the documented UniFi Network API and X-API-Key
 authentication.
 
 The API key is accepted only for the active connection. It is never persisted
@@ -54,13 +57,16 @@ explicit operator approval; declining leaves the previous pin unchanged.
 
 ## Voucher audit privacy
 
-`history.jsonl` does **not** store voucher codes in clear text. It stores
-HMAC-SHA-256 identifiers derived from the voucher code and the local history
-key in `data/history_secret.key`.
+`history.jsonl` does **not** store voucher codes in clear text. Legacy rows
+use HMAC-SHA-256 identifiers derived from the voucher code and the local history
+key in `data/history_secret.key`. New voucher-generation and physical-print
+rows additionally carry an HMAC correlation identifier derived from the
+verified Site UUID plus UniFi voucher UUID so future code reuse cannot merge two
+modern voucher identities.
 
-This HMAC design prevents casual disclosure from `history.jsonl` alone; it is
-not encryption of the voucher code. The voucher code space is small enough to
-be enumerable, and a backup intentionally carries the history key so audit
+These HMAC identifiers prevent casual disclosure from `history.jsonl` alone;
+they are not encryption. The voucher code space is small enough to be
+enumerable, and a backup intentionally carries the history key so audit
 correlation survives restore. Anyone who obtains both history and key should
 therefore be treated as having sensitive audit material.
 
@@ -99,11 +105,11 @@ The 5.0 deployment model therefore requires these compensating controls:
   container plus validated format/schema metadata, while failed rows keep no
   unverified digest/format/schema claims;
 - installed shared ProgramData deployment rebuilds the application-data ACL
-  from a clean inherited baseline, removes parent inheritance, grants access
-  only to SYSTEM, BUILTIN\Administrators and the dedicated Voucher Management
-  operator group, then verifies the resulting Allow ACEs recursively; stale
-  explicit grants to other principals cause installation to fail rather than
-  leaving the database broadly readable;
+  from a clean inherited baseline, removes parent inheritance, grants full
+  control to SYSTEM and BUILTIN\Administrators and modify rights to the
+  Windows built-in Users group (SID S-1-5-32-545), then verifies the resulting
+  Allow ACEs recursively; stale explicit grants to other principals cause
+  installation to fail rather than leaving the database broadly readable;
 - review-driven retention never touches used, physically printed or
   PDF-generated vouchers; eligible old/absent unused records with no generated
   PDF keep their historical row while reusable voucher codes and
@@ -155,28 +161,33 @@ Backups contain application-managed settings, audit data, the portable history
 key, generated PDFs and custom logos. They can therefore contain recipient
 labels and voucher codes in the generated PDFs.
 
-Voucher Management 5.0 uses the password-protected `.vmbk` container as its normal backup format.
-The logical ZIP snapshot is streamed directly into AES-256-GCM rather than
+Voucher Management 5.1 offers either the password-protected `.vmbk`
+container or an explicitly chosen readable ZIP for normal manual/shutdown
+backups; password protection is selected by default. The logical ZIP snapshot
+for a protected backup is streamed directly into AES-256-GCM rather than
 being written to a plaintext intermediate archive. The 256-bit AES key is derived
 from the operator password with Scrypt (random 16-byte salt, N=131072, r=8,
 p=1). The container header is authenticated as additional data. A wrong
 password or modified encrypted file fails authentication before restore staging
 or rollback creation begins. The password is never persisted.
 
-Unencrypted ZIP backups remain readable for backward compatibility. They are
-not the normal 5.0 backup output because the SQLite database contains reusable
-voucher codes in clear text; any legacy plaintext archive must still be treated
-as sensitive operational data. Encrypted backup validation and restore decrypt into an OS-managed
+Unencrypted ZIP backups remain supported both for compatibility and as an
+explicit operator choice. They contain the SQLite database with reusable voucher
+codes in clear text and must therefore be treated as sensitive operational
+data. Encrypted backup validation and restore decrypt into an OS-managed
 anonymous/auto-delete seekable temporary file because ZIP validation needs
 random access; no named decrypted ZIP is created below the application-data
 tree. Authentication/validation complete before live application data or the
 rollback state is changed.
 
 Backups never intentionally contain controller passwords or API keys. The
-transient `pending_create_guard` contains no controller/voucher data and is
-excluded from backups; backup creation and restore fail closed while that marker
-exists so an unresolved controller mutation cannot be forgotten by moving local
-state backwards.
+transient `pending_create_guard` is a fixed anti-repeat marker and
+`pending_create_intent.json` is a privacy-safe HMAC/UUID correlation marker;
+neither contains the API key, controller URL, voucher code or recipient
+plaintext. Backup creation and restore fail closed while an unresolved create
+intent exists so an uncertain controller mutation cannot be forgotten by moving
+local state backwards. A confirmed-create reporting marker is likewise treated
+as reconciliation state rather than credential material.
 
 Manual multi-workstation history exchange uses a separate encrypted `.vmhx`
 package. It carries audit rows plus the portable HMAC history identity so another
@@ -185,10 +196,12 @@ identity. The package never carries generated PDFs, logos, controller settings,
 API keys or TLS certificate trust. Import refuses identity mismatch behind
 existing history and blocks conflicting modern print-job identities.
 
-On restore, Voucher Management clears the saved controller API root and
-certificate fingerprint before the restored data becomes active. The operator
-must re-enter the API root and independently approve any self-signed certificate
-again; controller trust is never imported from a backup.
+On restore, Voucher Management clears the saved live controller API root, Site
+UUID setting and certificate fingerprint before the restored data becomes
+active. Historical controller/Site identity remains inside SQLite, but the
+operator must re-enter the live API root and independently approve any
+self-signed certificate again; controller trust is never imported from a
+backup.
 
 ## Repository policy
 
