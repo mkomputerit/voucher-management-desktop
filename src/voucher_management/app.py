@@ -579,6 +579,58 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         if on_success is not None:
             on_success(outcome.value)
 
+    def _finalize_voucher_operation_ui(
+        self,
+        *,
+        operation: str,
+        refresh_reports: bool = True,
+    ) -> bool:
+        """Apply the global post-operation UI invariant after a committed change.
+
+        Successful voucher operations always clear the shared Home/Voucher
+        selection and rebuild every local projection from durable facts plus the
+        current in-memory controller snapshot.  This is deliberately not a
+        controller synchronization.
+        """
+
+        self.checked_ids.clear()
+        try:
+            self.populate()
+            if refresh_reports:
+                refresh_report = getattr(
+                    self,
+                    "_refresh_report_summary",
+                    None,
+                )
+                if callable(refresh_report):
+                    refresh_report()
+            return True
+        except Exception as exc:
+            self.logger.warning(
+                "voucher_operation_ui_refresh_failed operation=%s type=%s",
+                str(operation or "unknown"),
+                type(exc).__name__,
+            )
+            # Even when the full rebuild fails, never leave the completed
+            # operation's previous blue selection armed in Home/Voucher.
+            try:
+                self._sync_selection_ui()
+            except Exception as selection_exc:
+                self.logger.warning(
+                    "voucher_operation_selection_clear_failed type=%s",
+                    type(selection_exc).__name__,
+                )
+            messagebox.showwarning(
+                "Operazione completata • interfaccia da aggiornare",
+                "L'operazione è stata completata e i dati sono stati salvati, "
+                "ma l'aggiornamento automatico dell'interfaccia non è riuscito "
+                "completamente. La selezione è stata azzerata. Riaprire la vista "
+                "interessata; usare Sincronizza solo se serve rileggere nuovi "
+                "dati dalla controller UniFi.",
+                parent=self,
+            )
+            return False
+
     def _run_network_task(
         self,
         label: str,
