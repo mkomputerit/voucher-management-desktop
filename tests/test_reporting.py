@@ -250,7 +250,7 @@ def test_used_is_monotonic_even_if_latest_controller_count_returns_zero(tmp_path
         dataset = build_report_dataset(db, kind=ReportKind.USED, generated_at=NOW)
         assert [row.voucher_id for row in dataset.rows] == [voucher_id]
         assert dataset.rows[0].ever_used is True
-        assert dataset.rows[0].authorized_guest_count == 0
+        assert dataset.rows[0].authorized_guest_count == 2
     finally:
         db.close()
 
