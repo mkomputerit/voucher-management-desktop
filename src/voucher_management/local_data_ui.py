@@ -88,6 +88,12 @@ def voucher_action_states(app) -> dict[str, bool]:
     states["nominality"] = local_metadata_ready
     states["notes"] = local_metadata_ready and len(selected) == 1
 
+    if any(
+        str(getattr(voucher, "status", "") or "").strip().upper() == "EXPIRED"
+        for voucher in selected
+    ):
+        return states
+
     controller_id = getattr(app, "active_controller_id", None)
     database = getattr(app, "database", None)
     if controller_id is None or database is None:
