@@ -235,7 +235,6 @@ class VoucherDeletionMixin:
         cached = list(self.vouchers)
 
         def completed(outcome) -> None:
-            self.checked_ids.clear()
             self.vouchers = list(outcome.vouchers)
             self.controller_snapshot_live = bool(
                 outcome.refresh_error is None
@@ -259,7 +258,9 @@ class VoucherDeletionMixin:
                 callback = getattr(self, "_controller_operation_succeeded", None)
                 if callback is not None:
                     callback()
-            self.populate()
+            ui_refreshed = self._finalize_voucher_operation_ui(
+                operation="ordinary_delete",
+            )
 
             if outcome.refresh_error is not None:
                 messagebox.showwarning(
@@ -297,9 +298,12 @@ class VoucherDeletionMixin:
                 )
                 return
 
+            if not ui_refreshed:
+                return
             messagebox.showinfo(
                 "Eliminazione",
-                f"Eliminati {len(current)} voucher dal server UniFi.",
+                f"Eliminati {len(current)} voucher dal server UniFi. "
+                "Le viste sono state aggiornate automaticamente.",
                 parent=self,
             )
 
