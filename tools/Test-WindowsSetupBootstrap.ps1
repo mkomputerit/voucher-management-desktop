@@ -15,8 +15,7 @@ $token = [Guid]::NewGuid().ToString("N")
 $root = Join-Path $env:RUNNER_TEMP ("voucher-management-setup-test-" + $token)
 $installRoot = Join-Path $env:ProgramFiles ("Voucher Management Setup Test-" + $token)
 $dataRoot = Join-Path $env:ProgramData ("VoucherManagementSetupTest-" + $token)
-$groupName = "VMSetup-" + $token.Substring(0, 12)
-$operatorUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$builtinUsersSid = "S-1-5-32-545"
 
 function Get-AllowRightsBySid {
     param([string]$Path)
@@ -49,8 +48,6 @@ try {
         '"/quiet"',
         ('"/InstallRoot={0}"' -f $installRoot),
         ('"/DataRoot={0}"' -f $dataRoot),
-        ('"/OperatorGroup={0}"' -f $groupName),
-        ('"/OperatorUser={0}"' -f $operatorUser),
         ('"/LogPath={0}"' -f $logPath),
         '"/SkipShortcut"'
     ) -join " "
@@ -83,6 +80,12 @@ try {
     }
     if ([IO.Path]::GetFullPath([string]$marker.data_root) -ine [IO.Path]::GetFullPath($dataRoot)) {
         throw "Il Setup non ha registrato il DataRoot installato nel marker."
+    }
+    if ([string]$marker.access_model -ne "builtin_users_modify" -or [string]$marker.access_sid -ne $builtinUsersSid) {
+        throw "Il Setup non ha registrato il modello di accesso condiviso Windows."
+    }
+    if ($marker.operator_group_sid -or $marker.operator_group_name) {
+        throw "Il Setup non deve creare o registrare gruppi applicativi dedicati."
     }
 
     $uninstallExe = Join-Path $installRoot "VoucherManagement-Uninstall.exe"
@@ -120,13 +123,6 @@ try {
         throw "VoucherManagement.exe installato non corrisponde al checksum del payload."
     }
 
-    $group = Get-LocalGroup -Name $groupName
-    if ([string]$marker.operator_group_sid -ine [string]$group.SID.Value) {
-        throw "Il Setup non ha registrato il SID del gruppo operatori nel marker."
-    }
-    if ([string]$marker.operator_group_name -ine [string]$group.Name) {
-        throw "Il Setup non ha registrato il nome del gruppo operatori nel marker."
-    }
     $aclState = Get-AllowRightsBySid -Path $dataRoot
     if (-not $aclState.Protected) {
         throw "ACL ProgramData non protetta dopo Setup.exe."
@@ -136,23 +132,22 @@ try {
             throw "Setup.exe ha lasciato un SID vietato nelle ACL: $forbiddenSid"
         }
     }
-    if (-not $aclState.Rights.ContainsKey($group.SID.Value)) {
-        throw "Gruppo operatori assente dalle ACL dopo Setup.exe."
+    if (-not $aclState.Rights.ContainsKey($builtinUsersSid)) {
+        throw "Gruppo built-in Users assente dalle ACL dopo Setup.exe."
     }
     $modify = [Security.AccessControl.FileSystemRights]::Modify
-    if (($aclState.Rights[$group.SID.Value] -band $modify) -ne $modify) {
-        throw "Permessi gruppo operatori insufficienti dopo Setup.exe."
+    if (($aclState.Rights[$builtinUsersSid] -band $modify) -ne $modify) {
+        throw "Permessi Users insufficienti dopo Setup.exe."
     }
 
-    # Re-run the real Setup without repeating DataRoot/OperatorGroup.
-    # Upgrade logic must preserve the installed deployment choices.
+    # Re-run the real Setup without repeating DataRoot. The marker must preserve
+    # the custom ProgramData child and the standard built-in Users access model.
     $upgradeSentinel = Join-Path $dataRoot "setup-upgrade-preserves-data.txt"
     Set-Content -LiteralPath $upgradeSentinel -Value "preserve" -Encoding ascii
     $upgradeLogPath = Join-Path $root "setup-upgrade-diagnostic.log"
     $upgradeArguments = @(
         '"/quiet"',
         ('"/InstallRoot={0}"' -f $installRoot),
-        ('"/OperatorUser={0}"' -f $operatorUser),
         ('"/LogPath={0}"' -f $upgradeLogPath),
         '"/SkipShortcut"'
     ) -join " "
@@ -170,11 +165,8 @@ try {
     if ([IO.Path]::GetFullPath([string]$upgradedMarker.data_root) -ine [IO.Path]::GetFullPath($dataRoot)) {
         throw "Il Setup upgrade ha cambiato il DataRoot installato."
     }
-    if (
-        [string]$upgradedMarker.operator_group_sid -ine [string]$group.SID.Value -or
-        [string]$upgradedMarker.operator_group_name -ine [string]$group.Name
-    ) {
-        throw "Il Setup upgrade ha cambiato l'identità del gruppo operatori."
+    if ([string]$upgradedMarker.access_sid -ne $builtinUsersSid) {
+        throw "Il Setup upgrade ha perso il modello di accesso Users."
     }
 
     $uninstaller = Join-Path $installRoot "Uninstall-VoucherManagement.ps1"
@@ -194,9 +186,6 @@ try {
     if (Test-Path -LiteralPath $dataRoot) {
         throw "La pulizia di test non ha rimosso ProgramData."
     }
-    if (Get-LocalGroup -Name $groupName -ErrorAction SilentlyContinue) {
-        throw "La pulizia di test non ha rimosso il gruppo operatori."
-    }
     if (Test-Path -LiteralPath $uninstallRegistryPath) {
         throw "La disinstallazione non ha rimosso la voce da App installate."
     }
@@ -208,7 +197,4 @@ finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $dataRoot -Recurse -Force -ErrorAction SilentlyContinue
-    if (Get-LocalGroup -Name $groupName -ErrorAction SilentlyContinue) {
-        Remove-LocalGroup -Name $groupName -ErrorAction SilentlyContinue
-    }
 }
