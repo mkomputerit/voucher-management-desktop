@@ -200,8 +200,6 @@ class LocalMetadataSelectionDialog(tk.Toplevel):
         self.title(title)
         self.transient(app)
         self.grab_set()
-        self.geometry("820x500")
-        self.minsize(700, 420)
 
         shell = ttk.Frame(self, padding=18)
         shell.pack(fill="both", expand=True)
@@ -235,7 +233,6 @@ class LocalMetadataSelectionDialog(tk.Toplevel):
         self.tree.column("voucher", width=180)
         self.tree.column("description", width=380)
         self.tree.column("status", width=140, anchor="center")
-        self.tree.pack(fill="both", expand=True)
 
         preselected = {
             str(value)
@@ -268,7 +265,7 @@ class LocalMetadataSelectionDialog(tk.Toplevel):
                 self.tree.focus(selected_iids[0])
 
         actions = ttk.Frame(shell)
-        actions.pack(fill="x", pady=(12, 0))
+        actions.pack(side="bottom", fill="x", pady=(12, 0))
         ttk.Button(
             actions,
             text="Annulla",
@@ -280,6 +277,15 @@ class LocalMetadataSelectionDialog(tk.Toplevel):
             style="Accent.TButton",
             command=self._accept,
         ).pack(side="right", padx=(0, 8))
+
+        self.tree.pack(fill="both", expand=True)
+        fit_toplevel_to_content(
+            self,
+            preferred_width=820,
+            preferred_height=500,
+            min_width=700,
+            min_height=420,
+        )
 
         self.bind("<Escape>", lambda _event: self.destroy())
         self.protocol("WM_DELETE_WINDOW", self.destroy)
