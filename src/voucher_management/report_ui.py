@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from .pdf_preview import PdfPreview
 from .report_render import render_report_csv, render_report_pdf
 from .reporting import ReportKind, build_report_dataset_from_path
 
@@ -233,25 +235,30 @@ class ReportDialog(tk.Toplevel):
         extension = ".pdf" if self.format_var.get() == "PDF" else ".csv"
         timestamp = datetime.now().strftime("%Y%m%d-%H%M")
         safe_kind = kind.value.replace("_", "-")
-        target = filedialog.asksaveasfilename(
-            parent=self,
-            title="Salva report",
-            defaultextension=extension,
-            initialfile=f"Report-{safe_kind}-{timestamp}{extension}",
-            filetypes=(
-                ("Documento PDF", "*.pdf"),
-                ("CSV", "*.csv"),
-            )
-            if extension == ".pdf"
-            else (
-                ("CSV", "*.csv"),
-                ("Documento PDF", "*.pdf"),
-            ),
-        )
-        if not target:
-            return
+        suggested_name = f"Report-{safe_kind}-{timestamp}{extension}"
 
-        output = Path(target)
+        if extension == ".pdf":
+            temporary = tempfile.NamedTemporaryFile(
+                prefix="voucher-management-report-",
+                suffix=".pdf",
+                delete=False,
+            )
+            temporary.close()
+            output = Path(temporary.name)
+        else:
+            target = filedialog.asksaveasfilename(
+                parent=self,
+                title="Salva report CSV",
+                defaultextension=extension,
+                initialfile=suggested_name,
+                filetypes=(
+                    ("CSV", "*.csv"),
+                    ("Tutti i file", "*.*"),
+                ),
+            )
+            if not target:
+                return
+            output = Path(target)
         installation_name = str(
             self.app.settings.get("structure_name", "") or ""
         )
@@ -276,15 +283,52 @@ class ReportDialog(tk.Toplevel):
             return output
 
         def completed(path: Path) -> None:
+            self._busy = False
+            if extension == ".pdf":
+                app = self.app
+                self.destroy()
+                try:
+                    PdfPreview(
+                        app,
+                        path,
+                        [],
+                        None,
+                        app.settings,
+                        allow_physical_print=True,
+                        report_mode=True,
+                        allow_save_copy=True,
+                        delete_on_close=True,
+                        preview_title="Anteprima report",
+                        preview_note=(
+                            "Controlla il report definitivo. Puoi salvarne una "
+                            "copia oppure inviarlo direttamente alla stampante."
+                        ),
+                        suggested_save_name=suggested_name,
+                    )
+                except Exception as exc:
+                    path.unlink(missing_ok=True)
+                    app.logger.error(
+                        "report_preview_open_failed type=%s",
+                        type(exc).__name__,
+                    )
+                    messagebox.showerror(
+                        "Report",
+                        "Il report è stato generato, ma l'anteprima non può "
+                        "essere aperta.",
+                        parent=app,
+                    )
+                return
+
             messagebox.showinfo(
                 "Report",
-                f"Report creato:\n{path}",
+                f"Report CSV creato:\n{path}",
                 parent=self,
             )
-            self._busy = False
             self.destroy()
 
         def failed(exc: Exception) -> None:
+            if extension == ".pdf":
+                output.unlink(missing_ok=True)
             self.app.logger.error(
                 "report_generation_failed type=%s",
                 type(exc).__name__,
