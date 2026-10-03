@@ -405,6 +405,15 @@ class ControllerConnectionMixin:
             if callable(recovery):
                 recovery(snapshot)
 
+        if snapshot_authoritative and archive_error is None:
+            reconcile_legacy = getattr(
+                self,
+                "offer_legacy_reconciliation_after_sync",
+                None,
+            )
+            if callable(reconcile_legacy):
+                reconcile_legacy()
+
         self.logger.info(
             "controller_api_connected network_version=%s tls_pinned=%s "
             "snapshot_persisted_off_ui=%s snapshot_authoritative=%s",
