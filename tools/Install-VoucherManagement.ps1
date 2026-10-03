@@ -149,11 +149,6 @@ function Set-SharedDataAcl {
         throw "Reset ACL ProgramData non riuscito."
     }
 
-    & icacls.exe $Path /inheritance:r /T /C | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Disattivazione ereditarietà ACL ProgramData non riuscita."
-    }
-
     $rules = @(
         "*S-1-5-18:(OI)(CI)F",
         "*S-1-5-32-544:(OI)(CI)F",
@@ -164,6 +159,14 @@ function Set-SharedDataAcl {
         if ($LASTEXITCODE -ne 0) {
             throw "Configurazione ACL ProgramData non riuscita per: $rule"
         }
+    }
+
+    # Remove inherited ACEs only after all required explicit grants exist.
+    # This avoids a transient state where the elevated installer could lose
+    # access to existing descendants while normalizing an older data tree.
+    & icacls.exe $Path /inheritance:r /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Disattivazione ereditarietà ACL ProgramData non riuscita."
     }
 
     $allowedSids = @(
