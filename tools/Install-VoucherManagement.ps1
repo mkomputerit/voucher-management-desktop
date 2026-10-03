@@ -174,7 +174,7 @@ function Set-SharedDataAcl {
     $requiredRights = @{
         "S-1-5-18" = [Security.AccessControl.FileSystemRights]::FullControl
         "S-1-5-32-544" = [Security.AccessControl.FileSystemRights]::FullControl
-        $script:BuiltinUsersSid = [Security.AccessControl.FileSystemRights]::Modify
+        "S-1-5-32-545" = [Security.AccessControl.FileSystemRights]::Modify
     }
     $items = @((Get-Item -LiteralPath $Path)) + @(
         Get-ChildItem -LiteralPath $Path -Force -Recurse
