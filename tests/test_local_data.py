@@ -17,6 +17,7 @@ from voucher_management.local_data_ui import (
     _local_ids,
     local_data_selection_candidates,
     selected_workspace_vouchers,
+    voucher_action_states,
 )
 
 
@@ -318,25 +319,22 @@ def test_local_metadata_candidates_include_expired_rows():
     ) == (active, expired)
 
 
-def test_nominality_action_uses_independent_selector_and_allows_multiple(monkeypatch):
-    active = SimpleNamespace(id="active", status="VALID_MULTI")
-    expired = SimpleNamespace(id="expired", status="EXPIRED")
+def test_nominality_action_uses_workspace_selection_without_second_selector(
+    monkeypatch,
+):
+    one = SimpleNamespace(id="one", status="VALID_MULTI")
+    two = SimpleNamespace(id="two", status="VALID_MULTI")
     app = _LocalDataHarness()
-    app.checked_ids = {"active"}
-    app.vouchers = (active, expired)
+    app.checked_ids = {"one", "two"}
+    app.vouchers = (one, two)
 
-    selections = []
     opened = []
-
-    class Selector:
-        def __init__(self, app_obj, candidates, *, title, multiple):
-            selections.append((tuple(candidates), title, multiple))
-            self.result = (active, expired)
-
     monkeypatch.setattr(
         local_data_ui,
         "LocalMetadataSelectionDialog",
-        Selector,
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("workspace actions must not open a second selector")
+        ),
     )
     monkeypatch.setattr(
         local_data_ui,
@@ -346,32 +344,24 @@ def test_nominality_action_uses_independent_selector_and_allows_multiple(monkeyp
 
     app.edit_selected_nominality()
 
-    assert selections == [
-        ((active, expired), "Nominalità voucher", True)
-    ]
     assert len(opened) == 1
-    assert opened[0][0][1] == (active, expired)
+    assert opened[0][0][1] == (one, two)
 
 
-def test_notes_action_uses_independent_single_selector(monkeypatch):
-    active = SimpleNamespace(id="active", status="VALID_MULTI")
-    expired = SimpleNamespace(id="expired", status="EXPIRED")
+def test_notes_action_uses_single_workspace_selection(monkeypatch):
+    one = SimpleNamespace(id="one", status="VALID_MULTI")
+    two = SimpleNamespace(id="two", status="VALID_MULTI")
     app = _LocalDataHarness()
-    app.checked_ids = {"active"}
-    app.vouchers = (active, expired)
+    app.checked_ids = {"two"}
+    app.vouchers = (one, two)
 
-    selections = []
     opened = []
-
-    class Selector:
-        def __init__(self, app_obj, candidates, *, title, multiple):
-            selections.append((tuple(candidates), title, multiple))
-            self.result = (expired,)
-
     monkeypatch.setattr(
         local_data_ui,
         "LocalMetadataSelectionDialog",
-        Selector,
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("workspace actions must not open a second selector")
+        ),
     )
     monkeypatch.setattr(
         local_data_ui,
@@ -381,11 +371,35 @@ def test_notes_action_uses_independent_single_selector(monkeypatch):
 
     app.edit_selected_notes()
 
-    assert selections == [
-        ((active, expired), "Note voucher", False)
-    ]
     assert len(opened) == 1
-    assert opened[0][0][1] == (expired,)
+    assert opened[0][0][1] == (two,)
+
+
+def test_notes_action_rejects_workspace_multiselection(monkeypatch):
+    one = SimpleNamespace(id="one", status="VALID_MULTI")
+    two = SimpleNamespace(id="two", status="VALID_MULTI")
+    app = _LocalDataHarness()
+    app.checked_ids = {"one", "two"}
+    app.vouchers = (one, two)
+
+    messages = []
+    monkeypatch.setattr(
+        local_data_ui.messagebox,
+        "showinfo",
+        lambda title, message, parent=None: messages.append((title, message)),
+    )
+    monkeypatch.setattr(
+        local_data_ui,
+        "NotesDialog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("notes dialog must not open for multiselection")
+        ),
+    )
+
+    app.edit_selected_notes()
+
+    assert messages
+    assert "un solo voucher" in messages[0][1]
 
 
 
@@ -428,3 +442,86 @@ def test_local_ids_fail_closed_for_foreign_or_missing_unifi_uuid(tmp_path):
             _local_ids(app, (SimpleNamespace(id="missing"),))
     finally:
         db.close()
+
+
+
+def test_dynamic_voucher_action_states_follow_workspace_selection(monkeypatch, tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        _voucher(db, controller, "remote-a", "1111122222")
+        _voucher(db, controller, "remote-b", "3333344444")
+        one = SimpleNamespace(id="remote-a", status="VALID_MULTI")
+        two = SimpleNamespace(id="remote-b", status="VALID_MULTI")
+        app = SimpleNamespace(
+            active_controller_id=controller,
+            database=db,
+            checked_ids={"remote-a"},
+            vouchers=(one, two),
+        )
+        monkeypatch.setattr(
+            local_data_ui,
+            "alignment_candidates",
+            lambda *args, **kwargs: (
+                SimpleNamespace(unifi_id="remote-a"),
+                SimpleNamespace(unifi_id="remote-b"),
+            ),
+        )
+
+        assert voucher_action_states(app) == {
+            "align": True,
+            "nominality": True,
+            "notes": True,
+        }
+
+        app.checked_ids = {"remote-a", "remote-b"}
+        assert voucher_action_states(app) == {
+            "align": True,
+            "nominality": True,
+            "notes": False,
+        }
+
+        monkeypatch.setattr(
+            local_data_ui,
+            "alignment_candidates",
+            lambda *args, **kwargs: (
+                SimpleNamespace(unifi_id="remote-a"),
+            ),
+        )
+        assert voucher_action_states(app) == {
+            "align": False,
+            "nominality": True,
+            "notes": False,
+        }
+    finally:
+        db.close()
+
+
+def test_align_action_passes_workspace_selection_to_dialog(monkeypatch):
+    one = SimpleNamespace(id="remote-a", status="VALID_MULTI")
+    two = SimpleNamespace(id="remote-b", status="VALID_MULTI")
+    app = _LocalDataHarness()
+    app.active_controller_id = 7
+    app.database = object()
+    app.checked_ids = {"remote-a", "remote-b"}
+    app.vouchers = (one, two)
+
+    opened = []
+    monkeypatch.setattr(
+        local_data_ui,
+        "voucher_action_states",
+        lambda _app: {
+            "align": True,
+            "nominality": True,
+            "notes": False,
+        },
+    )
+    monkeypatch.setattr(
+        local_data_ui,
+        "AlignmentDialog",
+        lambda *args, **kwargs: opened.append((args, kwargs)),
+    )
+
+    app.align_pending_vouchers()
+
+    assert len(opened) == 1
+    assert opened[0][1]["target_unifi_ids"] == ("remote-a", "remote-b")
