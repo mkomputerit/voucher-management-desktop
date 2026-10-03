@@ -182,13 +182,14 @@ as a fallback:
 ```
 
 Managed installation copies the application to
-`Program Files\Voucher Management`, creates the local
-`Voucher Management Operators` group, authorizes the interactive Windows
-user, creates `ProgramData\VoucherManagement` with restrictive ACLs, writes
-the shared-deployment marker and creates a Start Menu shortcut. Updates are
-staged before replacing the previous application directory, so a preparation
-failure does not remove the installed version. If the user was newly added to
-the group, sign out and sign in again before the first launch.
+`Program Files\Voucher Management` and stores the shared application data in
+`ProgramData\VoucherManagement`. The data ACL is rebuilt explicitly for
+SYSTEM and BUILTIN\Administrators with full control and the Windows built-in
+Users group with modify rights, so local Windows users can work on the same
+archive without per-user enrollment or an application-specific local group.
+The installer writes the shared-deployment marker and creates a Start Menu
+shortcut. Updates are staged before replacing the previous application
+directory, so a preparation failure does not remove the installed version.
 
 Installed mode uses one shared SQLite database and one machine-wide application
 guard across Fast User Switching sessions. Existing per-user data is not
@@ -197,13 +198,12 @@ offers an explicit migration that creates and verifies an encrypted safety
 backup, transfers the old LocalAppData tree through the normal restore path and
 leaves the original per-user data unchanged.
 
-The Setup is a self-contained EXE bootstrapper rather than an MSI and does not
-currently register itself in Windows "Installed apps". Removal is performed with
-the bundled administrative script. To remove the deployed program while
-preserving shared data, run `Uninstall-VoucherManagement.ps1` from an elevated
-PowerShell prompt. Pass
-`-RemoveData` only when the shared ProgramData archive and local operator group
-should also be deleted.
+The Setup is a self-contained elevated EXE bootstrapper rather than an MSI and
+registers Voucher Management in Windows "Installed apps" with its elevated
+uninstaller. The bundled administrative script remains available for controlled
+maintenance. By default uninstall preserves the shared ProgramData archive;
+choose the explicit data-removal option only when the shared archive should also
+be deleted.
 
 Removing a portable folder or the installed program does not by itself delete
 retained application data.
