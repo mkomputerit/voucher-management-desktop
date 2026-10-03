@@ -35,7 +35,7 @@ from .operational_alerts import (
 from .operational_alerts_ui import OperationalAlertsMixin
 from .pdf_render import VOUCHERS_PER_PAGE
 from .print_archive import DEFAULT_PRINT_RETENTION_DAYS
-from .report_ui import ReportDialog
+from .report_ui import ReportDialog, ReportGuideDialog
 from .reporting import ReportKind, build_report_dataset_from_path
 from .security_revocation import (
     security_revocation_candidates,
@@ -1252,6 +1252,7 @@ class ModernVoucherApp(
             self.print_button,
             self.open_pdf_button,
             self.report_button,
+            self.report_guide_button,
         ]
         self._search_after = None
         self._show_workspace("home")
@@ -1784,13 +1785,21 @@ class ModernVoucherApp(
             style="Muted.TLabel",
             wraplength=720,
         ).grid(row=1, column=0, sticky="w", pady=(3, 12))
-        self.report_button = ttk.Button(
-            actions,
-            text="Crea / esporta report…",
-            command=lambda: ReportDialog(self),
+        report_actions = ttk.Frame(actions)
+        report_actions.grid(row=2, column=0, sticky="w")
+        self.report_guide_button = ttk.Button(
+            report_actions,
+            text="Guida alla scelta…",
+            command=lambda: ReportGuideDialog(self),
             style="Accent.TButton",
         )
-        self.report_button.grid(row=2, column=0, sticky="w")
+        self.report_guide_button.pack(side="left")
+        self.report_button = ttk.Button(
+            report_actions,
+            text="Crea report direttamente…",
+            command=lambda: ReportDialog(self),
+        )
+        self.report_button.pack(side="left", padx=(8, 0))
 
         privacy = ttk.Labelframe(
             frame,
