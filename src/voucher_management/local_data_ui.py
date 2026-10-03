@@ -60,6 +60,63 @@ def local_data_selection_candidates(vouchers) -> tuple:
     return tuple(vouchers)
 
 
+def voucher_action_states(app) -> dict[str, bool]:
+    """Return fail-closed availability for the Voucher action menu.
+
+    The blue workspace selection is the single source of truth. Local metadata
+    remains editable when permitted by its own backend rules; alignment is
+    enabled only when every selected voucher is currently an alignment
+    candidate, so mixed selections cannot produce a partial alignment.
+    """
+
+    selected = selected_workspace_vouchers(app)
+    states = {
+        "align": False,
+        "nominality": False,
+        "notes": False,
+    }
+    if not selected:
+        return states
+
+    try:
+        _local_ids(app, selected)
+    except (RuntimeError, ValueError, TypeError):
+        local_metadata_ready = False
+    else:
+        local_metadata_ready = True
+
+    states["nominality"] = local_metadata_ready
+    states["notes"] = local_metadata_ready and len(selected) == 1
+
+    controller_id = getattr(app, "active_controller_id", None)
+    database = getattr(app, "database", None)
+    if controller_id is None or database is None:
+        return states
+
+    try:
+        pending = alignment_candidates(
+            database,
+            controller_id=int(controller_id),
+            present_only=True,
+        )
+    except Exception:
+        return states
+
+    selected_remote_ids = {
+        str(getattr(voucher, "id", "") or "").strip()
+        for voucher in selected
+    }
+    selected_remote_ids.discard("")
+    pending_remote_ids = {
+        str(getattr(item, "unifi_id", "") or "").strip()
+        for item in pending
+    }
+    states["align"] = bool(selected_remote_ids) and (
+        selected_remote_ids <= pending_remote_ids
+    )
+    return states
+
+
 def _local_ids(app, vouchers) -> tuple[int, ...]:
     """Resolve live UniFi UUIDs to local SQLite voucher primary keys.
 
@@ -478,9 +535,14 @@ class NotesDialog(tk.Toplevel):
 class AlignmentDialog(tk.Toplevel):
     """Align vouchers discovered on UniFi without inventing missing history."""
 
-    def __init__(self, app):
+    def __init__(self, app, *, target_unifi_ids=None):
         super().__init__(app)
         self.app = app
+        self._target_unifi_ids = {
+            str(value).strip()
+            for value in (target_unifi_ids or ())
+            if str(value).strip()
+        }
         self.nominal = tk.StringVar(value="")
         self.print_state = tk.StringVar(value="")
         self.status = tk.StringVar()
@@ -580,7 +642,14 @@ class AlignmentDialog(tk.Toplevel):
             controller_id=int(controller_id),
             present_only=True,
         )
+        if self._target_unifi_ids:
+            candidates = tuple(
+                item
+                for item in candidates
+                if str(item.unifi_id) in self._target_unifi_ids
+            )
         self._candidates = {str(item.voucher_id): item for item in candidates}
+        selected_iids = []
         for item in candidates:
             if item.last_printed_at:
                 print_label = f"Verificata {item.last_printed_at[:10]}"
@@ -590,16 +659,24 @@ class AlignmentDialog(tk.Toplevel):
                 print_label = "Non determinabile"
             else:
                 print_label = "Da dichiarare"
+            iid = str(item.voucher_id)
             self.tree.insert(
                 "",
                 "end",
-                iid=str(item.voucher_id),
+                iid=iid,
                 values=(
                     item.name or "—",
                     item.created_at[:10] if item.created_at else "—",
                     print_label,
                 ),
             )
+            if self._target_unifi_ids:
+                selected_iids.append(iid)
+
+        if selected_iids:
+            self.tree.selection_set(selected_iids)
+            self.tree.focus(selected_iids[0])
+
         self.status.set(
             f"{len(candidates)} voucher da allineare."
             if candidates
@@ -613,6 +690,8 @@ class AlignmentDialog(tk.Toplevel):
         self.print_state.set("")
         self.nominal_combo.configure(state="readonly")
         self.print_combo.configure(state="readonly")
+        if selected_iids:
+            self._sync_alignment_fields()
 
     def _sync_alignment_fields(self, _event=None) -> None:
         selected = [
@@ -858,23 +937,27 @@ class LocalDataMixin:
         title: str,
         multiple: bool,
     ) -> tuple:
-        candidates = local_data_selection_candidates(
-            getattr(self, "vouchers", ())
-        )
-        if not candidates:
+        selected = selected_workspace_vouchers(self)
+        if not selected:
             messagebox.showinfo(
                 title,
-                "Non ci sono voucher disponibili per la controller corrente.",
+                "Selezionare prima uno o più voucher nella tabella Voucher.",
                 parent=self,
             )
             return ()
-        selector = LocalMetadataSelectionDialog(
-            self,
-            candidates,
-            title=title,
-            multiple=multiple,
-        )
-        return tuple(selector.result or ())
+        if not multiple and len(selected) != 1:
+            messagebox.showinfo(
+                title,
+                "Questa funzione richiede un solo voucher selezionato.",
+                parent=self,
+            )
+            return ()
+        return tuple(selected)
+
+    def voucher_action_states(self) -> dict[str, bool]:
+        """Expose dynamic menu availability to the Voucher workspace."""
+
+        return voucher_action_states(self)
 
     def edit_selected_nominality(self) -> None:
         vouchers = self._select_local_metadata_vouchers(
@@ -900,4 +983,33 @@ class LocalDataMixin:
                 parent=self,
             )
             return
-        AlignmentDialog(self)
+
+        selected = selected_workspace_vouchers(self)
+        if not selected:
+            messagebox.showinfo(
+                "Allinea voucher",
+                "Selezionare prima uno o più voucher nella tabella Voucher.",
+                parent=self,
+            )
+            return
+
+        states = voucher_action_states(self)
+        if not states["align"]:
+            messagebox.showinfo(
+                "Allinea voucher",
+                (
+                    "La selezione contiene voucher già allineati oppure voucher "
+                    "che non possono essere allineati insieme. Selezionare solo "
+                    "voucher con stato “DA ALLINEARE”."
+                ),
+                parent=self,
+            )
+            return
+
+        AlignmentDialog(
+            self,
+            target_unifi_ids=tuple(
+                str(getattr(voucher, "id", "") or "")
+                for voucher in selected
+            ),
+        )
