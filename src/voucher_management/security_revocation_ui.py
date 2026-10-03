@@ -296,17 +296,25 @@ class SecurityRevocationDialog(tk.Toplevel):
                 database.close()
 
         def completed(result) -> None:
-            self.app.checked_ids.clear()
+            confirmed_local_ids = {
+                int(value)
+                for value in tuple(result.revoked_ids)
+            }
+            confirmed_remote_ids = {
+                str(candidate.unifi_id)
+                for candidate in selected
+                if int(candidate.voucher_id) in confirmed_local_ids
+            }
+            if confirmed_remote_ids:
+                self.app.vouchers = [
+                    voucher
+                    for voucher in getattr(self.app, "vouchers", ())
+                    if str(getattr(voucher, "id", "")) not in confirmed_remote_ids
+                ]
+            ui_refreshed = self.app._finalize_voucher_operation_ui(
+                operation="security_revocation",
+            )
             self._refresh()
-            refresh_home = getattr(self.app, "_refresh_home_threshold_alerts", None)
-            if refresh_home is not None:
-                refresh_home()
-            try:
-                self.app.refresh()
-            except Exception:
-                # The revocation audit is already durable. A refresh failure is
-                # handled by the normal controller state machine on next Sync.
-                self.app.populate()
 
             details = [
                 f"Revocati: {len(result.revoked_ids)}",
@@ -317,6 +325,13 @@ class SecurityRevocationDialog(tk.Toplevel):
                     f"{len(result.local_persistence_failed_ids)}"
                 ),
             ]
+            if ui_refreshed:
+                details.append("Home, Voucher e conteggi sono stati aggiornati.")
+            if result.local_persistence_failed_ids:
+                details.append(
+                    "La DELETE remota è riuscita per alcuni voucher, ma la "
+                    "riconciliazione locale richiede ancora un successivo Sync."
+                )
             messagebox.showinfo(
                 "Revoca di sicurezza",
                 "\n".join(details),
