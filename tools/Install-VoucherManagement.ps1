@@ -149,24 +149,31 @@ function Set-SharedDataAcl {
         throw "Reset ACL ProgramData non riuscito."
     }
 
+    # Normalize descendants to normal Windows inheritance first. The shared
+    # data root is the only protected ACL boundary; files and subdirectories
+    # inherit the root policy instead of carrying duplicated protected ACLs.
+    & icacls.exe $Path /inheritance:e /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Ripristino ereditarietà ACL ProgramData non riuscito."
+    }
+
     $rules = @(
         "*S-1-5-18:(OI)(CI)F",
         "*S-1-5-32-544:(OI)(CI)F",
         "*$($script:BuiltinUsersSid):(OI)(CI)M"
     )
     foreach ($rule in $rules) {
-        & icacls.exe $Path /grant:r $rule /T /C | Out-Null
+        & icacls.exe $Path /grant:r $rule /C | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "Configurazione ACL ProgramData non riuscita per: $rule"
         }
     }
 
-    # Remove inherited ACEs only after all required explicit grants exist.
-    # This avoids a transient state where the elevated installer could lose
-    # access to existing descendants while normalizing an older data tree.
-    & icacls.exe $Path /inheritance:r /T /C | Out-Null
+    # Protect only the application-data root from ProgramData's parent ACL.
+    # Descendants continue to inherit SYSTEM/Admins/Users from this root.
+    & icacls.exe $Path /inheritance:r /C | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw "Disattivazione ereditarietà ACL ProgramData non riuscita."
+        throw "Protezione ACL radice ProgramData non riuscita."
     }
 
     $allowedSids = @(
@@ -184,8 +191,15 @@ function Set-SharedDataAcl {
     )
     foreach ($item in $items) {
         $acl = Get-Acl -LiteralPath $item.FullName
-        if (-not $acl.AreAccessRulesProtected) {
-            throw "ACL ProgramData non protetta: $($item.FullName)"
+        $isRoot = (
+            [IO.Path]::GetFullPath($item.FullName).TrimEnd("\\") -ieq
+            [IO.Path]::GetFullPath($Path).TrimEnd("\\")
+        )
+        if ($isRoot -and -not $acl.AreAccessRulesProtected) {
+            throw "ACL radice ProgramData non protetta: $($item.FullName)"
+        }
+        if (-not $isRoot -and $acl.AreAccessRulesProtected) {
+            throw "ACL discendente ProgramData non eredita dalla radice: $($item.FullName)"
         }
 
         $rightsBySid = @{}
