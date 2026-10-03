@@ -207,11 +207,11 @@ function Set-SharedDataAcl {
 
         foreach ($sid in $requiredRights.Keys) {
             if (-not $rightsBySid.ContainsKey($sid)) {
-                throw "ACL ProgramData mancante per SID richiesto $sid: $($item.FullName)"
+                throw "ACL ProgramData mancante per SID richiesto $($sid): $($item.FullName)"
             }
             $expected = $requiredRights[$sid]
             if (($rightsBySid[$sid] -band $expected) -ne $expected) {
-                throw "ACL ProgramData insufficiente per SID $sid: $($item.FullName)"
+                throw "ACL ProgramData insufficiente per SID $($sid): $($item.FullName)"
             }
         }
     }
