@@ -357,6 +357,7 @@ def test_confirmed_create_is_not_reported_failed_when_local_reporting_persistenc
         ),
         _run_network_task=capture_runner(tasks),
         _show_network_error=lambda *args, **kwargs: network_errors.append(args),
+        _finalize_voucher_operation_ui=lambda **kwargs: True,
     )
     monkeypatch.setattr(
         creation_ui,
@@ -560,6 +561,11 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
             ("preview", path, list(codes), kwargs)
         ),
     )
+    fake._finalize_voucher_operation_ui = lambda **kwargs: (
+        fake.checked_ids.clear(),
+        calls.append(("populate", None)),
+        True,
+    )[-1]
 
     monkeypatch.setattr(
         app_module,
@@ -904,6 +910,9 @@ def test_manual_pending_print_recovery_runs_on_background_worker(monkeypatch):
         _dialog_busy_scope=lambda parent: None,
         _run_background_task=capture_runner(tasks),
         populate=lambda: calls.append(("populate", None)),
+        _finalize_voucher_operation_ui=lambda **kwargs: (
+            calls.append(("populate", None)) or True
+        ),
     )
     monkeypatch.setattr(
         maintenance_ui.messagebox,
@@ -1032,6 +1041,9 @@ def test_history_import_prepare_confirm_apply_are_split_across_workers(
         settings={},
         _history_error_shown=True,
         populate=lambda: calls.append(("populate", None)),
+        _finalize_voucher_operation_ui=lambda **kwargs: (
+            calls.append(("populate", None)) or True
+        ),
     )
     monkeypatch.setattr(
         maintenance_ui.filedialog,
