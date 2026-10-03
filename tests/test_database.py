@@ -141,8 +141,55 @@ def test_ever_used_is_monotonic_across_controller_counter_changes(tmp_path):
             "SELECT authorized_guest_count, ever_used FROM vouchers WHERE id=?",
             (voucher_id,),
         ).fetchone()
-        assert row["authorized_guest_count"] == 0
+        assert row["authorized_guest_count"] == 2
         assert row["ever_used"] == 1
+    finally:
+        db.close()
+
+
+def test_positive_controller_lifecycle_facts_are_monotonic(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher_id = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="positive-facts",
+            code="1234567890",
+            imported_at="t1",
+            last_synced_at="t1",
+            authorized_guest_count=1,
+            activated_at="2026-09-25T10:00:00+00:00",
+            expires_at="2026-09-25T11:00:00+00:00",
+            expired=True,
+        )
+        db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="positive-facts",
+            code="1234567890",
+            imported_at="t1",
+            last_synced_at="t2",
+            authorized_guest_count=0,
+            activated_at=None,
+            expires_at=None,
+            expired=False,
+        )
+
+        row = db.connection.execute(
+            """SELECT authorized_guest_count, ever_used, activated_at,
+                      expires_at, expired, expiry_observed
+               FROM vouchers WHERE id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert row["authorized_guest_count"] == 1
+        assert row["ever_used"] == 1
+        assert row["activated_at"] == "2026-09-25T10:00:00+00:00"
+        assert row["expires_at"] == "2026-09-25T11:00:00+00:00"
+        assert row["expired"] == 1
+        assert row["expiry_observed"] == 1
     finally:
         db.close()
 
@@ -917,6 +964,78 @@ def test_schema_two_upgrade_recovers_use_from_previous_positive_observation(tmp_
     finally:
         migrated.close()
 
+
+
+def test_schema_nine_upgrade_repairs_synthetic_legacy_expiry(tmp_path):
+    path = tmp_path / "schema-nine-legacy-expiry.db"
+    db = Database(path)
+    db.initialize()
+    legacy_controller = db.create_controller(
+        name="Legacy",
+        api_root="legacy-backup://fixture",
+        created_at="t",
+    )
+    live_controller = db.create_controller(
+        name="Live",
+        api_root="https://controller.example",
+        created_at="t",
+    )
+    legacy_id = db.upsert_voucher(
+        controller_id=legacy_controller,
+        unifi_id="legacy-row",
+        code="1111122222",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    live_id = db.upsert_voucher(
+        controller_id=live_controller,
+        unifi_id="live-row",
+        code="3333344444",
+        imported_at="t",
+        last_synced_at="t",
+        expired=True,
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            """UPDATE vouchers
+               SET usage_observed=0, ever_used=0, activated_at=NULL,
+                   expires_at=NULL, expired=1
+               WHERE id=?""",
+            (legacy_id,),
+        )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("ALTER TABLE vouchers DROP COLUMN expiry_observed")
+    raw.execute("PRAGMA user_version = 9")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) "
+        "VALUES ('schema_version', '9')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        legacy = migrated.connection.execute(
+            "SELECT expired, expiry_observed FROM vouchers WHERE id=?",
+            (legacy_id,),
+        ).fetchone()
+        live = migrated.connection.execute(
+            "SELECT expired, expiry_observed FROM vouchers WHERE id=?",
+            (live_id,),
+        ).fetchone()
+        assert legacy["expired"] == 0
+        assert legacy["expiry_observed"] == 0
+        assert live["expired"] == 1
+        assert live["expiry_observed"] == 1
+        assert (
+            migrated.connection.execute("PRAGMA user_version").fetchone()[0]
+            == SCHEMA_VERSION
+        )
+    finally:
+        migrated.close()
 
 
 def test_schema_three_upgrade_adds_redaction_and_clears_false_legacy_origin(tmp_path):
