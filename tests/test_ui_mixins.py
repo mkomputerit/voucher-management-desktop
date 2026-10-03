@@ -454,6 +454,7 @@ def test_successful_voucher_operation_clears_selection_and_refreshes_every_proje
     fake = SimpleNamespace(
         checked_ids={"one", "two"},
         populate=lambda: calls.append("populate"),
+        _refresh_threshold_summary=lambda: calls.append("thresholds"),
         _refresh_report_summary=lambda: calls.append("report"),
         logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
     )
@@ -465,7 +466,7 @@ def test_successful_voucher_operation_clears_selection_and_refreshes_every_proje
 
     assert result is True
     assert fake.checked_ids == set()
-    assert calls == ["populate", "report"]
+    assert calls == ["populate", "thresholds", "report"]
 
 
 def test_successful_voucher_operation_keeps_selection_cleared_if_refresh_fails(
