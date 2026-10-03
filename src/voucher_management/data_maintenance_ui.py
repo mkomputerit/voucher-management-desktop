@@ -888,7 +888,14 @@ class DataMaintenanceMixin:
             fingerprint, history_key = (
                 self.history.verified_identity_material()
             )
-            candidates = legacy_candidates_from_database(self.database)
+            candidates = legacy_candidates_from_database(
+                self.database,
+                preferred_controller_id=getattr(
+                    self,
+                    "active_controller_id",
+                    None,
+                ),
+            )
         except Exception as exc:
             self.logger.warning(
                 "legacy_reconciliation_preflight_failed type=%s",
@@ -991,7 +998,14 @@ class DataMaintenanceMixin:
                 fingerprint, history_key = (
                     self.history.verified_identity_material()
                 )
-                candidates = legacy_candidates_from_database(self.database)
+                candidates = legacy_candidates_from_database(
+                self.database,
+                preferred_controller_id=getattr(
+                    self,
+                    "active_controller_id",
+                    None,
+                ),
+            )
             except Exception as exc:
                 detail = (
                     str(exc)
