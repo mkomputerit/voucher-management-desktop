@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 PRINT_STATE_UNKNOWN = "UNKNOWN"
 PRINT_STATE_NOT_PRINTED = "NOT_PRINTED"
@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS vouchers (
     activated_at TEXT,
     expires_at TEXT,
     expired INTEGER NOT NULL DEFAULT 0 CHECK (expired IN (0, 1)),
+    expiry_observed INTEGER NOT NULL DEFAULT 1
+        CHECK (expiry_observed IN (0, 1)),
     data_limit_mb INTEGER CHECK (data_limit_mb IS NULL OR data_limit_mb >= 0),
     download_limit_kbps INTEGER CHECK (download_limit_kbps IS NULL OR download_limit_kbps >= 0),
     upload_limit_kbps INTEGER CHECK (upload_limit_kbps IS NULL OR upload_limit_kbps >= 0),
@@ -435,6 +437,26 @@ ALTER TABLE vouchers ADD COLUMN missing_observation_count INTEGER NOT NULL DEFAU
 ALTER TABLE vouchers ADD COLUMN missing_since TEXT;
 """
 
+
+MIGRATION_9_TO_10_SQL = """
+ALTER TABLE vouchers ADD COLUMN expiry_observed INTEGER NOT NULL DEFAULT 1
+    CHECK (expiry_observed IN (0, 1));
+
+-- Early 5.1 legacy ZIP imports used expired=1 as a historical marker even
+-- though the source contained no positive expiry evidence. Repair only those
+-- synthetic archive rows; live/controller rows keep their verified state.
+UPDATE vouchers
+SET expired=0,
+    expiry_observed=0
+WHERE controller_id IN (
+    SELECT id FROM controllers WHERE api_root LIKE 'legacy-backup://%'
+)
+  AND usage_observed=0
+  AND ever_used=0
+  AND activated_at IS NULL
+  AND expires_at IS NULL;
+"""
+
 @dataclass(frozen=True)
 class PrintAuditSummary:
     """Aggregated local print facts used by physical-print safety checks."""
@@ -692,6 +714,45 @@ COMMIT;
 """
                 )
                 current = 9
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 9:
+            try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                migration_sql = (
+                    MIGRATION_9_TO_10_SQL
+                    if "expiry_observed" not in columns
+                    else """
+UPDATE vouchers
+SET expired=0,
+    expiry_observed=0
+WHERE controller_id IN (
+    SELECT id FROM controllers WHERE api_root LIKE 'legacy-backup://%'
+)
+  AND usage_observed=0
+  AND ever_used=0
+  AND activated_at IS NULL
+  AND expires_at IS NULL;
+"""
+                )
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + migration_sql
+                    + """
+PRAGMA user_version = 10;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '10');
+COMMIT;
+"""
+                )
+                current = 10
             except Exception:
                 self.connection.rollback()
                 raise
@@ -1194,8 +1255,16 @@ COMMIT;
         values = (
             controller_id, unifi_id, code, name, created_at, imported_at,
             duration_minutes, authorized_guest_limit, authorized_guest_count,
-            int(authorized_guest_count > 0), 1,
-            activated_at, expires_at, int(expired), data_limit_mb,
+            int(
+                authorized_guest_count > 0
+                or bool(activated_at)
+                or bool(expired)
+            ),
+            1,
+            activated_at,
+            expires_at,
+            int(expired),
+            data_limit_mb,
             download_limit_kbps, upload_limit_kbps, last_synced_at, last_synced_at,
         )
         def write(db: sqlite3.Connection) -> int:
@@ -1211,14 +1280,33 @@ COMMIT;
                        code=excluded.code, name=excluded.name, created_at=excluded.created_at,
                        duration_minutes=excluded.duration_minutes,
                        authorized_guest_limit=excluded.authorized_guest_limit,
-                       authorized_guest_count=excluded.authorized_guest_count,
+                       authorized_guest_count=CASE
+                           WHEN excluded.authorized_guest_count >
+                                vouchers.authorized_guest_count
+                           THEN excluded.authorized_guest_count
+                           ELSE vouchers.authorized_guest_count
+                       END,
                        ever_used=CASE
                            WHEN vouchers.ever_used=1
                                 OR excluded.authorized_guest_count>0
+                                OR excluded.activated_at IS NOT NULL
+                                OR excluded.expired=1
                            THEN 1 ELSE 0 END,
                        usage_observed=1,
-                       activated_at=excluded.activated_at, expires_at=excluded.expires_at,
-                       expired=excluded.expired, data_limit_mb=excluded.data_limit_mb,
+                       activated_at=COALESCE(
+                           vouchers.activated_at,
+                           excluded.activated_at
+                       ),
+                       expires_at=COALESCE(
+                           excluded.expires_at,
+                           vouchers.expires_at
+                       ),
+                       expired=CASE
+                           WHEN vouchers.expired=1 OR excluded.expired=1
+                           THEN 1 ELSE 0
+                       END,
+                       expiry_observed=1,
+                       data_limit_mb=excluded.data_limit_mb,
                        download_limit_kbps=excluded.download_limit_kbps,
                        upload_limit_kbps=excluded.upload_limit_kbps,
                        present_on_controller=1,
