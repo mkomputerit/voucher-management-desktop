@@ -49,7 +49,7 @@ def _voucher(
     expires_at="2026-10-01T09:00:00+00:00",
     synced_at=NOW,
 ):
-    return db.upsert_voucher(
+    voucher_id = db.upsert_voucher(
         controller_id=controller,
         unifi_id=unifi_id,
         code=code,
@@ -61,9 +61,14 @@ def _voucher(
         authorized_guest_count=used,
         expires_at=expires_at,
         expired=expired,
-        last_seen_at=synced_at,
         last_synced_at=synced_at,
     )
+    with db.transaction() as tx:
+        tx.execute(
+            "UPDATE vouchers SET last_seen_at=? WHERE id=?",
+            (synced_at, voucher_id),
+        )
+    return voucher_id
 
 
 def _remote(remote_id: str, *, used: int = 0) -> ApiVoucher:
