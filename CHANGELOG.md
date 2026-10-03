@@ -13,6 +13,14 @@
 - Keep **Report strictly historical/local**: SQLite-backed administrative views
   remain available offline, expose controller-data freshness and distinguish
   positive evidence from indeterminate/negative observations.
+- Restore the operator-facing **report guide** and preview-first PDF workflow:
+  the guide starts from the operator's goal, preselects the matching report,
+  and generated PDFs open in preview before optional save or print.
+- Consolidate Voucher local actions into one dynamic **Allinea / modifica**
+  menu driven by the blue workspace selection. Alignment, nominality and notes
+  no longer open a second selector; unavailable actions are disabled
+  fail-closed. Expired rows may still be selected for permitted local metadata
+  corrections, while print/delete continue to exclude them defensively.
 - Upgrade the SQLite model to **schema 9**, preserving durable controller/Site
   identity, voucher provenance, explicit print state/alignment, monotonic
   positive-use evidence, conservative absence tracking and migration
