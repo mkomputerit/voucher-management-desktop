@@ -42,6 +42,7 @@ OBSERVED_FIELDS = (
     "activated_at",
     "expires_at",
     "expired",
+    "expiry_observed",
     "present_on_controller",
 )
 
@@ -188,12 +189,17 @@ def persist_successful_snapshot(
             if old is None:
                 continue
 
+            current_row = tx.execute(
+                """SELECT authorized_guest_count, activated_at, expires_at,
+                          expired, expiry_observed, present_on_controller
+                   FROM vouchers WHERE id=?""",
+                (voucher_id,),
+            ).fetchone()
+            if current_row is None:
+                raise RuntimeError("persisted voucher disappeared during snapshot")
             current = {
-                "authorized_guest_count": voucher.used,
-                "activated_at": _iso_from_epoch(voucher.start_time),
-                "expires_at": _iso_from_epoch(voucher.end_time),
-                "expired": int(voucher.status == "EXPIRED"),
-                "present_on_controller": 1,
+                field: current_row[field]
+                for field in OBSERVED_FIELDS
             }
             for field in OBSERVED_FIELDS:
                 old_value = old[field]
