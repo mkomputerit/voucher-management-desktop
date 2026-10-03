@@ -315,6 +315,15 @@ class SecurityRevocationDialog(tk.Toplevel):
                 operation="security_revocation",
             )
             self._refresh()
+            # Preserve the pre-existing automatic UniFi reread after a remote
+            # revocation. The global local refresh is immediate; this network
+            # refresh then confirms the authoritative remote snapshot.
+            try:
+                self.app.refresh()
+            except Exception:
+                self.app.logger.warning(
+                    "security_revocation_auto_refresh_failed"
+                )
 
             details = [
                 f"Revocati: {len(result.revoked_ids)}",
