@@ -52,6 +52,30 @@ jobs:
           cache: 'pip'
           cache-dependency-path: requirements-lock.txt
 
+      - name: Stage deterministic Tcl/Tk runtime
+        shell: pwsh
+        run: |
+          $sourceRoot = Join-Path $env:pythonLocation "tcl"
+          $tclSource = Join-Path $sourceRoot "tcl8.6"
+          $tkSource = Join-Path $sourceRoot "tk8.6"
+          if (-not (Test-Path -LiteralPath (Join-Path $tclSource "init.tcl") -PathType Leaf)) {
+            throw "Hosted Python Tcl runtime is incomplete: $tclSource"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $tkSource "tk.tcl") -PathType Leaf)) {
+            throw "Hosted Python Tk runtime is incomplete: $tkSource"
+          }
+
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP "voucher-management-tcltk"
+          Remove-Item -LiteralPath $runtimeRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
+          Copy-Item -LiteralPath $tclSource -Destination $runtimeRoot -Recurse -Force
+          Copy-Item -LiteralPath $tkSource -Destination $runtimeRoot -Recurse -Force
+
+          $tclRuntime = Join-Path $runtimeRoot "tcl8.6"
+          $tkRuntime = Join-Path $runtimeRoot "tk8.6"
+          "TCL_LIBRARY=$tclRuntime" >> $env:GITHUB_ENV
+          "TK_LIBRARY=$tkRuntime" >> $env:GITHUB_ENV
+
       - name: Create isolated build environment
         shell: pwsh
         run: |
@@ -60,10 +84,10 @@ jobs:
           .\.venv\Scripts\python.exe -m pip install --require-hashes --no-deps -r requirements-lock.txt
           .\.venv\Scripts\python.exe -m pip check
 
-      - name: Verify Pillow Windows integrations
+      - name: Verify Pillow and Tk Windows integrations
         shell: pwsh
         run: |
-          .\.venv\Scripts\python.exe -c "from PIL import Image, ImageTk, ImageWin; image=Image.new('RGB',(2,2),'white'); ImageWin.Dib(image); print('Pillow', Image.__version__, 'ImageTk/ImageWin.Dib OK')"
+          .\.venv\Scripts\python.exe -c "import tkinter as tk; from PIL import Image, ImageTk, ImageWin; root=tk.Tk(); root.withdraw(); root.update_idletasks(); root.destroy(); image=Image.new('RGB',(2,2),'white'); ImageWin.Dib(image); print('Pillow', Image.__version__, 'Tk/ImageTk/ImageWin.Dib OK')"
 
       - name: Audit locked dependencies
         shell: pwsh
