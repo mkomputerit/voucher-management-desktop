@@ -252,6 +252,42 @@ def test_report_choices_cover_historical_core_and_data_quality_views():
 
 
 
+def test_operational_report_selector_does_not_mix_in_technical_audit():
+    operational_kinds = {
+        kind for _label, kind in report_ui.REPORT_OPERATIONAL_CHOICES
+    }
+    technical_kinds = {
+        kind for _label, kind in report_ui.REPORT_TECHNICAL_CHOICES
+    }
+
+    assert ReportKind.SUMMARY in operational_kinds
+    assert ReportKind.USED in operational_kinds
+    assert ReportKind.EXPIRED in operational_kinds
+    assert ReportKind.SECURITY_REVIEW in operational_kinds
+    assert ReportKind.UNCLASSIFIED in operational_kinds
+
+    assert ReportKind.FULL_HISTORY in technical_kinds
+    assert ReportKind.PRINT_UNKNOWN in technical_kinds
+    assert ReportKind.USAGE_UNKNOWN in technical_kinds
+    assert ReportKind.ORIGIN_UNKNOWN in technical_kinds
+
+    assert operational_kinds.isdisjoint(technical_kinds)
+    assert operational_kinds | technical_kinds == {
+        kind for _label, kind in report_ui.REPORT_CHOICES
+    }
+
+
+def test_report_level_follows_requested_initial_kind():
+    assert (
+        report_ui.report_level_for_kind(ReportKind.USED)
+        == report_ui.REPORT_LEVEL_OPERATIONAL
+    )
+    assert (
+        report_ui.report_level_for_kind(ReportKind.FULL_HISTORY)
+        == report_ui.REPORT_LEVEL_TECHNICAL
+    )
+
+
 def test_report_guide_covers_core_operator_questions():
     kinds = {
         kind for _label, kind, _description in report_ui.REPORT_GUIDE_CHOICES
