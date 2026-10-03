@@ -6,6 +6,7 @@ import tkinter as tk
 from datetime import datetime, timezone
 from tkinter import messagebox, ttk
 
+from .ui_layout import fit_toplevel_to_content
 from .operational_alerts import (
     set_unprinted_warning_days,
     unprinted_warning_candidates,
@@ -36,8 +37,6 @@ class OperationalAlertsDialog(tk.Toplevel):
         self.title("Voucher creati ma non stampati")
         self.transient(parent or app)
         self.grab_set()
-        self.geometry("930x560")
-        self.minsize(780, 470)
 
         configured = unprinted_warning_days(app.database)
         self.days = tk.StringVar(
@@ -105,21 +104,31 @@ class OperationalAlertsDialog(tk.Toplevel):
         self.tree.column("created", width=150, anchor="center")
         self.tree.column("seen", width=150, anchor="center")
         self.tree.column("synced", width=150, anchor="center")
-        self.tree.pack(fill="both", expand=True)
+
+        footer = ttk.Frame(shell)
+        footer.pack(side="bottom", fill="x")
 
         ttk.Label(
-            shell,
+            footer,
             textvariable=self.status,
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(8, 0))
 
         ttk.Button(
-            shell,
+            footer,
             text="Chiudi",
             command=self.destroy,
         ).pack(anchor="e", pady=(12, 0))
 
+        self.tree.pack(fill="both", expand=True)
         self._refresh()
+        fit_toplevel_to_content(
+            self,
+            preferred_width=930,
+            preferred_height=560,
+            min_width=780,
+            min_height=470,
+        )
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
