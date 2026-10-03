@@ -7,7 +7,11 @@ from types import SimpleNamespace
 
 from voucher_management import report_ui
 from voucher_management.report_policy import ReportPurpose
-from voucher_management.report_ui import ReportDialog
+from voucher_management.report_ui import (
+    ReportDialog,
+    ReportGuideDialog,
+    report_label_for_kind,
+)
 from voucher_management.reporting import ReportDataset, ReportKind, ReportTotals
 
 
@@ -245,3 +249,53 @@ def test_report_choices_cover_historical_core_and_data_quality_views():
     assert "Da revocare per sicurezza" in labels
     assert "Revocati per sicurezza" in labels
     assert "Eliminati dalla controller" in labels
+
+
+
+def test_report_guide_covers_core_operator_questions():
+    kinds = {
+        kind for _label, kind, _description in report_ui.REPORT_GUIDE_CHOICES
+    }
+
+    assert ReportKind.SUMMARY in kinds
+    assert ReportKind.GENERATED_UNUSED in kinds
+    assert ReportKind.PRINTED_UNUSED in kinds
+    assert ReportKind.UNPRINTED_WARNING in kinds
+    assert ReportKind.SECURITY_REVIEW in kinds
+    assert ReportKind.UNCLASSIFIED in kinds
+    assert ReportKind.FULL_HISTORY in kinds
+    assert all(
+        description.strip()
+        for _label, _kind, description in report_ui.REPORT_GUIDE_CHOICES
+    )
+
+
+def test_report_label_for_kind_selects_requested_report():
+    assert (
+        report_label_for_kind(ReportKind.PRINTED_UNUSED)
+        == "Stampati senza uso positivo osservato"
+    )
+    assert report_label_for_kind(ReportKind.FULL_HISTORY) == "Storico completo"
+
+
+def test_report_guide_opens_generator_with_recommended_kind(monkeypatch):
+    opened = []
+    destroyed = []
+    fake = SimpleNamespace(
+        app=object(),
+        choice_var=SimpleNamespace(
+            get=lambda: "Voucher stampati ma senza uso osservato"
+        ),
+        destroy=lambda: destroyed.append(True),
+    )
+    monkeypatch.setattr(
+        report_ui,
+        "ReportDialog",
+        lambda *args, **kwargs: opened.append((args, kwargs)),
+    )
+
+    ReportGuideDialog._open_report(fake)
+
+    assert destroyed == [True]
+    assert len(opened) == 1
+    assert opened[0][1]["initial_kind"] is ReportKind.PRINTED_UNUSED
