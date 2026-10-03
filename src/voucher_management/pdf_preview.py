@@ -454,6 +454,7 @@ class PdfPreview(tk.Toplevel):
         history = self.history
         settings = dict(self.settings)
         application_audit = getattr(self, "on_audit", None)
+        report_mode = bool(getattr(self, "report_mode", False))
         site_id = self.site_id
         unifi_ids = (
             list(self.unifi_ids)
@@ -462,7 +463,7 @@ class PdfPreview(tk.Toplevel):
         )
 
         def worker():
-            if self.report_mode:
+            if report_mode:
                 self._print_windows(printer, copies)
                 return None, None
 
@@ -533,7 +534,7 @@ class PdfPreview(tk.Toplevel):
             if not finish_controls():
                 return
 
-            if self.report_mode:
+            if report_mode:
                 messagebox.showinfo(
                     "Stampa report",
                     f"Report inviato a {printer}.",
@@ -591,7 +592,7 @@ class PdfPreview(tk.Toplevel):
         def failed(exc: Exception) -> None:
             if not finish_controls():
                 return
-            if self.report_mode:
+            if report_mode:
                 messagebox.showerror(
                     "Stampa report",
                     "Impossibile inviare il report alla stampante.\n\n"
