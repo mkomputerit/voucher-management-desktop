@@ -59,6 +59,46 @@ def test_snapshot_records_usage_change_without_inventing_use_timestamp(tmp_path)
         db.close()
 
 
+def test_snapshot_does_not_record_regressions_of_canonical_positive_facts(tmp_path):
+    db = Database(tmp_path / "monotonic.sqlite")
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    try:
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("1", used=2)],
+            observed_at="2026-09-25T10:00:00+00:00",
+            sync_uuid="positive",
+        )
+        persist_successful_snapshot(
+            db,
+            controller_id=controller,
+            vouchers=[voucher("1", used=0)],
+            observed_at="2026-09-25T11:00:00+00:00",
+            sync_uuid="regressed-source",
+        )
+
+        row = db.connection.execute(
+            """SELECT authorized_guest_count, activated_at, ever_used
+               FROM vouchers WHERE controller_id=? AND unifi_id='1'""",
+            (controller,),
+        ).fetchone()
+        assert row["authorized_guest_count"] == 2
+        assert row["activated_at"]
+        assert row["ever_used"] == 1
+        assert db.connection.execute(
+            """SELECT COUNT(*) FROM voucher_sync_observations
+               WHERE sync_uuid='regressed-source'"""
+        ).fetchone()[0] == 0
+    finally:
+        db.close()
+
+
 def test_first_missing_snapshot_is_only_suspicious_until_uuid_confirmation(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     db.initialize()
