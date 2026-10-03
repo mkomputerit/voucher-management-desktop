@@ -960,6 +960,26 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             )
             return
 
+        alignment_ready = getattr(self, "_voucher_alignment_ready", None)
+        if callable(alignment_ready):
+            unaligned = [
+                voucher
+                for voucher in selected
+                if not alignment_ready(voucher)
+            ]
+            if unaligned:
+                messagebox.showinfo(
+                    "Allineamento richiesto",
+                    (
+                        "Uno o più voucher selezionati devono ancora essere "
+                        "allineati prima della stampa.\n\n"
+                        "Usare “Allinea…” per completare nominalità e stato "
+                        "di stampa locale, quindi riprovare."
+                    ),
+                    parent=self,
+                )
+                return
+
         try:
             verify_print_history_ready(
                 selected,
