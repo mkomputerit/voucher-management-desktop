@@ -44,10 +44,13 @@ try {
     New-Item -ItemType Directory -Force -Path $root | Out-Null
 
     $logPath = Join-Path $root "setup-diagnostic.log"
+    # Exercise the bootstrapper's Windows quoting with deployment paths that
+    # end in a backslash. The doubled slash before the outer closing quote is
+    # decoded by Windows into one trailing slash received by Setup.exe.
     $arguments = @(
         '"/quiet"',
-        ('"/InstallRoot={0}"' -f $installRoot),
-        ('"/DataRoot={0}"' -f $dataRoot),
+        ('"/InstallRoot={0}\\"' -f $installRoot),
+        ('"/DataRoot={0}\\"' -f $dataRoot),
         ('"/LogPath={0}"' -f $logPath),
         '"/SkipShortcut"'
     ) -join " "
