@@ -435,3 +435,29 @@ def test_unaligned_active_voucher_space_selection_is_allowed_in_voucher_table():
     assert result == "break"
     assert fake.checked_ids == {"visible"}
     assert calls == ["sync"]
+
+
+
+def test_dynamic_voucher_menu_reflects_action_availability():
+    configured = {}
+
+    class Menu:
+        def entryconfigure(self, index, **kwargs):
+            configured[index] = kwargs["state"]
+
+    fake = SimpleNamespace(
+        voucher_actions_menu=Menu(),
+        voucher_action_states=lambda: {
+            "align": True,
+            "nominality": False,
+            "notes": True,
+        },
+    )
+
+    ModernVoucherApp._refresh_voucher_actions_menu(fake)
+
+    assert configured == {
+        0: "normal",
+        2: "disabled",
+        3: "normal",
+    }
