@@ -3501,8 +3501,9 @@ class ModernVoucherApp(
     def _on_voucher_selection_key(self, event):
         """Toggle the focused voucher without a second native selection model.
 
-        Both voucher trees use selectmode=none: arrow keys move focus only,
-        while Space changes the same print selection as a pointer click.
+        Both voucher trees use selectmode=none: arrow keys move focus only.
+        Home keeps print-only eligibility, while the full Voucher workspace
+        allows broader blue selection for safe local metadata actions.
         Programmatic highlights stay one-way to avoid refresh event loops.
         """
 
