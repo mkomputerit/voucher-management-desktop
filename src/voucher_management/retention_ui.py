@@ -16,7 +16,6 @@ from .retention import (
     reviewable_retention_candidates,
     update_retention_days
 )
-from .sync_store import load_local_vouchers
 
 
 def _display_time(value: str) -> str:
