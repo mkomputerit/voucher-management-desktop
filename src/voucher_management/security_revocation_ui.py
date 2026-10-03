@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from tkinter import messagebox, ttk
 
 from .database import Database
+from .ui_layout import fit_toplevel_to_content
 from .security_revocation import (
     pending_security_revocation_ids,
     revoke_security_candidates_live,
@@ -39,8 +40,6 @@ class SecurityRevocationDialog(tk.Toplevel):
         self.title("Revoca di sicurezza")
         self.transient(parent or app)
         self.grab_set()
-        self.geometry("980x590")
-        self.minsize(820, 500)
 
         configured = security_revoke_days(app.database)
         self.days = tk.StringVar(
@@ -112,15 +111,17 @@ class SecurityRevocationDialog(tk.Toplevel):
         self.tree.column("printed", width=150, anchor="center")
         self.tree.column("seen", width=150, anchor="center")
         self.tree.column("synced", width=150, anchor="center")
-        self.tree.pack(fill="both", expand=True)
+
+        footer = ttk.Frame(shell)
+        footer.pack(side="bottom", fill="x")
 
         ttk.Label(
-            shell,
+            footer,
             textvariable=self.status,
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(8, 0))
 
-        actions = ttk.Frame(shell)
+        actions = ttk.Frame(footer)
         actions.pack(fill="x", pady=(12, 0))
         ttk.Button(
             actions,
@@ -135,7 +136,15 @@ class SecurityRevocationDialog(tk.Toplevel):
         )
         self.revoke_button.pack(side="right", padx=(0, 8))
 
+        self.tree.pack(fill="both", expand=True)
         self._refresh()
+        fit_toplevel_to_content(
+            self,
+            preferred_width=980,
+            preferred_height=590,
+            min_width=820,
+            min_height=500,
+        )
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
