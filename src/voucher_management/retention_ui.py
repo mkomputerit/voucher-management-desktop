@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from tkinter import messagebox, ttk
 
 from .history import HistoryError
+from .ui_layout import fit_toplevel_to_content
 from .retention import (
     ensure_retention_policy,
     load_retention_policy,
@@ -110,8 +111,6 @@ class RetentionReviewDialog(tk.Toplevel):
         self.title("Conservazione voucher")
         self.transient(parent or app)
         self.grab_set()
-        self.geometry("900x560")
-        self.minsize(760, 480)
 
         policy = load_retention_policy(app.database)
         self.days = tk.StringVar(
@@ -179,14 +178,16 @@ class RetentionReviewDialog(tk.Toplevel):
         self.tree.column("recipient", width=260)
         self.tree.column("basis", width=150, anchor="center")
         self.tree.column("lastsync", width=170, anchor="center")
-        self.tree.pack(fill="both", expand=True)
+
+        footer = ttk.Frame(shell)
+        footer.pack(side="bottom", fill="x")
 
         ttk.Label(
-            shell,
+            footer,
             textvariable=self.status,
         ).pack(anchor="w", pady=(8, 0))
 
-        actions = ttk.Frame(shell)
+        actions = ttk.Frame(footer)
         actions.pack(fill="x", pady=(12, 0))
         ttk.Button(
             actions,
@@ -199,7 +200,15 @@ class RetentionReviewDialog(tk.Toplevel):
             style="Muted.TLabel",
         ).pack(side="left")
 
+        self.tree.pack(fill="both", expand=True)
         self._refresh()
+        fit_toplevel_to_content(
+            self,
+            preferred_width=900,
+            preferred_height=560,
+            min_width=760,
+            min_height=480,
+        )
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
