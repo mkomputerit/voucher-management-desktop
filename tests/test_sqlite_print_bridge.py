@@ -49,7 +49,7 @@ def test_confirmed_print_is_mirrored_with_stable_audit_identity():
     ]
 
 
-def test_confirmed_print_deselects_only_printed_vouchers():
+def test_confirmed_print_clears_global_voucher_selection():
     refreshed = []
     fake = SimpleNamespace(
         checked_ids={"v1", "v2", "v3"},
@@ -60,13 +60,18 @@ def test_confirmed_print_deselects_only_printed_vouchers():
         ],
         populate=lambda: refreshed.append(True),
     )
+    fake._finalize_voucher_operation_ui = lambda **kwargs: (
+        fake.checked_ids.clear(),
+        fake.populate(),
+        True,
+    )[-1]
 
     VoucherApp._deselect_printed_codes(
         fake,
         ["1111122222", "55555-66666"],
     )
 
-    assert fake.checked_ids == {"v2"}
+    assert fake.checked_ids == set()
     assert refreshed == [True]
 
 
