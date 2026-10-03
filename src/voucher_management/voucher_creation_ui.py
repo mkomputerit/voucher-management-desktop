@@ -327,12 +327,10 @@ class VoucherCreationMixin:
                     parent=self,
                 )
 
-            self.checked_ids = {
-                voucher.id
-                for voucher in outcome.created
-            }
             self.filter_var.set("Da stampare")
-            self.populate()
+            ui_refreshed = self._finalize_voucher_operation_ui(
+                operation="create",
+            )
 
             if getattr(outcome, "local_persistence_error", None) is not None:
                 self.logger.error(
@@ -381,16 +379,19 @@ class VoucherCreationMixin:
                     "Voucher creati • elenco da aggiornare",
                     f"UniFi ha confermato la creazione di {len(outcome.created)} "
                     "voucher, ma la prima rilettura non li conteneva ancora "
-                    "tutti. I voucher confermati restano visibili e selezionati. "
-                    "Eseguire Sincronizza prima di considerare la Home aggiornata.",
+                    "tutti. I voucher confermati restano visibili ma non "
+                    "selezionati. Eseguire Sincronizza prima di considerare "
+                    "completa una nuova fotografia UniFi.",
                     parent=self,
                 )
                 return
 
+            if not ui_refreshed:
+                return
             messagebox.showinfo(
                 "Voucher",
                 f"Creati {len(outcome.created)} voucher. "
-                "Sono già selezionati per la stampa.",
+                "Home e Voucher sono stati aggiornati automaticamente.",
                 parent=self,
             )
 
