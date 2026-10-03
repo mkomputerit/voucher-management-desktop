@@ -27,7 +27,6 @@ from .onboarding import OnboardingState, choose_shared_fresh_start
 from .onboarding_ui import (
     FirstRunWizard,
     schedule_first_run_onboarding,
-    startup_onboarding_state,
 )
 from .operational_alerts import (
     unprinted_warning_candidates,
