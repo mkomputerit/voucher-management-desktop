@@ -65,7 +65,9 @@ def test_uat_golden_baseline_keeps_all_operator_workflow_entrypoints():
         "align_pending_vouchers",
         "open_operational_alerts",
         "open_security_revocation",
-        "open_retention_review",
+        # Privacy-minimization RetentionMixin is intentionally not composed
+        # into ModernVoucherApp in 5.1. The approved operational retention
+        # workflows are the two methods above.
         "recover_pending_print_audit",
         "export_history_exchange",
         "import_history_exchange",
