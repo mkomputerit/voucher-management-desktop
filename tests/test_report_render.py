@@ -42,6 +42,10 @@ def _dataset(*, code="", kind=ReportKind.FULL_HISTORY, purpose=ReportPurpose.AUD
         status="Utilizzato",
         origin="APPLICATION",
         is_nominal=True,
+        activated_at="2026-09-01T10:00:00+00:00",
+        duration_minutes=60,
+        authorized_guest_limit=5,
+        last_seen_at="2026-09-26T11:00:00+00:00",
         last_synced_at="2026-09-26T11:30:00+00:00",
         unifi_id="unifi-voucher-001",
         unifi_name="Descrizione UniFi originale",
@@ -99,10 +103,40 @@ def test_detail_csv_hides_codes_but_keeps_sanitized_administrative_detail(tmp_pa
     assert "Nota locale amministrativa" in payload
     assert "ID UniFi" in payload
     assert "unifi-voucher-001" in payload
-    assert "Guest autorizzati (somma ultimo conteggio);2" in payload
-    assert "Dato uso;Utilizzato;Guest autorizzati" in payload
+    assert "Guest autorizzati (conteggio cumulativo osservato);2" in payload
+    assert "Dato uso;Utilizzato;Guest autorizzati cumulativi" in payload
     assert "Dati controller aggiornati fino a;" in payload
     assert "26/09/2026" in payload
+
+
+def test_owner_used_report_excludes_technical_audit_columns(tmp_path: Path):
+    output = tmp_path / "used.csv"
+    dataset = _dataset(
+        kind=ReportKind.USED,
+        purpose=ReportPurpose.SUMMARY,
+    )
+
+    render_report_csv(dataset, output)
+
+    payload = output.read_text(encoding="utf-8-sig")
+    assert "Destinatario;Creazione;Prima attivazione" in payload
+    assert "Guest autorizzati cumulativi" in payload
+    assert "ID UniFi" not in payload
+    assert "unifi-voucher-001" not in payload
+    assert "Note locali" not in payload
+    assert "Ultima sincronizzazione locale" not in payload
+
+
+def test_full_audit_distinguishes_controller_observation_from_local_sync(tmp_path: Path):
+    output = tmp_path / "audit-freshness.csv"
+
+    render_report_csv(_dataset(), output)
+
+    payload = output.read_text(encoding="utf-8-sig")
+    assert "Ultima osservazione controller" in payload
+    assert "Ultima sincronizzazione locale" in payload
+    assert "26/09/2026 11:00" in payload
+    assert "26/09/2026 11:30" in payload
 
 
 def test_summary_csv_is_aggregate_only_and_excludes_personal_detail(tmp_path: Path):
