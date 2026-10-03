@@ -3,16 +3,13 @@ param(
     [string]$SourcePath = $PSScriptRoot,
     [string]$InstallRoot = (Join-Path $env:ProgramFiles "Voucher Management"),
     [string]$DataRoot,
-    [string]$OperatorGroup,
-    [string]$OperatorUser,
     [switch]$SkipShortcut
 )
 
 $ErrorActionPreference = "Stop"
-$OperatorGroupDescription = "Operatori autorizzati a Voucher Management"
-$DefaultOperatorGroup = "Voucher Management Operators"
 $DefaultDataRoot = (Join-Path $env:ProgramData "VoucherManagement")
 $UninstallRegistryPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VoucherManagement"
+$BuiltinUsersSid = "S-1-5-32-545"
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -97,98 +94,6 @@ function Assert-PathsDoNotOverlap {
     }
 }
 
-function Resolve-InteractiveUser {
-    param([string]$ExplicitUser)
-    if ($ExplicitUser) { return $ExplicitUser }
-
-    # Win32_ComputerSystem.UserName identifies the console-interactive user,
-    # not an arbitrary RDP/Fast User Switching session. Multi-session installs
-    # should pass -OperatorUser explicitly instead of relying on inference.
-    $loggedOn = (Get-CimInstance Win32_ComputerSystem).UserName
-    if (-not $loggedOn) {
-        throw "Impossibile determinare l'utente Windows interattivo. Usare -OperatorUser."
-    }
-    return $loggedOn
-}
-
-function Assert-OperatorGroupSafe {
-    param([object]$Group)
-
-    $sid = [string]$Group.SID.Value
-    if ($sid.StartsWith("S-1-5-32-", [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Il gruppo operatori non può essere un gruppo Windows built-in."
-    }
-
-    $nested = @(
-        Get-LocalGroupMember -Group $Group.Name -ErrorAction Stop |
-            Where-Object { $_.ObjectClass -ne "User" }
-    )
-    if ($nested.Count -gt 0) {
-        throw "Il gruppo operatori può contenere solo account utente diretti, non gruppi annidati."
-    }
-}
-
-function Ensure-OperatorGroup {
-    param([string]$Name, [string]$Member)
-
-    if (-not $Name.Trim()) {
-        throw "Il nome del gruppo operatori non può essere vuoto."
-    }
-    if (-not $Member.Trim()) {
-        throw "L'account operatore non può essere vuoto."
-    }
-
-    $group = Get-LocalGroup -Name $Name -ErrorAction SilentlyContinue
-    $created = $false
-    if (-not $group) {
-        $group = New-LocalGroup -Name $Name -Description $script:OperatorGroupDescription
-        $created = $true
-    }
-    elseif ([string]$group.Description -ne $script:OperatorGroupDescription) {
-        throw "Esiste già un gruppo con questo nome ma non appartiene a Voucher Management."
-    }
-
-    try {
-        Assert-OperatorGroupSafe -Group $group
-    }
-    catch {
-        if ($created) {
-            Remove-LocalGroup -Name $Name -ErrorAction SilentlyContinue
-        }
-        throw
-    }
-
-    $present = Get-LocalGroupMember -Group $Name -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -ieq $Member }
-    $added = $false
-
-    try {
-        if (-not $present) {
-            # Membership changes are part of the same logical transaction as
-            # group creation. Windows can reject some principal types before a
-            # post-add validation is reached; that failure must still roll back
-            # a group created by this installer attempt.
-            Add-LocalGroupMember -Group $Name -Member $Member -ErrorAction Stop
-            $added = $true
-        }
-
-        # Validate again so passing a group as -OperatorUser cannot silently
-        # introduce nested membership and broaden access to ProgramData.
-        Assert-OperatorGroupSafe -Group $group
-    }
-    catch {
-        if ($added) {
-            Remove-LocalGroupMember -Group $Name -Member $Member -ErrorAction SilentlyContinue
-        }
-        if ($created) {
-            Remove-LocalGroup -Name $Name -ErrorAction SilentlyContinue
-        }
-        throw
-    }
-
-    return $group
-}
-
 function Register-WindowsUninstallEntry {
     param([string]$InstallRoot)
 
@@ -223,10 +128,8 @@ function Register-WindowsUninstallEntry {
 }
 
 function Set-SharedDataAcl {
-    param(
-        [string]$Path,
-        [Security.Principal.SecurityIdentifier]$OperatorGroupSid
-    )
+    param([string]$Path)
+
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
     $rootItem = Get-Item -LiteralPath $Path -Force
     if (
@@ -236,9 +139,11 @@ function Set-SharedDataAcl {
     }
     Assert-NoReparsePointsInTree -Path $Path -Label "La cartella dati condivisa"
 
-    # /grant:r only replaces grants for principals explicitly named in the
-    # command. Reset first so stale explicit ACEs from manual/older installs
-    # cannot survive an upgrade, then rebuild the complete allowed set.
+    # Shared-machine deployment follows the normal Windows split:
+    # Program Files is administrator-managed; ProgramData is application data
+    # shared by local users. Reset stale explicit ACEs from previous versions
+    # and grant Modify to the built-in Users group by SID so localization does
+    # not affect the policy.
     & icacls.exe $Path /reset /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Reset ACL ProgramData non riuscito."
@@ -247,7 +152,7 @@ function Set-SharedDataAcl {
     $rules = @(
         "*S-1-5-18:(OI)(CI)F",
         "*S-1-5-32-544:(OI)(CI)F",
-        "*$($OperatorGroupSid.Value):(OI)(CI)M"
+        "*$($script:BuiltinUsersSid):(OI)(CI)M"
     )
     & icacls.exe $Path /inheritance:r /grant:r $rules /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) {
@@ -257,7 +162,7 @@ function Set-SharedDataAcl {
     $allowedSids = @(
         "S-1-5-18",
         "S-1-5-32-544",
-        $OperatorGroupSid.Value
+        $script:BuiltinUsersSid
     )
     $items = @((Get-Item -LiteralPath $Path)) + @(
         Get-ChildItem -LiteralPath $Path -Force -Recurse
@@ -289,10 +194,10 @@ Assert-Administrator
 $source = [IO.Path]::GetFullPath($SourcePath)
 $destination = Resolve-ManagedChildPath -Path $InstallRoot -RequiredParent $env:ProgramFiles -Label "La cartella di installazione"
 
-# Preserve installer-owned deployment choices across upgrades when the caller
-# does not explicitly replace them. This prevents a later Setup.exe from
-# silently switching a custom ProgramData root or operator group back to the
-# defaults and making existing data appear to have disappeared.
+# Preserve the installed ProgramData location across upgrades. Older format-1
+# markers may still contain operator-group fields; they are intentionally
+# ignored because current shared deployments use the Windows built-in Users
+# group and require no application-specific account/group management.
 $previousMarker = $null
 $previousMarkerPath = Join-Path $destination "voucher-management-deployment.json"
 if (Test-Path -LiteralPath $previousMarkerPath -PathType Leaf) {
@@ -312,13 +217,6 @@ if (-not $DataRoot) {
         [string]$previousMarker.data_root
     } else {
         $script:DefaultDataRoot
-    }
-}
-if (-not $OperatorGroup) {
-    $OperatorGroup = if ($previousMarker -and $previousMarker.operator_group_name) {
-        [string]$previousMarker.operator_group_name
-    } else {
-        $script:DefaultOperatorGroup
     }
 }
 
@@ -351,19 +249,9 @@ if ($running) {
     throw "Chiudere Voucher Management prima di installare o aggiornare."
 }
 
-$operator = Resolve-InteractiveUser -ExplicitUser $OperatorUser
-$group = Ensure-OperatorGroup -Name $OperatorGroup -Member $operator
-if ($previousMarker -and $previousMarker.operator_group_sid) {
-    $expectedPreviousSid = ([string]$previousMarker.operator_group_sid).Trim()
-    if ($expectedPreviousSid -and [string]$group.SID.Value -ine $expectedPreviousSid) {
-        throw "Il SID del gruppo operatori non corrisponde al deployment esistente."
-    }
-}
-
-# Secure the shared data tree before making any installed executable advertise
-# shared mode. If ACL preparation fails, the previous application installation
-# remains untouched and no shared-deployment marker is written.
-Set-SharedDataAcl -Path $DataRoot -OperatorGroupSid $group.SID
+# Secure shared application data before publishing a deployment marker. If ACL
+# preparation fails, the previous application installation remains untouched.
+Set-SharedDataAcl -Path $DataRoot
 
 $destinationParent = Split-Path -Parent $destination
 New-Item -ItemType Directory -Force -Path $destinationParent | Out-Null
@@ -381,8 +269,8 @@ try {
         format = 1
         mode = "shared_programdata"
         data_root = $DataRoot
-        operator_group_sid = [string]$group.SID.Value
-        operator_group_name = [string]$group.Name
+        access_model = "builtin_users_modify"
+        access_sid = $script:BuiltinUsersSid
     } | ConvertTo-Json -Compress
     $utf8NoBom = [Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllText(
@@ -444,7 +332,4 @@ if (-not $SkipShortcut) {
 
 Write-Host "Voucher Management installato in: $destination"
 Write-Host "Dati condivisi: $DataRoot"
-Write-Host "Gruppo operatori: $OperatorGroup"
-Write-Host "Utente autorizzato: $operator"
-Write-Host ""
-Write-Host "Se l'utente è stato appena aggiunto al gruppo, disconnettersi e accedere nuovamente a Windows prima del primo avvio."
+Write-Host "Accesso dati: utenti locali Windows (gruppo built-in Users)"
