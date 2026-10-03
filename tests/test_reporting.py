@@ -61,6 +61,7 @@ def _voucher(
         authorized_guest_count=used,
         expires_at=expires_at,
         expired=expired,
+        last_seen_at=synced_at,
         last_synced_at=synced_at,
     )
 
