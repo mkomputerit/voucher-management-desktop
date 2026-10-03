@@ -52,6 +52,39 @@ def test_ui_workflows_are_composed_from_focused_mixins():
     assert ModernVoucherApp.delete_selected is VoucherDeletionMixin.delete_selected
 
 
+def test_uat_golden_baseline_keeps_all_operator_workflow_entrypoints():
+    required = (
+        "connect",
+        "refresh",
+        "create",
+        "print_selected",
+        "open_existing_pdf",
+        "delete_selected",
+        "edit_selected_nominality",
+        "edit_selected_notes",
+        "align_pending_vouchers",
+        "open_operational_alerts",
+        "open_security_revocation",
+        "open_retention_review",
+        "recover_pending_print_audit",
+        "export_history_exchange",
+        "import_history_exchange",
+        "import_legacy_backup",
+        "migrate_legacy_history",
+        "create_backup",
+        "restore_backup",
+        "request_close",
+    )
+
+    missing = [
+        name
+        for name in required
+        if not callable(getattr(ModernVoucherApp, name, None))
+    ]
+
+    assert missing == []
+
+
 def test_unknown_print_state_requires_explicit_operator_confirmation(monkeypatch):
     from voucher_management import app as app_module
 
