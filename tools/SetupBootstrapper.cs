@@ -184,8 +184,8 @@ namespace VoucherManagementSetup
                 {
                     MessageBox.Show(
                         "Voucher Management e' stato installato correttamente.\r\n\r\n" +
-                        "Se l'utente Windows e' stato appena aggiunto al gruppo operatori, " +
-                        "disconnettersi e accedere nuovamente prima del primo avvio.",
+                        "I dati condivisi sono disponibili agli utenti locali Windows " +
+                        "tramite la cartella ProgramData configurata dal Setup.",
                         "Voucher Management Setup",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information
@@ -300,7 +300,17 @@ namespace VoucherManagementSetup
                     "Un parametro di installazione contiene un carattere non valido."
                 );
             }
-            return "\"" + value + "\"";
+
+            // ProcessStartInfo.Arguments follows the Windows command-line
+            // quoting rules. Backslashes immediately before the closing quote
+            // must be doubled, otherwise a path ending in '\\' can escape the
+            // quote and merge with the next argument.
+            int trailingBackslashes = 0;
+            for (int index = value.Length - 1; index >= 0 && value[index] == '\\'; index--)
+            {
+                trailingBackslashes++;
+            }
+            return "\"" + value + new string('\\', trailingBackslashes) + "\"";
         }
 
         private static void WriteDiagnosticLog(string path, string value)
