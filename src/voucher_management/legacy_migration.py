@@ -498,7 +498,22 @@ def _legacy_placeholder_can_move(
            LIMIT 1""",
         (int(old_voucher_id),),
     ).fetchone()
-    return retention is None
+    if retention is not None:
+        return False
+    observed = db.execute(
+        """SELECT 1 FROM voucher_sync_observations
+           WHERE voucher_id=? LIMIT 1""",
+        (int(old_voucher_id),),
+    ).fetchone()
+    if observed is not None:
+        return False
+    operator_activity = db.execute(
+        """SELECT 1 FROM voucher_events
+           WHERE voucher_id=? AND source<>'MIGRATION'
+           LIMIT 1""",
+        (int(old_voucher_id),),
+    ).fetchone()
+    return operator_activity is None
 
 
 def _renumber_prints_for_voucher(db, voucher_id: int) -> None:
