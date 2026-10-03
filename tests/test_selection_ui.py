@@ -384,3 +384,54 @@ def test_unaligned_voucher_cannot_enter_print_selection_from_home():
     assert result == "break"
     assert fake.checked_ids == {"hidden"}
     assert calls == ["bell"]
+
+
+
+def test_unaligned_active_voucher_remains_selectable_in_voucher_table():
+    voucher = SimpleNamespace(id="visible", status="VALID_MULTI")
+    tree = HomeTree()
+    calls = []
+    fake = SimpleNamespace(
+        tree=tree,
+        home_recent_tree=HomeTree(),
+        by_iid={"home-1": voucher},
+        checked_ids=set(),
+        bell=lambda: calls.append("bell"),
+        _is_expired=VoucherApp._is_expired,
+        _voucher_alignment_ready=lambda current: False,
+        _sync_selection_ui=lambda iids=None: calls.append(("sync", iids)),
+    )
+
+    result = ModernVoucherApp.on_tree_click(
+        fake,
+        SimpleNamespace(x=4, y=8),
+    )
+
+    assert result == "break"
+    assert fake.checked_ids == {"visible"}
+    assert calls == [("sync", ("home-1",))]
+
+
+def test_unaligned_active_voucher_space_selection_is_allowed_in_voucher_table():
+    voucher = SimpleNamespace(id="visible", status="VALID_MULTI")
+    tree = HomeTree()
+    calls = []
+    fake = SimpleNamespace(
+        tree=tree,
+        home_recent_tree=HomeTree(),
+        by_iid={"home-1": voucher},
+        checked_ids=set(),
+        bell=lambda: calls.append("bell"),
+        _is_expired=VoucherApp._is_expired,
+        _voucher_alignment_ready=lambda current: False,
+        _sync_selection_ui=lambda: calls.append("sync"),
+    )
+
+    result = ModernVoucherApp._on_voucher_selection_key(
+        fake,
+        SimpleNamespace(widget=tree),
+    )
+
+    assert result == "break"
+    assert fake.checked_ids == {"visible"}
+    assert calls == ["sync"]
