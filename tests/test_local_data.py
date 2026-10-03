@@ -14,6 +14,7 @@ from voucher_management.local_data import (
 import voucher_management.local_data_ui as local_data_ui
 from voucher_management.local_data_ui import (
     LocalDataMixin,
+    _local_ids,
     local_data_selection_candidates,
     selected_workspace_vouchers,
 )
@@ -386,3 +387,44 @@ def test_notes_action_uses_independent_single_selector(monkeypatch):
     assert len(opened) == 1
     assert opened[0][0][1] == (expired,)
 
+
+
+
+def test_local_ids_resolve_unifi_uuid_to_active_controller_row(tmp_path):
+    db, controller = _db(tmp_path)
+    try:
+        first = _voucher(db, controller, "remote-a", "1111122222")
+        second = _voucher(db, controller, "remote-b", "3333344444")
+        app = SimpleNamespace(active_controller_id=controller, database=db)
+
+        resolved = _local_ids(
+            app,
+            (
+                SimpleNamespace(id="remote-b"),
+                SimpleNamespace(id="remote-a"),
+            ),
+        )
+
+        assert resolved == (second, first)
+    finally:
+        db.close()
+
+
+def test_local_ids_fail_closed_for_foreign_or_missing_unifi_uuid(tmp_path):
+    db, controller = _db(tmp_path)
+    other = db.create_controller(
+        name="Other",
+        api_root="https://other.example",
+        created_at=NOW,
+    )
+    try:
+        _voucher(db, other, "foreign", "9999900000")
+        app = SimpleNamespace(active_controller_id=controller, database=db)
+
+        with pytest.raises(RuntimeError, match="controller attiva"):
+            _local_ids(app, (SimpleNamespace(id="foreign"),))
+
+        with pytest.raises(RuntimeError, match="controller attiva"):
+            _local_ids(app, (SimpleNamespace(id="missing"),))
+    finally:
+        db.close()
