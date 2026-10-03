@@ -469,6 +469,27 @@ def test_successful_voucher_operation_clears_selection_and_refreshes_every_proje
     assert calls == ["populate", "thresholds", "report"]
 
 
+def test_threshold_only_operation_skips_report_rebuild():
+    calls = []
+    fake = SimpleNamespace(
+        checked_ids={"one"},
+        populate=lambda: calls.append("populate"),
+        _refresh_threshold_summary=lambda: calls.append("thresholds"),
+        _refresh_report_summary=lambda: calls.append("report"),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+
+    result = VoucherApp._finalize_voucher_operation_ui(
+        fake,
+        operation="threshold_update",
+        refresh_reports=False,
+    )
+
+    assert result is True
+    assert fake.checked_ids == set()
+    assert calls == ["populate", "thresholds"]
+
+
 def test_successful_voucher_operation_keeps_selection_cleared_if_refresh_fails(
     monkeypatch,
 ):
