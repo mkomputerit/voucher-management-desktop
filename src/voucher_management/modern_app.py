@@ -24,7 +24,11 @@ from .identity import (
 from .logo_validation import LogoValidationError, validate_logo_image
 from .local_data_ui import LocalDataMixin
 from .onboarding import OnboardingState, choose_shared_fresh_start
-from .onboarding_ui import schedule_first_run_onboarding, startup_onboarding_state
+from .onboarding_ui import (
+    FirstRunWizard,
+    schedule_first_run_onboarding,
+    startup_onboarding_state,
+)
 from .operational_alerts import (
     unprinted_warning_candidates,
     unprinted_warning_days,
