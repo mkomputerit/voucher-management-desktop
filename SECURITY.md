@@ -105,11 +105,11 @@ The 5.0 deployment model therefore requires these compensating controls:
   container plus validated format/schema metadata, while failed rows keep no
   unverified digest/format/schema claims;
 - installed shared ProgramData deployment rebuilds the application-data ACL
-  from a clean inherited baseline, removes parent inheritance, grants access
-  only to SYSTEM, BUILTIN\Administrators and the dedicated Voucher Management
-  operator group, then verifies the resulting Allow ACEs recursively; stale
-  explicit grants to other principals cause installation to fail rather than
-  leaving the database broadly readable;
+  from a clean inherited baseline, removes parent inheritance, grants full
+  control to SYSTEM and BUILTIN\Administrators and modify rights to the
+  Windows built-in Users group (SID S-1-5-32-545), then verifies the resulting
+  Allow ACEs recursively; stale explicit grants to other principals cause
+  installation to fail rather than leaving the database broadly readable;
 - review-driven retention never touches used, physically printed or
   PDF-generated vouchers; eligible old/absent unused records with no generated
   PDF keep their historical row while reusable voucher codes and
