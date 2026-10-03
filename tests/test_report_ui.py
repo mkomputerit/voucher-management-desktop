@@ -46,15 +46,22 @@ def _variable(value):
     return SimpleNamespace(get=lambda: value)
 
 
-def test_report_query_and_renderer_both_run_inside_background_worker(
+def test_pdf_report_is_rendered_to_temp_and_opens_preview_before_save(
     monkeypatch,
     tmp_path: Path,
 ):
     events = []
     tasks = []
-    output = tmp_path / "report.pdf"
+    previews = []
+    output = tmp_path / "report-preview.pdf"
     dataset = _empty_dataset()
     database_path = tmp_path / "voucher_management.db"
+
+    class Temporary:
+        name = str(output)
+
+        def close(self):
+            events.append(("temp_closed",))
 
     def build(path, **kwargs):
         events.append(("build", Path(path), kwargs))
@@ -89,6 +96,8 @@ def test_report_query_and_renderer_both_run_inside_background_worker(
         kind_var=_variable("Riepilogo storico"),
         scope_var=_variable("Controller attivo"),
         format_var=_variable("PDF"),
+        include_codes_var=_variable(False),
+        _busy=True,
         destroy=lambda: events.append(("destroy",)),
         _set_busy=lambda busy: events.append(("busy", busy)),
     )
@@ -96,14 +105,26 @@ def test_report_query_and_renderer_both_run_inside_background_worker(
     monkeypatch.setattr(report_ui, "build_report_dataset_from_path", build)
     monkeypatch.setattr(report_ui, "render_report_pdf", render)
     monkeypatch.setattr(
+        report_ui.tempfile,
+        "NamedTemporaryFile",
+        lambda **kwargs: Temporary(),
+    )
+    monkeypatch.setattr(
         report_ui.filedialog,
         "asksaveasfilename",
-        lambda **kwargs: str(output),
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("PDF must preview before asking where to save")
+        ),
+    )
+    monkeypatch.setattr(
+        report_ui,
+        "PdfPreview",
+        lambda *args, **kwargs: previews.append((args, kwargs)),
     )
 
     ReportDialog._generate(dialog)
 
-    assert events == []
+    assert events == [("temp_closed",)]
     assert len(tasks) == 1
     assert tasks[0]["label"] == "Generazione report…"
     assert tasks[0]["busy_scope"] is dialog._set_busy
@@ -111,15 +132,72 @@ def test_report_query_and_renderer_both_run_inside_background_worker(
     result = tasks[0]["worker"]()
 
     assert result == output
-    assert events[0][0] == "build"
-    assert events[0][1] == database_path
-    assert events[0][2]["controller_id"] == 7
-    assert events[1] == (
+    assert events[1][0] == "build"
+    assert events[1][1] == database_path
+    assert events[1][2]["controller_id"] == 7
+    assert events[2] == (
         "render",
         dataset,
         output,
         "Sala Assemblee",
     )
+
+    tasks[0]["success"](output)
+
+    assert ("destroy",) in events
+    assert len(previews) == 1
+    args, kwargs = previews[0]
+    assert args[0] is app
+    assert args[1] == output
+    assert kwargs["report_mode"] is True
+    assert kwargs["allow_save_copy"] is True
+    assert kwargs["delete_on_close"] is True
+    assert kwargs["preview_title"] == "Anteprima report"
+
+
+def test_csv_report_still_uses_direct_save_dialog(monkeypatch, tmp_path: Path):
+    tasks = []
+    target = tmp_path / "report.csv"
+    app = SimpleNamespace(
+        active_controller_id=None,
+        paths=SimpleNamespace(database=tmp_path / "voucher_management.db"),
+        settings={},
+        logger=SimpleNamespace(error=lambda *args, **kwargs: None),
+        _run_background_task=lambda label, worker, success, error, busy_scope=None: (
+            tasks.append((worker, success)) or True
+        ),
+    )
+    dialog = SimpleNamespace(
+        app=app,
+        kind_var=_variable("Riepilogo storico"),
+        scope_var=_variable("Tutto lo storico locale"),
+        format_var=_variable("CSV"),
+        include_codes_var=_variable(False),
+        _set_busy=lambda busy: None,
+        destroy=lambda: None,
+    )
+    monkeypatch.setattr(
+        report_ui.filedialog,
+        "asksaveasfilename",
+        lambda **kwargs: str(target),
+    )
+    monkeypatch.setattr(
+        report_ui,
+        "build_report_dataset_from_path",
+        lambda *args, **kwargs: _empty_dataset(),
+    )
+    monkeypatch.setattr(
+        report_ui,
+        "render_report_csv",
+        lambda dataset, output: output.write_text("ok", encoding="utf-8"),
+    )
+
+    ReportDialog._generate(dialog)
+
+    assert len(tasks) == 1
+    result = tasks[0][0]()
+    assert result == target
+    assert target.read_text(encoding="utf-8") == "ok"
 
 
 def test_active_controller_scope_without_controller_blocks_cleanly(monkeypatch):
