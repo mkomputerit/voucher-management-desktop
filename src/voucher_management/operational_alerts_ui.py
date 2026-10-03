@@ -150,12 +150,10 @@ class OperationalAlertsDialog(tk.Toplevel):
             return
         self.days.set(str(days))
         self._refresh()
-        refresh_home = getattr(self.app, "_refresh_home_threshold_alerts", None)
-        if refresh_home is not None:
-            refresh_home()
-        refresh_settings = getattr(self.app, "_refresh_threshold_summary", None)
-        if refresh_settings is not None:
-            refresh_settings()
+        self.app._finalize_voucher_operation_ui(
+            operation="unprinted_threshold",
+            refresh_reports=False,
+        )
 
     def _refresh(self) -> None:
         self.tree.delete(*self.tree.get_children())
