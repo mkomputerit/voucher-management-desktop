@@ -277,6 +277,10 @@ class RetentionReviewDialog(tk.Toplevel):
             return
         self.days.set(str(policy.unused_unprinted_days))
         self._refresh()
+        self.app._finalize_voucher_operation_ui(
+            operation="retention_policy",
+            refresh_reports=False,
+        )
 
 class RetentionMixin:
     """Compose retention onboarding and review into the Windows shell."""
