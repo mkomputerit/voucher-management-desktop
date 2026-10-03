@@ -60,6 +60,62 @@ def local_data_selection_candidates(vouchers) -> tuple:
     return tuple(vouchers)
 
 
+def _local_ids(app, vouchers) -> tuple[int, ...]:
+    """Resolve live UniFi UUIDs to local SQLite voucher primary keys.
+
+    ApiVoucher.id is the UniFi voucher UUID, while local metadata mutations use
+    the integer primary key of the vouchers table. Resolution is scoped to the
+    active controller and fails closed if any selected voucher is missing,
+    archived, ambiguous or has an empty remote identity.
+    """
+
+    controller_id = getattr(app, "active_controller_id", None)
+    database = getattr(app, "database", None)
+    if controller_id is None or database is None:
+        raise RuntimeError(
+            "La controller locale attiva non è disponibile. Sincronizzare e riprovare."
+        )
+
+    remote_ids = tuple(
+        dict.fromkeys(
+            str(getattr(voucher, "id", "") or "").strip()
+            for voucher in vouchers
+        )
+    )
+    if not remote_ids or any(not value for value in remote_ids):
+        raise RuntimeError(
+            "Uno o più voucher selezionati non hanno un'identità UniFi valida."
+        )
+
+    placeholders = ",".join("?" for _ in remote_ids)
+    rows = database.connection.execute(
+        f"""SELECT id, unifi_id
+            FROM vouchers
+            WHERE controller_id=?
+              AND archived_at IS NULL
+              AND unifi_id IN ({placeholders})
+            ORDER BY id""",
+        (int(controller_id), *remote_ids),
+    ).fetchall()
+
+    resolved: dict[str, int] = {}
+    for row in rows:
+        remote_id = str(row["unifi_id"] or "").strip()
+        if not remote_id or remote_id in resolved:
+            raise RuntimeError(
+                "Identità voucher locale ambigua. Sincronizzare e riprovare."
+            )
+        resolved[remote_id] = int(row["id"])
+
+    if set(resolved) != set(remote_ids):
+        raise RuntimeError(
+            "Uno o più voucher selezionati non appartengono alla controller attiva "
+            "o non sono presenti nello storico locale. Sincronizzare e riprovare."
+        )
+
+    return tuple(resolved[remote_id] for remote_id in remote_ids)
+
+
 class LocalMetadataSelectionDialog(tk.Toplevel):
     """Select local-metadata targets independently from print/delete state."""
 
