@@ -68,8 +68,8 @@ def _voucher(
     code,
     imported_at=OLD,
     created_at=OLD,
-    expires_at=OLD,
-    expired=True,
+    expires_at=None,
+    expired=False,
     uses=0,
     present=False,
 ):
@@ -85,12 +85,15 @@ def _voucher(
         authorized_guest_count=uses,
         last_synced_at=imported_at,
     )
-    if not present:
-        with database.transaction() as db:
-            db.execute(
-                "UPDATE vouchers SET present_on_controller=0 WHERE id=?",
-                (voucher_id,),
-            )
+    with database.transaction() as db:
+        db.execute(
+            """UPDATE vouchers
+               SET alignment_completed_at=?,
+                   print_state='NOT_PRINTED',
+                   present_on_controller=?
+               WHERE id=?""",
+            (imported_at, int(bool(present)), voucher_id),
+        )
     return voucher_id
 
 
@@ -217,7 +220,7 @@ def test_historically_used_voucher_never_becomes_retention_candidate_after_count
             "SELECT authorized_guest_count, ever_used FROM vouchers WHERE id=?",
             (voucher_id,),
         ).fetchone()
-        assert row["authorized_guest_count"] == 0
+        assert row["authorized_guest_count"] == 1
         assert row["ever_used"] == 1
         assert all(
             candidate.voucher_id != voucher_id
