@@ -1,6 +1,6 @@
 # Changelog
 
-## 5.1.0 - Unreleased
+## 5.1.0 - 2026-10-04
 
 - Update the locked `cryptography` runtime from 50.0.1 to **50.0.2** so the
   packaged Windows wheel includes OpenSSL 4.0.3 security fixes. No other
