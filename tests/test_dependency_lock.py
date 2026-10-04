@@ -100,4 +100,4 @@ def test_backup_crypto_dependency_is_declared_directly():
 
     # backup_crypto imports cryptography directly; relying on it only as a
     # transitive dependency makes a fresh local developer install incomplete.
-    assert runtime["cryptography"] == "50.0.1"
+    assert runtime["cryptography"] == "50.0.2"
