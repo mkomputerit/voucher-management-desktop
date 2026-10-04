@@ -100,6 +100,23 @@ REPORT_GUIDE_CHOICES = (
         ),
     ),
     (
+        "Controllare i voucher nominali / assegnati a persone",
+        ReportKind.NOMINAL,
+        (
+            "Mostra i voucher classificati come Nominali, con il destinatario "
+            "e le informazioni operative/storiche utili al titolare."
+        ),
+    ),
+    (
+        "Controllare i voucher eliminati per errore di preparazione",
+        ReportKind.PREPARATION_DELETED,
+        (
+            "Mostra i voucher eliminati dalla controller come correzione di "
+            "preparazione, con data, origine dell'eliminazione e motivazione "
+            "registrata. Le revoche di sicurezza restano in un report separato."
+        ),
+    ),
+    (
         "Controllare nominalità e classificazioni mancanti",
         ReportKind.UNCLASSIFIED,
         "Mostra i voucher che richiedono ancora una classificazione locale.",
