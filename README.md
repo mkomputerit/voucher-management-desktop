@@ -4,21 +4,16 @@ Open-source Windows desktop application for managing and printing guest-access v
 
 The current development line is field-tested with Ubiquiti UniFi Network. **Voucher Management is an independent project and is not affiliated with or endorsed by Ubiquiti Inc.** UniFi is a trademark of Ubiquiti Inc.
 
-## Current development state
+## Current stable release
 
-This branch contains the **5.1.0 release candidate**, identified as 5.1.0 in
-the application and executable metadata for field testing. It is not yet a
-published stable release; `CHANGELOG.md` deliberately remains `Unreleased`
-until the release gate is completed. The last stable release is 5.0.0.
+**Voucher Management 5.1.0** is the current stable release. The release passed
+the full Windows CI/build gate, whole-application external review and operator
+field/UAT acceptance before publication.
 
-Before tagging 5.1.0, complete visual checks on Windows at 125% and 150% scaling,
-including moving the window between monitors with different scaling. Inspect
-Home/Voucher/Report/Settings, sidebar icons and connection colours in both
-themes. Icon regeneration currently follows changes reported by `tk scaling`;
-automatic per-monitor DPI adaptation has not been established by the tests.
-Verify a physical voucher with a configured logo and recipient inside the cut
-area. Automated keyboard coverage exercises real Tk navigation and Space on
-Windows in addition to the selection-model tests.
+The release includes the redesigned Home/Voucher/Report/Settings workflow,
+durable SQLite history, live UniFi Home state, historical reporting, nominal
+classification, alignment/reconciliation, operational/security review,
+protected backup/restore and the self-contained Windows Setup.
 
 The application currently provides:
 
@@ -85,7 +80,7 @@ The application currently provides:
   including explicit UniFi/TLS verification and migration precedence;
 - Windows 11 light/dark themes.
 
-Voucher Management 5.0.0 uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
+Voucher Management 5.1.0 uses Ubiquiti's documented Network integration API with API-key authentication. The adapter has been validated against UniFi Network 10.6.106 for discovery, voucher listing/detail, creation, documented limits and single-UUID deletion. Field testing confirmed that two real guest clients can use the same voucher when `authorizedGuestLimit` is omitted; the controller reports both authorized clients through `authorizedGuestCount`.
 
 ## Current limitations
 
@@ -109,7 +104,7 @@ Voucher Management 5.0.0 uses Ubiquiti's documented Network integration API with
 
 ## Public release
 
-Voucher Management 5.0.0 is the current stable release. Stable Windows
+Voucher Management 5.1.0 is the current stable release. Stable Windows
 artifacts are produced only by the explicit verified release gate on `main`
 and are published with SHA-256 checksums.
 
