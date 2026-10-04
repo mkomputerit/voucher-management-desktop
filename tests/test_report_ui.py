@@ -298,11 +298,39 @@ def test_report_guide_covers_core_operator_questions():
     assert ReportKind.PRINTED_UNUSED in kinds
     assert ReportKind.UNPRINTED_WARNING in kinds
     assert ReportKind.SECURITY_REVIEW in kinds
+    assert ReportKind.NOMINAL in kinds
+    assert ReportKind.PREPARATION_DELETED in kinds
     assert ReportKind.UNCLASSIFIED in kinds
     assert ReportKind.FULL_HISTORY in kinds
     assert all(
         description.strip()
         for _label, _kind, description in report_ui.REPORT_GUIDE_CHOICES
+    )
+
+
+def test_report_guide_keeps_preparation_deletion_separate_from_security_revocation():
+    guide_by_kind = {
+        kind: (label, description)
+        for label, kind, description in report_ui.REPORT_GUIDE_CHOICES
+    }
+
+    nominal_label, nominal_description = guide_by_kind[ReportKind.NOMINAL]
+    deleted_label, deleted_description = guide_by_kind[
+        ReportKind.PREPARATION_DELETED
+    ]
+
+    assert "nominali" in nominal_label.lower()
+    assert "titolare" in nominal_description.lower()
+    assert "errore di preparazione" in deleted_label.lower()
+    assert "revoche di sicurezza" in deleted_description.lower()
+    assert ReportKind.SECURITY_REVOKED is not ReportKind.PREPARATION_DELETED
+    assert (
+        report_ui.report_level_for_kind(ReportKind.NOMINAL)
+        == report_ui.REPORT_LEVEL_OPERATIONAL
+    )
+    assert (
+        report_ui.report_level_for_kind(ReportKind.PREPARATION_DELETED)
+        == report_ui.REPORT_LEVEL_OPERATIONAL
     )
 
 
