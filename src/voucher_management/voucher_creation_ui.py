@@ -604,15 +604,22 @@ class VoucherCreationMixin:
                 return
 
             if action == "associated":
-                self.checked_ids = set(candidate_ids)
                 filter_var = getattr(self, "filter_var", None)
                 if filter_var is not None:
                     filter_var.set("Da stampare")
+
+            refreshed = self._finalize_voucher_operation_ui(
+                operation="uncertain_create_recovery",
+            )
+            if not refreshed:
+                return
+
+            if action == "associated":
                 messagebox.showinfo(
                     "Creazione riconciliata",
                     f"Associati {len(candidate_ids)} voucher alla richiesta "
                     "interrotta. Sono ora trattati come creati da Voucher "
-                    "Management.",
+                    "Management e non restano selezionati.",
                     parent=self,
                 )
             else:
@@ -623,10 +630,6 @@ class VoucherCreationMixin:
                     "controller e seguiranno il normale allineamento.",
                     parent=self,
                 )
-            self.populate()
-            refresh = getattr(self, "_refresh_report_summary", None)
-            if callable(refresh):
-                refresh()
 
         def failed(exc: Exception) -> None:
             self.logger.warning(
