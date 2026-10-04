@@ -2,6 +2,10 @@
 
 ## 5.1.0 - Unreleased
 
+- Update the locked `cryptography` runtime from 50.0.1 to **50.0.2** so the
+  packaged Windows wheel includes OpenSSL 4.0.3 security fixes. No other
+  dependency was upgraded during the final pre-main audit.
+
 - Redesign the Windows operator interface around first-class **Home**, **Voucher**,
   **Report** and **Settings** workspaces, with UniFi-portal-inspired Home layout,
   DPI-aware sidebar icons, keyboard-safe voucher selection and clearer
