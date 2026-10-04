@@ -14,10 +14,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import shutil
 from queue import Empty
 import tkinter as tk
 from uuid import uuid4
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import pypdfium2 as pdfium
 from PIL import Image, ImageTk, ImageWin
@@ -44,17 +45,36 @@ class PdfPreview(tk.Toplevel):
         codes: list[str],
         history,
         settings: dict,
+        site_id: str = "",
+        unifi_ids: list[str] | None = None,
+        allow_physical_print: bool = True,
         on_print=None,
         on_audit=None,
         on_submitted=None,
         confirm_print=None,
+        report_mode: bool = False,
+        allow_save_copy: bool = False,
+        delete_on_close: bool = False,
+        preview_title: str | None = None,
+        preview_note: str | None = None,
+        suggested_save_name: str = "",
     ):
         super().__init__(parent)
         self.app = parent
         self.pdf_path = Path(pdf_path)
         self.codes = list(codes)
+        self.site_id = str(site_id or "").strip()
+        self.unifi_ids = (
+            [str(value).strip() for value in unifi_ids]
+            if unifi_ids is not None
+            else None
+        )
+        if self.unifi_ids is not None and len(self.unifi_ids) != len(self.codes):
+            super().destroy()
+            raise ValueError("Identità voucher non coerenti con il PDF")
         self.history = history
         self.settings = settings
+        self.allow_physical_print = bool(allow_physical_print)
         self.on_print = on_print
         # Optional application-level audit (SQLite in 5.0). It runs on the Tk
         # thread after the crash-safe HMAC audit succeeds, so the SQLite
@@ -65,6 +85,11 @@ class PdfPreview(tk.Toplevel):
         # recovery and ambiguous prepared jobs.
         self.on_submitted = on_submitted
         self.confirm_print = confirm_print
+        self.report_mode = bool(report_mode)
+        self.allow_save_copy = bool(allow_save_copy)
+        self.delete_on_close = bool(delete_on_close)
+        self.preview_note = str(preview_note or "").strip()
+        self.suggested_save_name = str(suggested_save_name or "").strip()
         self.document = None
         self.page_index = 0
         self.photo = None
@@ -83,7 +108,11 @@ class PdfPreview(tk.Toplevel):
             super().destroy()
             raise RuntimeError("Impossibile caricare il documento PDF") from exc
 
-        self.title(f"Anteprima di stampa - {self.pdf_path.name}")
+        self.title(
+            str(preview_title).strip()
+            if preview_title
+            else f"Anteprima di stampa - {self.pdf_path.name}"
+        )
         # A sensible fallback is kept for environments where Windows refuses
         # the zoomed state. On normal Windows desktops the window is maximised
         # after widgets exist, giving the A4 viewport the largest safe area.
@@ -95,6 +124,8 @@ class PdfPreview(tk.Toplevel):
         self.copies_var = tk.IntVar(value=1)
         self._build_ui()
         self._load_printers()
+        if self.delete_on_close:
+            self.protocol("WM_DELETE_WINDOW", self._request_close)
         self.bind("<Configure>", self._resize)
         self.after_idle(self._maximize_window)
         self.after(120, self.render_page)
@@ -136,6 +167,14 @@ class PdfPreview(tk.Toplevel):
             command=self.print_document,
         )
         self.print_button.grid(row=0, column=4, padx=(14, 5))
+        self.save_button = ttk.Button(
+            bottom,
+            text="SALVA PDF",
+            command=self.save_copy,
+        )
+        self.save_button.grid(row=0, column=5, padx=(8, 0))
+        if not self.allow_save_copy:
+            self.save_button.grid_remove()
         self.register_print_button = ttk.Button(
             bottom,
             text="REGISTRA STAMPA",
@@ -143,10 +182,44 @@ class PdfPreview(tk.Toplevel):
         )
         self.register_print_button.grid(
             row=0,
-            column=5,
+            column=6,
             padx=(8, 0),
         )
         self.register_print_button.grid_remove()
+        if not self.allow_physical_print:
+            self.print_button.grid_remove()
+            note = self.preview_note or (
+                "PDF storico in sola consultazione. Per ristampare un voucher "
+                "selezionalo nell'elenco e usa “Stampa selezionati”."
+            )
+            ttk.Label(
+                bottom,
+                text=note,
+                wraplength=680,
+            ).grid(
+                row=1,
+                column=0,
+                columnspan=7,
+                sticky="w",
+                pady=(8, 0),
+            )
+        else:
+            note = self.preview_note or (
+                "Nei nuovi PDF, il destinatario resta sul voucher dopo il "
+                "ritaglio ed è visibile all'ospite. Controlla l'anteprima "
+                "prima di stampare."
+            )
+            ttk.Label(
+                bottom,
+                text=note,
+                wraplength=680,
+            ).grid(
+                row=1,
+                column=0,
+                columnspan=7,
+                sticky="w",
+                pady=(8, 0),
+            )
 
     def _maximize_window(self):
         """Maximise on Windows without entering borderless/full-screen mode."""
@@ -295,9 +368,48 @@ class PdfPreview(tk.Toplevel):
             self.page_index += 1
             self.render_page()
 
+    def save_copy(self) -> None:
+        """Save the already-rendered definitive PDF to an operator-selected path."""
+
+        if not self.allow_save_copy:
+            return
+        target = filedialog.asksaveasfilename(
+            parent=self,
+            title="Salva report",
+            defaultextension=".pdf",
+            initialfile=self.suggested_save_name or self.pdf_path.name,
+            filetypes=(("Documento PDF", "*.pdf"),),
+        )
+        if not target:
+            return
+        destination = Path(target)
+        try:
+            if destination.resolve() != self.pdf_path.resolve():
+                shutil.copy2(self.pdf_path, destination)
+        except OSError as exc:
+            messagebox.showerror(
+                "Salva report",
+                f"Impossibile salvare il report.\n\n{exc}",
+                parent=self,
+            )
+            return
+        messagebox.showinfo(
+            "Salva report",
+            f"Report salvato:\n{destination}",
+            parent=self,
+        )
+
     def print_document(self):
         """Submit/rasterise on the shared worker without blocking Tk."""
 
+        if not self.allow_physical_print:
+            messagebox.showinfo(
+                "PDF storico",
+                "Questo PDF è disponibile in sola consultazione. "
+                "Per ristampare usa “Stampa selezionati” dall'elenco voucher.",
+                parent=self,
+            )
+            return
         if self._printing:
             return
         printer = self.printer_var.get().strip()
@@ -342,8 +454,19 @@ class PdfPreview(tk.Toplevel):
         history = self.history
         settings = dict(self.settings)
         application_audit = getattr(self, "on_audit", None)
+        report_mode = bool(getattr(self, "report_mode", False))
+        site_id = self.site_id
+        unifi_ids = (
+            list(self.unifi_ids)
+            if self.unifi_ids is not None
+            else None
+        )
 
         def worker():
+            if report_mode:
+                self._print_windows(printer, copies)
+                return None, None
+
             history.assert_no_pending_print_audit()
             pending = {
                 "copies": copies,
@@ -364,6 +487,8 @@ class PdfPreview(tk.Toplevel):
                 settings,
                 audit_id=pending["audit_id"],
                 submitted_at=pending["submitted_at"],
+                site_id=site_id,
+                unifi_ids=unifi_ids,
             )
 
             self._print_windows(printer, copies)
@@ -382,6 +507,8 @@ class PdfPreview(tk.Toplevel):
                     settings,
                     audit_id=pending["audit_id"],
                     submitted_at=pending["submitted_at"],
+                    site_id=site_id,
+                    unifi_ids=unifi_ids,
                     **record_kwargs,
                 )
             except Exception as exc:
@@ -405,6 +532,14 @@ class PdfPreview(tk.Toplevel):
         def completed(result) -> None:
             pending, audit_error = result
             if not finish_controls():
+                return
+
+            if report_mode:
+                messagebox.showinfo(
+                    "Stampa report",
+                    f"Report inviato a {printer}.",
+                    parent=self,
+                )
                 return
 
             on_submitted = getattr(self, "on_submitted", None)
@@ -456,6 +591,14 @@ class PdfPreview(tk.Toplevel):
 
         def failed(exc: Exception) -> None:
             if not finish_controls():
+                return
+            if report_mode:
+                messagebox.showerror(
+                    "Stampa report",
+                    "Impossibile inviare il report alla stampante.\n\n"
+                    f"{exc}",
+                    parent=self,
+                )
                 return
             try:
                 pending_state = history.pending_print_state()
@@ -511,6 +654,12 @@ class PdfPreview(tk.Toplevel):
         settings = dict(self.settings)
         stable_pending = dict(pending)
         application_audit = getattr(self, "on_audit", None)
+        site_id = self.site_id
+        unifi_ids = (
+            list(self.unifi_ids)
+            if self.unifi_ids is not None
+            else None
+        )
 
         def worker():
             record_kwargs = {}
@@ -523,6 +672,8 @@ class PdfPreview(tk.Toplevel):
                 settings,
                 audit_id=str(stable_pending["audit_id"]),
                 submitted_at=str(stable_pending["submitted_at"]),
+                site_id=site_id,
+                unifi_ids=unifi_ids,
                 **record_kwargs,
             )
 
@@ -661,6 +812,9 @@ class PdfPreview(tk.Toplevel):
         finally:
             dc.DeleteDC()
 
+    def _request_close(self) -> None:
+        self.destroy()
+
     def destroy(self):
         """Cancel pending work and release the PDFium document deterministically."""
 
@@ -690,3 +844,11 @@ class PdfPreview(tk.Toplevel):
                     type(close_exc).__name__,
                 )
         super().destroy()
+        if self.delete_on_close:
+            try:
+                self.pdf_path.unlink(missing_ok=True)
+            except OSError as exc:
+                LOGGER.warning(
+                    "preview_temp_cleanup_failed type=%s",
+                    type(exc).__name__,
+                )

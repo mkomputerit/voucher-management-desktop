@@ -13,3 +13,6 @@ LEGACY_PRODUCT_DIR_NAMES = ("UniFiVoucherTool",)
 DEFAULT_STRUCTURE_TYPE = "Personalizzata"
 DEFAULT_STRUCTURE_NAME = ""
 DEFAULT_WIFI_TITLE = "Guest Wi-Fi"
+
+# Synthetic local controller used only for imported pre-SQLite evidence.
+LEGACY_BACKUP_API_ROOT_PREFIX = "legacy-backup://"

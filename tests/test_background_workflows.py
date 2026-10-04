@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from voucher_management.backup_options_ui import BackupChoice
 from queue import Queue
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ from voucher_management import dialogs as dialogs_module
 from voucher_management import modern_app
 from voucher_management import data_maintenance_ui as maintenance_ui
 from voucher_management import voucher_creation_ui as creation_ui
+from voucher_management.workflows import CreateOutcome
 from voucher_management.app import VoucherApp
 from voucher_management.background_tasks import BackgroundResult
 
@@ -212,7 +214,7 @@ def test_create_dialog_validation_error_stays_in_ui(monkeypatch):
     assert shown[0][0][0] == "Voucher"
 
 
-def test_uncertain_create_keeps_guard_and_blocks_second_create(monkeypatch):
+def test_uncertain_create_keeps_guard_and_blocks_second_create(monkeypatch, tmp_path):
     tasks = []
     shown = []
 
@@ -231,13 +233,26 @@ def test_uncertain_create_keeps_guard_and_blocks_second_create(monkeypatch):
     guard = Guard()
     filter_var = SimpleNamespace(set=lambda value: None)
     fake = SimpleNamespace(
-        client=object(),
+        client=SimpleNamespace(site_id="site-a"),
+        controller_snapshot_live=True,
         create_guard=guard,
         vouchers=[],
         checked_ids={"old"},
         filter_var=filter_var,
         populate=lambda: None,
-        logger=SimpleNamespace(warning=lambda *args: None),
+        active_controller_id=7,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_intent=tmp_path / "pending_create_intent.json",
+        ),
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
+        history=SimpleNamespace(
+            correlation_digest=lambda *args, **kwargs: "a" * 64,
+        ),
+        settings={},
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
         _run_network_task=capture_runner(tasks),
         _show_network_error=lambda *args, **kwargs: None,
     )
@@ -245,7 +260,17 @@ def test_uncertain_create_keeps_guard_and_blocks_second_create(monkeypatch):
         creation_ui,
         "CreateDialog",
         lambda parent: SimpleNamespace(
-            result={"recipient": "Guest", "quantity": 1}
+            result={
+                "recipient": "Guest",
+                "quantity": 1,
+                "expire_number": 24,
+                "expire_unit": 60,
+                "quota": 1,
+                "data_mb": None,
+                "down_mbps": None,
+                "up_mbps": None,
+                "is_nominal": False,
+            }
         ),
     )
     outcome = SimpleNamespace(
@@ -284,7 +309,172 @@ def test_uncertain_create_keeps_guard_and_blocks_second_create(monkeypatch):
     assert "esito da verificare" in shown[-1][0][1]
 
 
-def test_manual_refresh_clears_pending_create_guard(monkeypatch):
+def test_confirmed_create_is_not_reported_failed_when_local_reporting_persistence_fails(
+    monkeypatch,
+    tmp_path,
+):
+    tasks = []
+    warnings = []
+    network_errors = []
+
+    class Guard:
+        def __init__(self):
+            self.pending = False
+
+        def begin(self):
+            self.pending = True
+
+        def clear(self):
+            self.pending = False
+            return True
+
+    guard = Guard()
+    created = SimpleNamespace(id="created-1")
+    fake = SimpleNamespace(
+        client=SimpleNamespace(site_id="site-a"),
+        controller_snapshot_live=True,
+        create_guard=guard,
+        vouchers=[],
+        checked_ids=set(),
+        filter_var=SimpleNamespace(set=lambda value: None),
+        populate=lambda: None,
+        active_controller_id=7,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_intent=tmp_path / "pending_create_intent.json",
+            pending_create_reporting=tmp_path / "pending_create_reporting.json",
+        ),
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
+        history=SimpleNamespace(
+            correlation_digest=lambda *args, **kwargs: "b" * 64,
+        ),
+        settings={},
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        ),
+        _run_network_task=capture_runner(tasks),
+        _show_network_error=lambda *args, **kwargs: network_errors.append(args),
+        _finalize_voucher_operation_ui=lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "CreateDialog",
+        lambda parent: SimpleNamespace(
+            result={
+                "recipient": "Pinco Pallino",
+                "quantity": 1,
+                "expire_number": 24,
+                "expire_unit": 60,
+                "quota": 1,
+                "data_mb": None,
+                "down_mbps": None,
+                "up_mbps": None,
+                "is_nominal": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "create_vouchers_and_refresh",
+        lambda *args, **kwargs: CreateOutcome(
+            created=(created,),
+            vouchers=(created,),
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "persist_create_result_to_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("synthetic local persistence failure")
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+
+    VoucherApp.create(fake)
+    result = tasks[0]["worker"]()
+    tasks[0]["success"](result)
+
+    assert guard.pending is False
+    assert network_errors == []
+    assert warnings
+    assert "UniFi ha confermato la creazione" in warnings[-1][0][1]
+    assert "Non ripetere la creazione" in warnings[-1][0][1]
+
+
+def test_create_task_rejection_surfaces_guard_cleanup_failure(monkeypatch, tmp_path):
+    warnings = []
+    logs = []
+
+    class Guard:
+        pending = False
+
+        def begin(self):
+            self.pending = True
+
+        def clear(self):
+            raise creation_ui.CreateMutationGuardError("cannot clear")
+
+    fake = SimpleNamespace(
+        client=SimpleNamespace(site_id="site-a"),
+        controller_snapshot_live=True,
+        create_guard=Guard(),
+        vouchers=[],
+        active_controller_id=7,
+        paths=SimpleNamespace(
+            database=tmp_path / "db.sqlite",
+            pending_create_intent=tmp_path / "pending_create_intent.json",
+        ),
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
+        history=SimpleNamespace(
+            correlation_digest=lambda *args, **kwargs: "c" * 64,
+        ),
+        settings={},
+        logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: logs.append(args),
+        ),
+        _run_network_task=lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        creation_ui,
+        "CreateDialog",
+        lambda parent: SimpleNamespace(
+            result={
+                "recipient": "Guest",
+                "quantity": 1,
+                "expire_number": 24,
+                "expire_unit": 60,
+                "quota": 1,
+                "data_mb": None,
+                "down_mbps": None,
+                "up_mbps": None,
+                "is_nominal": False,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        creation_ui.messagebox,
+        "showwarning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+
+    VoucherApp.create(fake)
+
+    assert logs
+    assert warnings
+    assert warnings[-1][0][0] == "Creazione sospesa"
+    assert "non è stato possibile rimuovere il blocco" in warnings[-1][0][1]
+
+
+def test_manual_refresh_clears_pending_create_guard(monkeypatch, tmp_path):
     tasks = []
 
     class Guard:
@@ -300,7 +490,9 @@ def test_manual_refresh_clears_pending_create_guard(monkeypatch):
         client=client,
         create_guard=guard,
         vouchers=[],
-        logger=SimpleNamespace(warning=lambda *args: None),
+        active_controller_id=None,
+        paths=SimpleNamespace(database=tmp_path / "db.sqlite"),
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
         populate=lambda: None,
         _run_network_task=capture_runner(tasks),
         _show_network_error=lambda *args, **kwargs: None,
@@ -330,11 +522,18 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
     calls = []
     tasks = []
     voucher = SimpleNamespace(
+        id="v1",
         code_formatted="11111-22222",
         quota=1,
     )
     job = SimpleNamespace(
         output=Path("Print") / "Voucher_Test.pdf",
+        batch=SimpleNamespace(
+            site_id="site-a",
+            vouchers=[
+                SimpleNamespace(unifi_id="v1"),
+            ],
+        ),
     )
     outcome = SimpleNamespace(
         output=job.output,
@@ -346,17 +545,27 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
         history=history,
         settings={"structure_name": "Test"},
         paths=SimpleNamespace(prints=Path("Print")),
+        active_controller_id=7,
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
         _run_background_task=capture_runner(tasks),
         logger=SimpleNamespace(
             warning=lambda *args: None,
             error=lambda *args: None,
         ),
         last_pdf=None,
+        checked_ids={"v1"},
         populate=lambda: calls.append(("populate", None)),
-        _preview=lambda path, codes: calls.append(
-            ("preview", path, list(codes))
+        _preview=lambda path, codes, **kwargs: calls.append(
+            ("preview", path, list(codes), kwargs)
         ),
     )
+    fake._finalize_voucher_operation_ui = lambda **kwargs: (
+        fake.checked_ids.clear(),
+        calls.append(("populate", None)),
+        True,
+    )[-1]
 
     monkeypatch.setattr(
         app_module,
@@ -368,8 +577,8 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
     monkeypatch.setattr(
         app_module,
         "prepare_print_job",
-        lambda selected, prints_root, *, unlimited_copies, now: (
-            calls.append(("prepare", unlimited_copies, prints_root))
+        lambda selected, prints_root, *, unlimited_copies, now, site_id: (
+            calls.append(("prepare", unlimited_copies, prints_root, site_id))
             or job
         ),
     )
@@ -397,22 +606,28 @@ def test_print_selected_delegates_preparation_and_defers_execution(monkeypatch):
 
     tasks[0]["success"](result)
     assert fake.last_pdf == job.output
+    assert fake.checked_ids == set()
     assert calls[-2][0] == "populate"
     assert calls[-1] == (
         "preview",
         job.output,
         ["11111-22222"],
+        {
+            "site_id": "site-a",
+            "unifi_ids": ["v1"],
+        },
     )
 
 
 def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
     monkeypatch,
 ):
-    current = SimpleNamespace(code_formatted="11111-22222")
-    other = SimpleNamespace(code_formatted="33333-44444")
+    current = SimpleNamespace(id="v1", code_formatted="11111-22222")
+    other = SimpleNamespace(id="v2", code_formatted="33333-44444")
     resolved = SimpleNamespace(
         path=Path("Print") / "Voucher_Group.pdf",
         linked_codes=("11111-22222", "33333-44444"),
+        linked_voucher_ids=("v1", "v2"),
     )
     captured = {}
     previews = []
@@ -422,8 +637,12 @@ def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
         history=object(),
         settings={"structure_name": "Test"},
         paths=SimpleNamespace(prints=Path("Print")),
-        _preview=lambda path, codes: previews.append(
-            (path, list(codes))
+        active_controller_id=7,
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
+        _preview=lambda path, codes, **kwargs: previews.append(
+            (path, list(codes), kwargs)
         ),
         logger=SimpleNamespace(error=lambda *args: None),
     )
@@ -445,22 +664,32 @@ def test_open_existing_pdf_delegates_resolution_and_opens_verified_codes(
     assert captured["voucher"] is current
     assert captured["all_vouchers"] == [current, other]
     assert captured["history"] is fake.history
+    assert captured["site_id"] == "site-a"
     assert previews == [
         (
             resolved.path,
             ["11111-22222", "33333-44444"],
+            {
+                "site_id": "site-a",
+                "unifi_ids": ["v1", "v2"],
+                "allow_physical_print": False,
+            },
         )
     ]
 
 
 def test_open_existing_pdf_maps_typed_linkage_failure_to_ui(monkeypatch):
     shown = []
-    current = SimpleNamespace(code_formatted="11111-22222")
+    current = SimpleNamespace(id="v1", code_formatted="11111-22222")
     fake = SimpleNamespace(
         selected=lambda: [current],
         vouchers=[current],
         history=object(),
         settings={},
+        active_controller_id=7,
+        database=SimpleNamespace(
+            controller_site_id=lambda controller_id: "site-a",
+        ),
         paths=SimpleNamespace(prints=Path("Print")),
         _preview=lambda *args: None,
         logger=SimpleNamespace(error=lambda *args: None),
@@ -497,6 +726,7 @@ def test_create_backup_defers_encrypted_archive_work(monkeypatch):
         or backup_artifact(target)
     )
     fake = SimpleNamespace(
+        paths=SimpleNamespace(automatic_backups=Path("C:/Temp")),
         _backup_service=lambda: service,
         _backup_audit_started_at=lambda: "2026-09-27T07:00:00+00:00",
         _record_backup_audit=lambda **kwargs: calls.append(
@@ -508,8 +738,8 @@ def test_create_backup_defers_encrypted_archive_work(monkeypatch):
     )
     monkeypatch.setattr(
         maintenance_ui,
-        "ask_password",
-        lambda parent, **kwargs: password,
+        "ask_backup_options",
+        lambda parent, **kwargs: BackupChoice(Path("C:/Temp/test-backup.vmbk"), password),
     )
     monkeypatch.setattr(
         maintenance_ui.filedialog,
@@ -543,7 +773,7 @@ def test_create_backup_defers_encrypted_archive_work(monkeypatch):
     assert calls[-2][1]["artifact"].sha256 == "a" * 64
     assert calls[-1][0] == "info"
 
-def test_create_encrypted_backup_uses_shared_password_prompt(monkeypatch):
+def test_create_encrypted_backup_uses_per_copy_options(monkeypatch):
     tasks = []
     calls = []
     password = exchange_phrase("s")
@@ -554,6 +784,7 @@ def test_create_encrypted_backup_uses_shared_password_prompt(monkeypatch):
         or backup_artifact(target)
     )
     fake = SimpleNamespace(
+        paths=SimpleNamespace(automatic_backups=Path("C:/Temp")),
         _backup_service=lambda: service,
         _backup_audit_started_at=lambda: "2026-09-27T07:00:00+00:00",
         _record_backup_audit=lambda **kwargs: calls.append(
@@ -571,9 +802,9 @@ def test_create_encrypted_backup_uses_shared_password_prompt(monkeypatch):
     )
     monkeypatch.setattr(
         maintenance_ui,
-        "ask_password",
+        "ask_backup_options",
         lambda parent, **kwargs: (
-            prompts.append(kwargs) or password
+            prompts.append(kwargs) or BackupChoice(Path("C:/Temp/test-backup.vmbk"), password)
         ),
     )
     monkeypatch.setattr(
@@ -594,7 +825,7 @@ def test_create_encrypted_backup_uses_shared_password_prompt(monkeypatch):
 
     modern_app.ModernVoucherApp.create_backup(fake)
 
-    assert prompts and prompts[0]["confirm"] is True
+    assert prompts and prompts[0]["closing"] is False
     assert calls == []
     assert tasks[0]["label"] == "Creazione backup…"
 
@@ -679,6 +910,9 @@ def test_manual_pending_print_recovery_runs_on_background_worker(monkeypatch):
         _dialog_busy_scope=lambda parent: None,
         _run_background_task=capture_runner(tasks),
         populate=lambda: calls.append(("populate", None)),
+        _finalize_voucher_operation_ui=lambda **kwargs: (
+            calls.append(("populate", None)) or True
+        ),
     )
     monkeypatch.setattr(
         maintenance_ui.messagebox,
@@ -807,6 +1041,9 @@ def test_history_import_prepare_confirm_apply_are_split_across_workers(
         settings={},
         _history_error_shown=True,
         populate=lambda: calls.append(("populate", None)),
+        _finalize_voucher_operation_ui=lambda **kwargs: (
+            calls.append(("populate", None)) or True
+        ),
     )
     monkeypatch.setattr(
         maintenance_ui.filedialog,
@@ -868,7 +1105,7 @@ def test_request_close_without_backup_enabled_closes_with_disabled_status(monkey
     )
     monkeypatch.setattr(
         maintenance_ui,
-        "ask_password",
+        "ask_backup_options",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("password prompt must not open")
         ),
@@ -934,8 +1171,8 @@ def test_request_close_runs_encrypted_backup_before_destroy(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(
         maintenance_ui,
-        "ask_password",
-        lambda parent, **kwargs: password,
+        "ask_backup_options",
+        lambda parent, **kwargs: BackupChoice(Path(kwargs["default_directory"]) / "test.vmbk", password),
     )
 
     modern_app.ModernVoucherApp.request_close(fake)
@@ -983,8 +1220,8 @@ def test_shutdown_backup_audit_failure_is_visible_but_does_not_trap_close(
     )
     monkeypatch.setattr(
         maintenance_ui,
-        "ask_password",
-        lambda parent, **kwargs: password,
+        "ask_backup_options",
+        lambda parent, **kwargs: BackupChoice(Path(kwargs["default_directory"]) / "test.vmbk", password),
     )
     monkeypatch.setattr(
         maintenance_ui.messagebox,
@@ -1034,8 +1271,8 @@ def test_failed_close_backup_can_retry_without_losing_password(
     )
     monkeypatch.setattr(
         maintenance_ui,
-        "ask_password",
-        lambda parent, **kwargs: password,
+        "ask_backup_options",
+        lambda parent, **kwargs: BackupChoice(Path(kwargs["default_directory"]) / "test.vmbk", password),
     )
     monkeypatch.setattr(
         maintenance_ui.messagebox,
@@ -1078,8 +1315,8 @@ def test_failed_close_backup_can_close_anyway(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         maintenance_ui,
-        "ask_password",
-        lambda parent, **kwargs: exchange_phrase("x"),
+        "ask_backup_options",
+        lambda parent, **kwargs: BackupChoice(Path(kwargs["default_directory"]) / "test.vmbk", exchange_phrase("x")),
     )
     monkeypatch.setattr(
         maintenance_ui.messagebox,
@@ -1110,7 +1347,7 @@ def test_cancelling_close_backup_notifies_modal_caller(
     )
     monkeypatch.setattr(
         maintenance_ui,
-        "ask_password",
+        "ask_backup_options",
         lambda parent, **kwargs: None,
     )
 
@@ -1137,7 +1374,7 @@ def test_cancelling_close_backup_password_keeps_application_open(
     )
     monkeypatch.setattr(
         maintenance_ui,
-        "ask_password",
+        "ask_backup_options",
         lambda parent, **kwargs: None,
     )
 

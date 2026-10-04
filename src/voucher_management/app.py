@@ -22,6 +22,10 @@ from tkinter import messagebox
 
 from . import __version__
 from .background_tasks import BackgroundResult, start_background_task
+from .create_reporting_recovery import (
+    reconcile_pending_create_reporting,
+    reconcile_pending_create_reporting_to_path,
+)
 from .database import Database
 from .dialogs import PrintCopiesDialog, ReprintConfirmDialog
 from .history import HistoryError, HistoryService
@@ -40,9 +44,15 @@ from .print_archive import (
 )
 from .settings import SettingsStore
 from .single_instance import InstanceAlreadyRunning, SingleInstanceGuard
-from .sync_store import load_local_vouchers, persist_successful_snapshot
+from .sync_store import (
+    inspect_snapshot_absences_to_path,
+    load_local_vouchers,
+    persist_connection_snapshot_to_path,
+    persist_refresh_snapshot_to_path,
+)
 from .voucher_creation_ui import VoucherCreationMixin
 from .security.history_key import HistoryKeyStore
+from .security_revocation import reconcile_pending_security_revocations_to_path
 from .unifi_api import ApiVoucher, UniFiApiError
 from .workflows import (
     ExistingPdfResolutionError,
@@ -51,6 +61,7 @@ from .workflows import (
     refresh_vouchers,
     resolve_existing_pdf,
     verify_print_history_ready,
+    verify_snapshot_absences,
 )
 
 
@@ -83,6 +94,17 @@ def status_label(status: str) -> str:
 
 def time_label(ts: int) -> str:
     return datetime.fromtimestamp(ts).strftime("%d/%m/%Y %H:%M") if ts else "-"
+
+
+def print_action_label(count: int) -> str:
+    """Return the operator-facing print action without workflow jargon."""
+
+    count = max(0, int(count))
+    return (
+        f"Stampa selezionati ({count})"
+        if count
+        else "Stampa selezionati"
+    )
 
 
 class VoucherApp(VoucherCreationMixin, tk.Tk):
@@ -164,6 +186,17 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             self.paths.logs,
             int(self.settings.get("log_retention_days", 30)),
         )
+        try:
+            if reconcile_pending_create_reporting(
+                self.database,
+                self.paths.pending_create_reporting,
+            ):
+                self.logger.info("create_reporting_reconciled_on_startup")
+        except Exception as exc:
+            self.logger.error(
+                "create_reporting_startup_reconcile_failed type=%s",
+                type(exc).__name__,
+            )
         self._cleanup_orphan_pdf_temps()
         self.history = HistoryService(
             self.paths.history,
@@ -191,12 +224,19 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 parent=self,
             )
         self.client = None
+        # Home operational metrics are intentionally blank until this process
+        # has completed a real controller list operation. The local SQLite
+        # snapshot remains available to history/reporting but is not presented
+        # as current controller state.
+        self.controller_snapshot_live = False
         # Milestone A can reopen the last durable snapshot before any network
         # request. The timestamp/status remains explicitly local until connect.
         saved_api_root = str(self.settings.get("controller_api_root", "")).strip()
+        saved_site_id = str(self.settings.get("controller_site_id", "")).strip()
         if saved_api_root:
-            self.active_controller_id = self.database.find_controller_by_api_root(
-                saved_api_root
+            self.active_controller_id = self.database.find_controller_by_identity(
+                api_root=saved_api_root,
+                site_id=saved_site_id,
             )
         self.vouchers = (
             load_local_vouchers(
@@ -260,7 +300,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self.filter_var = tk.StringVar(value="Da stampare")
         self.search_var = tk.StringVar()
         self.count_var = tk.StringVar(value="0 voucher")
-        self.action_var = tk.StringVar(value="PREPARA STAMPA")
+        self.action_var = tk.StringVar(value=print_action_label(0))
         self._build_ui()
         # Route only an ordinary window-manager close through the 5.0
         # disaster-recovery workflow. Internal destroy() calls used after a
@@ -281,7 +321,9 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         if retention_intro is not None and (
             retention_intro_allowed is None or retention_intro_allowed()
         ):
-            self.after_idle(retention_intro)
+            # Avoid racing the first Windows mapping with a transient/grabbed
+            # retention dialog in a console-less packaged build.
+            self.after(380, retention_intro)
         if logo_warning:
             messagebox.showwarning(
                 "Logo rimosso",
@@ -537,6 +579,65 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         if on_success is not None:
             on_success(outcome.value)
 
+    def _finalize_voucher_operation_ui(
+        self,
+        *,
+        operation: str,
+        refresh_reports: bool = True,
+    ) -> bool:
+        """Apply the global post-operation UI invariant after a committed change.
+
+        Successful voucher operations always clear the shared Home/Voucher
+        selection and rebuild every local projection from durable facts plus the
+        current in-memory controller snapshot.  This is deliberately not a
+        controller synchronization.
+        """
+
+        self.checked_ids.clear()
+        try:
+            self.populate()
+            refresh_thresholds = getattr(
+                self,
+                "_refresh_threshold_summary",
+                None,
+            )
+            if callable(refresh_thresholds):
+                refresh_thresholds()
+            if refresh_reports:
+                refresh_report = getattr(
+                    self,
+                    "_refresh_report_summary",
+                    None,
+                )
+                if callable(refresh_report):
+                    refresh_report()
+            return True
+        except Exception as exc:
+            self.logger.warning(
+                "voucher_operation_ui_refresh_failed operation=%s type=%s",
+                str(operation or "unknown"),
+                type(exc).__name__,
+            )
+            # Even when the full rebuild fails, never leave the completed
+            # operation's previous blue selection armed in Home/Voucher.
+            try:
+                self._sync_selection_ui()
+            except Exception as selection_exc:
+                self.logger.warning(
+                    "voucher_operation_selection_clear_failed type=%s",
+                    type(selection_exc).__name__,
+                )
+            messagebox.showwarning(
+                "Operazione completata • interfaccia da aggiornare",
+                "L'operazione è stata completata e i dati sono stati salvati, "
+                "ma l'aggiornamento automatico dell'interfaccia non è riuscito "
+                "completamente. La selezione è stata azzerata. Riaprire la vista "
+                "interessata; usare Sincronizza solo se serve rileggere nuovi "
+                "dati dalla controller UniFi.",
+                parent=self,
+            )
+            return False
+
     def _run_network_task(
         self,
         label: str,
@@ -568,20 +669,237 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             return
 
         client = self.client
+        controller_id = getattr(self, "active_controller_id", None)
+        database_path = Path(self.paths.database)
+        cached_snapshot = list(self.vouchers)
+        operator = VoucherApp._windows_operator_identity()
 
-        def completed(vouchers) -> None:
-            snapshot = list(vouchers)
-            controller_id = getattr(self, "active_controller_id", None)
-            if controller_id is not None:
-                persist_successful_snapshot(
-                    self.database,
-                    controller_id=controller_id,
-                    vouchers=snapshot,
-                    observed_at=datetime.now(timezone.utc).isoformat(),
-                )
-            self.vouchers = snapshot
+        def worker():
+            listed_snapshot = list(refresh_vouchers(client))
+            persist_snapshot = list(listed_snapshot)
+            display_snapshot = list(listed_snapshot)
+            confirmed_absent_ids: frozenset[str] = frozenset()
+            snapshot_authoritative = True
+            archive_error = None
+            resolved_controller_id = controller_id
+            observed_at = datetime.now(timezone.utc).isoformat()
             try:
-                self.create_guard.clear()
+                if controller_id is not None:
+                    present_ids = frozenset(
+                        str(voucher.id)
+                        for voucher in listed_snapshot
+                        if str(getattr(voucher, "id", "") or "").strip()
+                    )
+                    plan = inspect_snapshot_absences_to_path(
+                        database_path,
+                        controller_id=controller_id,
+                        present_unifi_ids=present_ids,
+                    )
+                    verification = verify_snapshot_absences(
+                        client,
+                        listed_snapshot,
+                        plan.confirmation_ids,
+                    )
+                    persist_snapshot = list(verification.vouchers)
+                    confirmed_absent_ids = verification.confirmed_absent_ids
+                    unresolved_ids = (
+                        set(plan.suspected_ids)
+                        - set(verification.recovered_ids)
+                        - set(verification.confirmed_absent_ids)
+                    )
+                    snapshot_authoritative = not unresolved_ids
+
+                    display_by_id = {
+                        str(voucher.id): voucher
+                        for voucher in persist_snapshot
+                    }
+                    if unresolved_ids:
+                        cached_by_id = {
+                            str(voucher.id): voucher
+                            for voucher in cached_snapshot
+                        }
+                        for remote_id in unresolved_ids:
+                            cached = cached_by_id.get(remote_id)
+                            if cached is not None:
+                                display_by_id[remote_id] = cached
+                    display_snapshot = list(display_by_id.values())
+
+                    persist_refresh_snapshot_to_path(
+                        database_path,
+                        controller_id=controller_id,
+                        vouchers=persist_snapshot,
+                        observed_at=observed_at,
+                        confirmed_absent_ids=confirmed_absent_ids,
+                    )
+                else:
+                    # A live controller can exist even when the first local
+                    # persistence attempt failed. A later Sync must be able to
+                    # create the missing durable controller profile.
+                    base_url = str(getattr(client, "base_url", "") or "").strip()
+                    if base_url and database_path is not None:
+                        name_var = getattr(self, "controller_name_var", None)
+                        requested_name = (
+                            str(name_var.get()).strip()
+                            if name_var is not None
+                            else ""
+                        )
+                        persisted = persist_connection_snapshot_to_path(
+                            database_path,
+                            api_root=base_url,
+                            cert_sha256=str(
+                                getattr(client, "trusted_cert_sha256", "") or ""
+                            ),
+                            requested_name=requested_name,
+                            site_name=str(
+                                getattr(client, "site_name", "") or requested_name
+                            ),
+                            site_id=str(getattr(client, "site_id", "") or ""),
+                            vouchers=listed_snapshot,
+                            observed_at=observed_at,
+                        )
+                        resolved_controller_id = persisted.controller_id
+                        if persisted.suspected_absence_ids:
+                            snapshot_authoritative = False
+                            cached_by_id = {
+                                str(voucher.id): voucher
+                                for voucher in cached_snapshot
+                            }
+                            display_by_id = {
+                                str(voucher.id): voucher
+                                for voucher in listed_snapshot
+                            }
+                            for remote_id in persisted.suspected_absence_ids:
+                                cached = cached_by_id.get(remote_id)
+                                if cached is not None:
+                                    display_by_id[remote_id] = cached
+                            display_snapshot = list(display_by_id.values())
+
+                if resolved_controller_id is not None:
+                    marker_path = getattr(
+                        self.paths,
+                        "pending_create_reporting",
+                        Path(database_path).with_name(
+                            "pending_create_reporting.json"
+                        ),
+                    )
+                    reconcile_pending_create_reporting_to_path(
+                        database_path,
+                        marker_path,
+                        controller_id=resolved_controller_id,
+                    )
+                    reconcile_pending_security_revocations_to_path(
+                        database_path,
+                        controller_id=resolved_controller_id,
+                        live_voucher_ids=frozenset(
+                            str(voucher.id)
+                            for voucher in persist_snapshot
+                            if str(getattr(voucher, "id", "") or "").strip()
+                        ),
+                        confirmed_absent_ids=confirmed_absent_ids,
+                        observed_at=observed_at,
+                        windows_user=operator,
+                    )
+            except Exception as exc:
+                archive_error = exc
+            return (
+                display_snapshot,
+                archive_error,
+                resolved_controller_id,
+                snapshot_authoritative,
+            )
+
+        def completed(result) -> None:
+            if (
+                isinstance(result, tuple)
+                and len(result) == 4
+                and (
+                    result[1] is None
+                    or isinstance(result[1], Exception)
+                )
+            ):
+                (
+                    vouchers,
+                    archive_error,
+                    resolved_controller_id,
+                    snapshot_authoritative,
+                ) = result
+            elif (
+                isinstance(result, tuple)
+                and len(result) == 3
+                and (
+                    result[1] is None
+                    or isinstance(result[1], Exception)
+                )
+            ):
+                vouchers, archive_error, resolved_controller_id = result
+                snapshot_authoritative = True
+            elif (
+                isinstance(result, tuple)
+                and len(result) == 2
+                and (
+                    result[1] is None
+                    or isinstance(result[1], Exception)
+                )
+            ):
+                vouchers, archive_error = result
+                resolved_controller_id = controller_id
+                snapshot_authoritative = True
+            else:
+                # Compatibility with thin adapters/tests that invoke the
+                # success callback directly with a voucher sequence.
+                vouchers, archive_error = result, None
+                resolved_controller_id = controller_id
+                snapshot_authoritative = True
+
+            if resolved_controller_id is not None:
+                self.active_controller_id = resolved_controller_id
+            snapshot = list(vouchers)
+            self.vouchers = snapshot
+            self.controller_snapshot_live = bool(snapshot_authoritative)
+            if archive_error is None and snapshot_authoritative:
+                callback = getattr(self, "_controller_operation_succeeded", None)
+                if callback is not None:
+                    callback()
+            elif archive_error is None:
+                callback = getattr(self, "_controller_operation_stale", None)
+                if callback is not None:
+                    callback()
+            else:
+                callback = getattr(self, "_controller_operation_stale", None)
+                if callback is not None:
+                    callback(archive_failed=True)
+                logger = getattr(self, "logger", LOGGER)
+                logger.error(
+                    "refresh_archive_persistence_failed type=%s",
+                    type(archive_error).__name__,
+                )
+                messagebox.showwarning(
+                    "Controller aggiornato • archivio locale da verificare",
+                    "La controller ha restituito l'elenco aggiornato, ma non è "
+                    "stato possibile salvarlo completamente nello storico locale. "
+                    + (
+                        "I numeri Home sono live; "
+                        if snapshot_authoritative
+                        else "I numeri Home restano da verificare; "
+                    )
+                    + "i Report potrebbero essere incompleti finché un "
+                    "aggiornamento non riesce.",
+                    parent=self,
+                )
+            self.populate()
+
+            recovery_owns_guard = False
+            if snapshot_authoritative:
+                recovery = getattr(
+                    self,
+                    "_offer_uncertain_create_recovery_after_refresh",
+                    None,
+                )
+                if callable(recovery):
+                    recovery_owns_guard = bool(recovery(snapshot))
+            try:
+                if snapshot_authoritative and not recovery_owns_guard:
+                    self.create_guard.clear()
             except CreateMutationGuardError as exc:
                 self.logger.warning(
                     "create_guard_clear_failed type=%s",
@@ -594,9 +912,31 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                     "sospesa per sicurezza.",
                     parent=self,
                 )
-            self.populate()
+
+            if archive_error is None and snapshot_authoritative:
+                refresh_report = getattr(
+                    self,
+                    "_refresh_report_summary",
+                    None,
+                )
+                if callable(refresh_report):
+                    after_idle = getattr(self, "after_idle", None)
+                    if callable(after_idle):
+                        after_idle(refresh_report)
+                    else:
+                        refresh_report()
 
         def failed(exc: Exception) -> None:
+            retry = getattr(
+                self,
+                "_handle_controller_refresh_failure",
+                None,
+            )
+            if callable(retry) and bool(retry(exc)):
+                return
+            callback = getattr(self, "_controller_operation_failed", None)
+            if callback is not None:
+                callback()
             self._show_network_error(
                 "Sincronizzazione",
                 exc,
@@ -604,7 +944,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         self._run_network_task(
             "Aggiornamento voucher…",
-            lambda: refresh_vouchers(client),
+            worker,
             completed,
             failed,
         )
@@ -645,11 +985,7 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             f"{len(self.by_iid)} visualizzati  •  "
             f"{len(self.checked_ids)} selezionati"
         )
-        self.action_var.set(
-            f"PREPARA STAMPA  ({len(self.checked_ids)})"
-            if self.checked_ids
-            else "PREPARA STAMPA"
-        )
+        self.action_var.set(print_action_label(len(self.checked_ids)))
 
     def on_tree_click(self, event):
         if self.tree.identify_region(event.x, event.y) != "cell" or self.tree.identify_column(event.x) != "#1":
@@ -691,10 +1027,30 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         if not selected:
             messagebox.showinfo(
                 "Stampa",
-                "Selezionare uno o più voucher attivi dalla prima colonna",
+                "Selezionare uno o più voucher attivi nella tabella",
                 parent=self,
             )
             return
+
+        alignment_ready = getattr(self, "_voucher_alignment_ready", None)
+        if callable(alignment_ready):
+            unaligned = [
+                voucher
+                for voucher in selected
+                if not alignment_ready(voucher)
+            ]
+            if unaligned:
+                messagebox.showinfo(
+                    "Allineamento richiesto",
+                    (
+                        "Uno o più voucher selezionati devono ancora essere "
+                        "allineati prima della stampa.\n\n"
+                        "Usare “Allinea…” per completare nominalità e stato "
+                        "di stampa locale, quindi riprovare."
+                    ),
+                    parent=self,
+                )
+                return
 
         try:
             verify_print_history_ready(
@@ -717,11 +1073,17 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 return
             copies = dialog.result
 
+        site_id = (
+            self.database.controller_site_id(self.active_controller_id)
+            if self.active_controller_id is not None
+            else ""
+        )
         job = prepare_print_job(
             selected,
             self.paths.prints,
             unlimited_copies=copies,
             now=datetime.now(),
+            site_id=site_id,
         )
         settings = dict(self.settings)
         history = self.history
@@ -736,10 +1098,17 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
 
         def completed(outcome) -> None:
             self.last_pdf = outcome.output
-            self.populate()
+            self._finalize_voucher_operation_ui(
+                operation="pdf_generation",
+            )
             self._preview(
                 outcome.output,
                 list(outcome.codes),
+                site_id=job.batch.site_id,
+                unifi_ids=[
+                    item.unifi_id
+                    for item in job.batch.vouchers
+                ],
             )
 
         def failed(exc: Exception) -> None:
@@ -791,6 +1160,8 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         self,
         codes: list[str],
         parent,
+        *,
+        unifi_ids: list[str] | None = None,
     ) -> bool:
         """Confirm physical duplicates using durable SQLite print facts."""
 
@@ -804,10 +1175,23 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             return False
 
         try:
-            summaries = self.database.print_summaries_for_codes(
-                controller_id=self.active_controller_id,
-                codes=list(codes),
+            stable_ids = (
+                [str(value).strip() for value in unifi_ids]
+                if unifi_ids is not None
+                else []
             )
+            if stable_ids and len(stable_ids) == len(codes):
+                summaries = self.database.print_summaries_for_remote_ids(
+                    controller_id=self.active_controller_id,
+                    unifi_ids=stable_ids,
+                )
+                summary_mode = "uuid"
+            else:
+                summaries = self.database.print_summaries_for_codes(
+                    controller_id=self.active_controller_id,
+                    codes=list(codes),
+                )
+                summary_mode = "code"
         except Exception as exc:
             self.logger.warning(
                 "reprint_preflight_failed type=%s",
@@ -821,14 +1205,76 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             )
             return False
 
+        usage_states = {}
+        if summary_mode == "uuid":
+            try:
+                usage_states = self.database.usage_state_for_remote_ids(
+                    controller_id=self.active_controller_id,
+                    unifi_ids=stable_ids,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "reprint_usage_preflight_failed type=%s",
+                    type(exc).__name__,
+                )
+                messagebox.showerror(
+                    "Stampa",
+                    "Impossibile verificare in modo sicuro l'utilizzo storico "
+                    "dei voucher. La stampa viene sospesa.",
+                    parent=parent,
+                )
+                return False
+
+        unknown_print_count = sum(
+            1
+            for summary in summaries.values()
+            if (
+                summary.print_jobs <= 0
+                and str(
+                    getattr(summary, "print_state", "UNKNOWN") or "UNKNOWN"
+                ).strip().upper() == "UNKNOWN"
+            )
+        )
+        if unknown_print_count:
+            subject = (
+                "questo voucher"
+                if unknown_print_count == 1
+                else f"questi {unknown_print_count} voucher"
+            )
+            if not messagebox.askyesno(
+                "Stampa non determinabile",
+                (
+                    f"Per {subject} lo stato di stampa precedente non è "
+                    "determinabile. Potrebbe essere già stato stampato o "
+                    "consegnato fuori da Voucher Management.\n\n"
+                    "Vuoi procedere comunque con la stampa?\n\n"
+                    "Se la stampa verrà effettivamente inviata, da quel "
+                    "momento sarà registrata come stampa verificata."
+                ),
+                parent=parent,
+            ):
+                return False
+
         warnings = []
         seen: set[str] = set()
-        for display_code in codes:
+        for index, display_code in enumerate(codes):
             canonical = str(display_code).strip().replace("-", "")
-            if not canonical or canonical in seen:
+            identity = (
+                stable_ids[index]
+                if summary_mode == "uuid"
+                else canonical
+            )
+            if not identity or identity in seen:
                 continue
-            seen.add(canonical)
-            warning = evaluate_reprint(summaries[canonical])
+            seen.add(identity)
+            warning = evaluate_reprint(
+                summaries[identity],
+                ever_used=(
+                    usage_states.get(identity)
+                    if summary_mode == "uuid"
+                    else None
+                ),
+            )
             if warning.required:
                 warnings.append((str(display_code), warning))
 
@@ -841,6 +1287,8 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         pending: dict,
         codes: list[str],
         pdf_path: Path,
+        *,
+        unifi_ids: list[str] | None = None,
     ) -> None:
         """Mirror a confirmed physical print into the 5.0 SQLite audit."""
 
@@ -853,6 +1301,11 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             audit_id=str(pending["audit_id"]),
             codes=list(codes),
             output_file=Path(pdf_path).name,
+            unifi_ids=(
+                list(unifi_ids)
+                if unifi_ids is not None
+                else None
+            ),
             document_copies=int(pending["copies"]),
             printed_at=str(pending["submitted_at"]),
             windows_user=self._windows_operator_identity(),
@@ -866,9 +1319,19 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
         resolved only against voucher codes already present in SQLite.
         """
 
+        site_id = (
+            self.database.controller_site_id(self.active_controller_id)
+            if self.active_controller_id is not None
+            else ""
+        )
         details = self.history.resolve_pending_print(
             [voucher.code_formatted for voucher in self.vouchers],
             self.settings,
+            site_id=site_id,
+            candidate_unifi_ids=[
+                str(voucher.id)
+                for voucher in self.vouchers
+            ],
         )
         if details is None:
             return False
@@ -885,34 +1348,77 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             },
             list(details.codes),
             Path(details.output_file),
+            unifi_ids=(
+                list(details.unifi_ids)
+                if details.unifi_ids
+                else None
+            ),
         )
         self.history.finalize_pending_print_audit(details.audit_id)
         return True
 
     def _deselect_printed_codes(self, codes: list[str]) -> None:
-        """Clear only vouchers whose Windows print submission was confirmed."""
+        """Clear the global selection immediately after Windows submission.
 
-        wanted = {str(code).replace("-", "") for code in codes}
-        self.checked_ids.difference_update(
-            voucher.id
-            for voucher in self.vouchers
-            if voucher.code_formatted.replace("-", "") in wanted
+        The durable full refresh happens only after the SQLite print audit has
+        committed.  This prevents the UI/report layer from racing ahead of the
+        authoritative print fact while still protecting against accidental
+        duplicate printing.
+        """
+
+        del codes
+        self.checked_ids.clear()
+        sync_selection = getattr(self, "_sync_selection_ui", None)
+        if callable(sync_selection):
+            sync_selection()
+        else:
+            self.populate()
+
+    def _preview(
+        self,
+        path: Path,
+        codes: list[str],
+        *,
+        site_id: str = "",
+        unifi_ids: list[str] | None = None,
+        allow_physical_print: bool = True,
+    ):
+        def record_audit_and_refresh(
+            pending,
+            audit_codes,
+            pdf_path,
+        ) -> None:
+            self._record_sqlite_print_audit(
+                pending,
+                audit_codes,
+                pdf_path,
+                unifi_ids=stable_ids,
+            )
+            self._finalize_voucher_operation_ui(
+                operation="physical_print",
+            )
+
+        stable_ids = (
+            list(unifi_ids)
+            if unifi_ids is not None
+            else None
         )
-        self.populate()
-
-    def _preview(self, path: Path, codes: list[str]):
         PdfPreview(
             self,
             path,
             codes,
             self.history,
             self.settings,
+            site_id=site_id,
+            unifi_ids=stable_ids,
+            allow_physical_print=allow_physical_print,
             on_print=self.populate,
-            on_audit=self._record_sqlite_print_audit,
+            on_audit=record_audit_and_refresh,
             on_submitted=lambda: self._deselect_printed_codes(codes),
             confirm_print=lambda parent: self._confirm_physical_reprint(
                 codes,
                 parent,
+                unifi_ids=stable_ids,
             ),
         )
 
@@ -934,6 +1440,13 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
                 history=self.history,
                 settings=self.settings,
                 prints_root=self.paths.prints,
+                site_id=(
+                    self.database.controller_site_id(
+                        self.active_controller_id
+                    )
+                    if self.active_controller_id is not None
+                    else ""
+                ),
             )
         except HistoryError as exc:
             messagebox.showerror(
@@ -977,6 +1490,19 @@ class VoucherApp(VoucherCreationMixin, tk.Tk):
             self._preview(
                 resolved.path,
                 list(resolved.linked_codes),
+                site_id=(
+                    self.database.controller_site_id(
+                        self.active_controller_id
+                    )
+                    if self.active_controller_id is not None
+                    else ""
+                ),
+                unifi_ids=(
+                    list(resolved.linked_voucher_ids)
+                    if resolved.linked_voucher_ids
+                    else None
+                ),
+                allow_physical_print=False,
             )
         except Exception as exc:
             self.logger.error(

@@ -43,6 +43,19 @@ MAX_ARCHIVE_FILES = 10_000
 MAX_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_MANIFEST_BYTES = 64 * 1024
 SQLITE_MEMBER = "data/voucher_management.db"
+TRANSIENT_BACKUP_MEMBERS = frozenset(
+    {
+        "data/history.lock",
+        "data/application.instance.lock",
+        "data/pending_print_audit.json",
+        "data/pending_print_audit.json.tmp",
+        "data/pending_create_guard",
+        "data/pending_create_intent.json",
+        "data/pending_create_intent.json.tmp",
+        "data/pending_create_reporting.json",
+        "data/pending_create_reporting.json.tmp",
+    }
+)
 SQLITE_SIDECAR_MEMBERS = {
     "data/voucher_management.db-wal",
     "data/voucher_management.db-shm",
@@ -122,6 +135,40 @@ class BackupService:
             ) from exc
         finally:
             connection.close()
+
+    @staticmethod
+    def _assert_no_pending_remote_mutation_in_sqlite(payload: bytes) -> None:
+        """Reject portable snapshots that contain an unresolved remote DELETE."""
+
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.deserialize(payload)
+            table = connection.execute(
+                """SELECT 1 FROM sqlite_master
+                   WHERE type='table' AND name='voucher_events'"""
+            ).fetchone()
+            if table is None:
+                return
+            pending = connection.execute(
+                """SELECT 1 FROM voucher_events
+                   WHERE event_type IN (
+                       'PREPARATION_DELETE_REQUESTED',
+                       'SECURITY_REVOKE_REQUESTED'
+                   )
+                   LIMIT 1"""
+            ).fetchone()
+        except (sqlite3.DatabaseError, sqlite3.OperationalError) as exc:
+            raise BackupError(
+                "Impossibile verificare lo stato operativo dello snapshot SQLite"
+            ) from exc
+        finally:
+            connection.close()
+
+        if pending is not None:
+            raise BackupError(
+                "Il backup contiene stato operativo transitorio UniFi non "
+                "ripristinabile in sicurezza"
+            )
 
     def _sqlite_snapshot_bytes(self) -> tuple[bytes, int, str] | None:
         """Create a transactionally consistent snapshot with SQLite backup().
@@ -222,10 +269,71 @@ class BackupService:
             "pending_create",
             self.paths.data / "pending_create_guard",
         )
+        intent_pending = getattr(
+            self.paths,
+            "pending_create_intent",
+            self.paths.data / "pending_create_intent.json",
+        )
+        reporting_pending = getattr(
+            self.paths,
+            "pending_create_reporting",
+            self.paths.data / "pending_create_reporting.json",
+        )
         if Path(pending).exists():
             raise BackupError(
                 "Esiste una creazione voucher con esito ancora da verificare. "
                 "Sincronizzare l'elenco prima di creare o ripristinare un backup."
+            )
+        if Path(intent_pending).exists():
+            raise BackupError(
+                "Esiste una richiesta di creazione UniFi con esito incerto "
+                "ancora da associare o chiudere. Sincronizzare e completare "
+                "la decisione prima di creare o ripristinare un backup."
+            )
+        if Path(reporting_pending).exists():
+            raise BackupError(
+                "Esiste una creazione già confermata da UniFi la cui "
+                "classificazione report deve ancora essere riconciliata. "
+                "Sincronizzare l'elenco prima di creare o ripristinare un backup."
+            )
+
+    def _assert_no_pending_remote_mutation(self) -> None:
+        """Block restore while an uncertain remote DELETE still needs reconciliation."""
+
+        database_path = self._database_path()
+        if not database_path.is_file():
+            return
+        connection = None
+        try:
+            connection = sqlite3.connect(database_path, timeout=5.0)
+            table = connection.execute(
+                """SELECT 1 FROM sqlite_master
+                   WHERE type='table' AND name='voucher_events'"""
+            ).fetchone()
+            if table is None:
+                return
+            pending = connection.execute(
+                """SELECT 1 FROM voucher_events
+                   WHERE event_type IN (
+                       'PREPARATION_DELETE_REQUESTED',
+                       'SECURITY_REVOKE_REQUESTED'
+                   )
+                   LIMIT 1"""
+            ).fetchone()
+        except (sqlite3.DatabaseError, sqlite3.OperationalError) as exc:
+            raise BackupError(
+                "Impossibile verificare in sicurezza eventuali operazioni "
+                "remote da riconciliare prima di creare o ripristinare un backup."
+            ) from exc
+        finally:
+            if connection is not None:
+                connection.close()
+
+        if pending is not None:
+            raise BackupError(
+                "Esiste una cancellazione o revoca UniFi con esito ancora da "
+                "riconciliare. Sincronizzare la controller prima di creare o "
+                "ripristinare un backup."
             )
 
     @staticmethod
@@ -331,6 +439,8 @@ class BackupService:
     def _sanitized_settings_bytes(settings_path: Path) -> bytes:
         """Serialize supported settings without machine-specific logo paths."""
         settings = SettingsStore(settings_path).load()
+        # A restored archive must not carry a different machine's destination.
+        settings["backup_directory"] = ""
         logo_value = str(settings.get("logo_path", "") or "").strip()
         if logo_value:
             settings["logo_path"] = BackupService._portable_basename(logo_value)
@@ -449,6 +559,7 @@ class BackupService:
         destination = Path(destination)
         self._assert_no_pending_print_audit()
         self._assert_no_pending_create()
+        self._assert_no_pending_remote_mutation()
         if password is None:
             return self._create_zip(destination)
 
@@ -537,6 +648,10 @@ class BackupService:
                     "pending_print_audit.json",
                     "pending_print_audit.json.tmp",
                     "pending_create_guard",
+                    "pending_create_intent.json",
+                    "pending_create_intent.json.tmp",
+                    "pending_create_reporting.json",
+                    "pending_create_reporting.json.tmp",
                 }:
                     # Lock/guard files describe live process state and are never
                     # portable application data.
@@ -673,6 +788,12 @@ class BackupService:
                     raise BackupError("Il backup contiene troppi file")
 
                 names = {info.filename for info in infos}
+                transient = names.intersection(TRANSIENT_BACKUP_MEMBERS)
+                if transient:
+                    raise BackupError(
+                        "Il backup contiene stato operativo transitorio non "
+                        "ripristinabile in sicurezza"
+                    )
                 if self.MANIFEST not in names:
                     raise BackupError(
                         "Il file non è un backup Voucher Management valido"
@@ -767,6 +888,7 @@ class BackupService:
                         raise BackupError(
                             "Versione schema SQLite del backup non coerente"
                         )
+                    self._assert_no_pending_remote_mutation_in_sqlite(payload)
                 elif has_sqlite:
                     # Early 5.0 beta archives copied the live .db directly.
                     # They cannot prove that committed WAL pages were captured,
@@ -875,6 +997,7 @@ class BackupService:
         # A backup must never pre-authorize a controller target/certificate.
         # Force the operator through the normal trust flow after restore.
         settings["controller_api_root"] = ""
+        settings["controller_site_id"] = ""
         settings["controller_cert_sha256"] = ""
         SettingsStore(settings_path).save(settings)
 
@@ -909,6 +1032,7 @@ class BackupService:
         source = Path(source)
         self._assert_no_pending_print_audit()
         self._assert_no_pending_create()
+        self._assert_no_pending_remote_mutation()
         if not self.is_encrypted_backup(source):
             return self._restore_zip(source)
         if password is None:

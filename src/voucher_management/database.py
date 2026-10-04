@@ -17,8 +17,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+from uuid import uuid4
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 10
+
+PRINT_STATE_UNKNOWN = "UNKNOWN"
+PRINT_STATE_NOT_PRINTED = "NOT_PRINTED"
+PRINT_STATE_PRINTED = "PRINTED"
+PRINT_STATES = frozenset(
+    {PRINT_STATE_UNKNOWN, PRINT_STATE_NOT_PRINTED, PRINT_STATE_PRINTED}
+)
 
 BACKUP_AUDIT_DESTINATIONS = frozenset(
     {
@@ -42,6 +50,7 @@ CREATE TABLE IF NOT EXISTS controllers (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     api_root TEXT NOT NULL,
+    site_id TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     cert_sha256 TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
@@ -49,6 +58,9 @@ CREATE TABLE IF NOT EXISTS controllers (
     last_successful_sync_at TEXT,
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
 );
+
+CREATE INDEX IF NOT EXISTS idx_controllers_identity
+ON controllers(api_root, site_id, is_active);
 
 CREATE TABLE IF NOT EXISTS application_sessions (
     id INTEGER PRIMARY KEY,
@@ -86,17 +98,32 @@ CREATE TABLE IF NOT EXISTS vouchers (
     duration_minutes INTEGER CHECK (duration_minutes IS NULL OR duration_minutes >= 0),
     authorized_guest_limit INTEGER CHECK (authorized_guest_limit IS NULL OR authorized_guest_limit >= 1),
     authorized_guest_count INTEGER NOT NULL DEFAULT 0 CHECK (authorized_guest_count >= 0),
+    ever_used INTEGER NOT NULL DEFAULT 0 CHECK (ever_used IN (0, 1)),
+    usage_observed INTEGER NOT NULL DEFAULT 1 CHECK (usage_observed IN (0, 1)),
     activated_at TEXT,
     expires_at TEXT,
     expired INTEGER NOT NULL DEFAULT 0 CHECK (expired IN (0, 1)),
+    expiry_observed INTEGER NOT NULL DEFAULT 1
+        CHECK (expiry_observed IN (0, 1)),
     data_limit_mb INTEGER CHECK (data_limit_mb IS NULL OR data_limit_mb >= 0),
     download_limit_kbps INTEGER CHECK (download_limit_kbps IS NULL OR download_limit_kbps >= 0),
     upload_limit_kbps INTEGER CHECK (upload_limit_kbps IS NULL OR upload_limit_kbps >= 0),
     present_on_controller INTEGER NOT NULL DEFAULT 1 CHECK (present_on_controller IN (0, 1)),
+    missing_observation_count INTEGER NOT NULL DEFAULT 0
+        CHECK (missing_observation_count >= 0),
+    missing_since TEXT,
     last_seen_at TEXT,
     last_synced_at TEXT NOT NULL,
     assigned_to TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'CONTROLLER'
+        CHECK (origin IN ('CONTROLLER', 'APPLICATION', 'LEGACY_APPLICATION', 'UNKNOWN')),
+    is_nominal INTEGER CHECK (is_nominal IS NULL OR is_nominal IN (0, 1)),
+    print_state TEXT NOT NULL DEFAULT 'UNKNOWN'
+        CHECK (print_state IN ('UNKNOWN', 'NOT_PRINTED', 'PRINTED')),
+    alignment_completed_at TEXT,
+    nominality_redacted INTEGER NOT NULL DEFAULT 0
+        CHECK (nominality_redacted IN (0, 1)),
     archived_at TEXT,
     UNIQUE (controller_id, unifi_id)
 );
@@ -105,7 +132,11 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_controller ON vouchers(controller_id);
 CREATE INDEX IF NOT EXISTS idx_vouchers_code ON vouchers(controller_id, code);
 CREATE INDEX IF NOT EXISTS idx_vouchers_expired ON vouchers(controller_id, expired);
 CREATE INDEX IF NOT EXISTS idx_vouchers_usage ON vouchers(controller_id, authorized_guest_count);
+CREATE INDEX IF NOT EXISTS idx_vouchers_ever_used ON vouchers(ever_used);
+CREATE INDEX IF NOT EXISTS idx_vouchers_usage_observed ON vouchers(usage_observed);
 CREATE INDEX IF NOT EXISTS idx_vouchers_expires ON vouchers(expires_at);
+CREATE INDEX IF NOT EXISTS idx_vouchers_origin ON vouchers(origin);
+CREATE INDEX IF NOT EXISTS idx_vouchers_nominal ON vouchers(is_nominal);
 
 CREATE TABLE IF NOT EXISTS sync_runs (
     id INTEGER PRIMARY KEY,
@@ -291,15 +322,151 @@ CREATE INDEX IF NOT EXISTS idx_legacy_audit_resolution
 ON legacy_audit_events(resolution_status, occurred_at);
 """
 
+MIGRATION_2_TO_3_SQL = """
+ALTER TABLE vouchers ADD COLUMN origin TEXT NOT NULL DEFAULT 'UNKNOWN'
+    CHECK (origin IN ('CONTROLLER', 'APPLICATION', 'LEGACY_APPLICATION', 'UNKNOWN'));
+ALTER TABLE vouchers ADD COLUMN is_nominal INTEGER
+    CHECK (is_nominal IS NULL OR is_nominal IN (0, 1));
+ALTER TABLE vouchers ADD COLUMN ever_used INTEGER NOT NULL DEFAULT 0
+    CHECK (ever_used IN (0, 1));
+ALTER TABLE vouchers ADD COLUMN usage_observed INTEGER NOT NULL DEFAULT 1
+    CHECK (usage_observed IN (0, 1));
+UPDATE vouchers
+SET usage_observed=0
+WHERE controller_id IN (
+    SELECT id FROM controllers WHERE api_root LIKE 'legacy-backup://%'
+);
+UPDATE vouchers
+SET ever_used=1
+WHERE authorized_guest_count > 0
+   OR EXISTS (
+       SELECT 1
+       FROM voucher_sync_observations AS uso
+       WHERE uso.voucher_id=vouchers.id
+         AND uso.field_name='authorized_guest_count'
+         AND (
+             CAST(COALESCE(uso.previous_value, '0') AS INTEGER) > 0
+             OR CAST(COALESCE(uso.new_value, '0') AS INTEGER) > 0
+         )
+   );
+CREATE INDEX IF NOT EXISTS idx_vouchers_origin ON vouchers(origin);
+CREATE INDEX IF NOT EXISTS idx_vouchers_nominal ON vouchers(is_nominal);
+CREATE INDEX IF NOT EXISTS idx_vouchers_ever_used ON vouchers(ever_used);
+CREATE INDEX IF NOT EXISTS idx_vouchers_usage_observed ON vouchers(usage_observed);
+"""
+
+
+MIGRATION_3_TO_4_SQL = """
+ALTER TABLE vouchers ADD COLUMN nominality_redacted INTEGER NOT NULL DEFAULT 0
+    CHECK (nominality_redacted IN (0, 1));
+UPDATE vouchers
+SET origin='UNKNOWN'
+WHERE origin='LEGACY_APPLICATION';
+"""
+
+
+MIGRATION_4_TO_5_SQL = """
+UPDATE vouchers
+SET assigned_to=CASE
+        WHEN TRIM(COALESCE(assigned_to, ''))='' THEN name
+        ELSE assigned_to
+    END,
+    name='',
+    created_at=NULL,
+    origin='UNKNOWN'
+WHERE controller_id IN (
+    SELECT id FROM controllers
+    WHERE api_root LIKE 'legacy-backup://%'
+);
+"""
+
+
+MIGRATION_5_TO_6_ADD_PRINT_STATE_SQL = """
+ALTER TABLE vouchers ADD COLUMN print_state TEXT NOT NULL DEFAULT 'UNKNOWN'
+    CHECK (print_state IN ('UNKNOWN', 'NOT_PRINTED', 'PRINTED'));
+"""
+
+
+MIGRATION_5_TO_6_BACKFILL_SQL = """
+UPDATE vouchers
+SET print_state='PRINTED'
+WHERE EXISTS (
+    SELECT 1 FROM voucher_prints AS vp WHERE vp.voucher_id=vouchers.id
+);
+
+UPDATE vouchers
+SET print_state='NOT_PRINTED'
+WHERE origin='APPLICATION'
+  AND NOT EXISTS (
+      SELECT 1 FROM voucher_prints AS vp WHERE vp.voucher_id=vouchers.id
+  );
+
+-- Schema v5 temporarily moved the recovered legacy display name into
+-- assigned_to. Restore it to name for archive-only legacy rows so the product
+-- no longer depends on a second recipient field.
+UPDATE vouchers
+SET name=assigned_to
+WHERE controller_id IN (
+    SELECT id FROM controllers WHERE api_root LIKE 'legacy-backup://%'
+)
+  AND TRIM(COALESCE(name, ''))=''
+  AND TRIM(COALESCE(assigned_to, ''))<>'';
+"""
+
+
+MIGRATION_6_TO_7_SQL = """
+ALTER TABLE vouchers ADD COLUMN alignment_completed_at TEXT;
+
+UPDATE vouchers
+SET alignment_completed_at=COALESCE(last_synced_at, imported_at)
+WHERE is_nominal IS NOT NULL
+  AND print_state <> 'UNKNOWN';
+"""
+
+
+MIGRATION_7_TO_8_SQL = """
+ALTER TABLE controllers ADD COLUMN site_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_controllers_identity
+ON controllers(api_root, site_id, is_active);
+"""
+
+
+MIGRATION_8_TO_9_SQL = """
+ALTER TABLE vouchers ADD COLUMN missing_observation_count INTEGER NOT NULL DEFAULT 0
+    CHECK (missing_observation_count >= 0);
+ALTER TABLE vouchers ADD COLUMN missing_since TEXT;
+"""
+
+
+MIGRATION_9_TO_10_SQL = """
+ALTER TABLE vouchers ADD COLUMN expiry_observed INTEGER NOT NULL DEFAULT 1
+    CHECK (expiry_observed IN (0, 1));
+
+-- Early 5.1 legacy ZIP imports used expired=1 as a historical marker even
+-- though the source contained no positive expiry evidence. Repair only those
+-- synthetic archive rows; live/controller rows keep their verified state.
+UPDATE vouchers
+SET expired=0,
+    expiry_observed=0
+WHERE controller_id IN (
+    SELECT id FROM controllers WHERE api_root LIKE 'legacy-backup://%'
+)
+  AND usage_observed=0
+  AND ever_used=0
+  AND activated_at IS NULL
+  AND expires_at IS NULL;
+"""
 
 @dataclass(frozen=True)
 class PrintAuditSummary:
-    """Aggregated local print facts used by the duplicate-print warning."""
+    """Aggregated local print facts used by physical-print safety checks."""
 
     print_jobs: int
     physical_copies: int
     first_printed_at: str
     last_printed_at: str
+    known_printed_without_audit: bool = False
+    print_state: str = PRINT_STATE_UNKNOWN
 
 
 class Database:
@@ -341,7 +508,9 @@ class Database:
                     "INSERT OR REPLACE INTO app_metadata(key, value) VALUES (?, ?)",
                     ("schema_version", str(SCHEMA_VERSION)),
                 )
-        elif current == 1:
+            return
+
+        if current == 1:
             try:
                 # sqlite3.executescript() controls transaction boundaries on
                 # its own. Put BEGIN/COMMIT inside the script so an interrupted
@@ -357,10 +526,238 @@ VALUES ('schema_version', '2');
 COMMIT;
 """
                 )
+                current = 2
             except Exception:
                 self.connection.rollback()
                 raise
-        elif current < SCHEMA_VERSION:
+
+        if current == 2:
+            try:
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + MIGRATION_2_TO_3_SQL
+                    + """
+PRAGMA user_version = 3;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '3');
+COMMIT;
+"""
+                )
+                current = 3
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 3:
+            try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                migration_sql = (
+                    MIGRATION_3_TO_4_SQL
+                    if "nominality_redacted" not in columns
+                    else """
+UPDATE vouchers
+SET origin='UNKNOWN'
+WHERE origin='LEGACY_APPLICATION';
+"""
+                )
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + migration_sql
+                    + """
+PRAGMA user_version = 4;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '4');
+COMMIT;
+"""
+                )
+                current = 4
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 4:
+            try:
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + MIGRATION_4_TO_5_SQL
+                    + """
+PRAGMA user_version = 5;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '5');
+COMMIT;
+"""
+                )
+                current = 5
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 5:
+            try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                migration_sql = (
+                    (MIGRATION_5_TO_6_ADD_PRINT_STATE_SQL if "print_state" not in columns else "")
+                    + MIGRATION_5_TO_6_BACKFILL_SQL
+                )
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + migration_sql
+                    + """
+PRAGMA user_version = 6;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '6');
+COMMIT;
+"""
+                )
+                current = 6
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 6:
+            try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                migration_sql = (
+                    MIGRATION_6_TO_7_SQL
+                    if "alignment_completed_at" not in columns
+                    else ""
+                )
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + migration_sql
+                    + """
+PRAGMA user_version = 7;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '7');
+COMMIT;
+"""
+                )
+                current = 7
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 7:
+            try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(controllers)"
+                    )
+                }
+                migration_sql = (
+                    MIGRATION_7_TO_8_SQL
+                    if "site_id" not in columns
+                    else """
+CREATE INDEX IF NOT EXISTS idx_controllers_identity
+ON controllers(api_root, site_id, is_active);
+"""
+                )
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + migration_sql
+                    + """
+PRAGMA user_version = 8;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '8');
+COMMIT;
+"""
+                )
+                current = 8
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 8:
+            try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                parts = []
+                if "missing_observation_count" not in columns:
+                    parts.append(
+                        """ALTER TABLE vouchers
+ADD COLUMN missing_observation_count INTEGER NOT NULL DEFAULT 0
+CHECK (missing_observation_count >= 0);"""
+                    )
+                if "missing_since" not in columns:
+                    parts.append(
+                        "ALTER TABLE vouchers ADD COLUMN missing_since TEXT;"
+                    )
+                migration_sql = "\n".join(parts)
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + migration_sql
+                    + """
+PRAGMA user_version = 9;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '9');
+COMMIT;
+"""
+                )
+                current = 9
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current == 9:
+            try:
+                columns = {
+                    str(row["name"])
+                    for row in self.connection.execute(
+                        "PRAGMA table_info(vouchers)"
+                    )
+                }
+                migration_sql = (
+                    MIGRATION_9_TO_10_SQL
+                    if "expiry_observed" not in columns
+                    else """
+UPDATE vouchers
+SET expired=0,
+    expiry_observed=0
+WHERE controller_id IN (
+    SELECT id FROM controllers WHERE api_root LIKE 'legacy-backup://%'
+)
+  AND usage_observed=0
+  AND ever_used=0
+  AND activated_at IS NULL
+  AND expires_at IS NULL;
+"""
+                )
+                self.connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + migration_sql
+                    + """
+PRAGMA user_version = 10;
+INSERT OR REPLACE INTO app_metadata(key, value)
+VALUES ('schema_version', '10');
+COMMIT;
+"""
+                )
+                current = 10
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        if current < SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database schema migration {current}->{SCHEMA_VERSION} is not implemented"
             )
@@ -700,21 +1097,32 @@ COMMIT;
 
     def create_controller(
         self, *, name: str, api_root: str, created_at: str,
-        description: str = "", cert_sha256: str = "",
+        description: str = "", cert_sha256: str = "", site_id: str = "",
     ) -> int:
-        """Persist non-secret controller identity; credentials are never accepted."""
+        """Persist non-secret controller/site identity; credentials are never accepted."""
 
         with self.transaction() as db:
             cursor = db.execute(
                 """INSERT INTO controllers
-                   (name, api_root, description, cert_sha256, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (name.strip(), api_root.strip(), description.strip(), cert_sha256.strip(), created_at),
+                   (name, api_root, site_id, description, cert_sha256, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    name.strip(),
+                    api_root.strip(),
+                    site_id.strip(),
+                    description.strip(),
+                    cert_sha256.strip(),
+                    created_at,
+                ),
             )
             return int(cursor.lastrowid)
 
     def find_controller_by_api_root(self, api_root: str) -> int | None:
-        """Return the active controller matching an API root, if already known."""
+        """Return one active controller matching an API root, if already known.
+
+        This compatibility lookup is intentionally not used to establish a new
+        UniFi identity once a site UUID is available.
+        """
 
         row = self.connection.execute(
             """SELECT id FROM controllers
@@ -723,16 +1131,95 @@ COMMIT;
         ).fetchone()
         return None if row is None else int(row["id"])
 
-    def get_or_create_controller(
-        self, *, name: str, api_root: str, observed_at: str,
-        cert_sha256: str = "",
-    ) -> int:
-        """Resolve one non-secret controller profile by normalized API root."""
+    def find_controller_by_identity(
+        self,
+        *,
+        api_root: str,
+        site_id: str,
+    ) -> int | None:
+        """Resolve the durable UniFi target by API root plus Site UUID."""
+
+        root = api_root.strip()
+        site = site_id.strip()
+        if not site:
+            return self.find_controller_by_api_root(root)
+        row = self.connection.execute(
+            """SELECT id FROM controllers
+               WHERE api_root=? AND site_id=? AND is_active=1
+               ORDER BY id LIMIT 1""",
+            (root, site),
+        ).fetchone()
+        return None if row is None else int(row["id"])
+
+    def controller_site_id(self, controller_id: int) -> str:
+        """Return the persisted UniFi Site UUID for one controller profile."""
 
         row = self.connection.execute(
-            "SELECT id FROM controllers WHERE api_root=? AND is_active=1 ORDER BY id LIMIT 1",
-            (api_root.strip(),),
+            "SELECT site_id FROM controllers WHERE id=?",
+            (int(controller_id),),
         ).fetchone()
+        return "" if row is None else str(row["site_id"] or "").strip()
+
+    def get_or_create_controller(
+        self, *, name: str, api_root: str, observed_at: str,
+        cert_sha256: str = "", site_id: str = "",
+    ) -> int:
+        """Resolve one controller profile by normalized API root and Site UUID.
+
+        Pre-v8 rows have an empty site_id. The first verified connection may
+        adopt that empty identity in place, preserving all historical voucher
+        rows. A different non-empty Site UUID at the same API root is never
+        silently merged into the existing archive.
+        """
+
+        root = api_root.strip()
+        site = site_id.strip()
+        row = None
+        if site:
+            row = self.connection.execute(
+                """SELECT id FROM controllers
+                   WHERE api_root=? AND site_id=? AND is_active=1
+                   ORDER BY id LIMIT 1""",
+                (root, site),
+            ).fetchone()
+            if row is None:
+                # A pre-Site-UUID profile may be adopted only when it is the
+                # *only* active identity at this API root. If another scoped
+                # Site already exists, the legacy row is ambiguous historical
+                # data and must never be silently merged into a new Site.
+                root_rows = self.connection.execute(
+                    """SELECT id, site_id FROM controllers
+                       WHERE api_root=? AND is_active=1
+                       ORDER BY id""",
+                    (root,),
+                ).fetchall()
+                if (
+                    len(root_rows) == 1
+                    and not str(root_rows[0]["site_id"] or "").strip()
+                ):
+                    row = root_rows[0]
+                    with self.transaction() as db:
+                        db.execute(
+                            """UPDATE controllers
+                               SET site_id=?, name=?, cert_sha256=?, last_used_at=?
+                               WHERE id=?""",
+                            (
+                                site,
+                                name.strip(),
+                                cert_sha256.strip(),
+                                observed_at,
+                                row["id"],
+                            ),
+                        )
+                    return int(row["id"])
+        else:
+            row = self.connection.execute(
+                """SELECT id FROM controllers
+                   WHERE api_root=? AND is_active=1
+                   ORDER BY id LIMIT 1""",
+                (root,),
+            ).fetchone()
+
         if row is not None:
             with self.transaction() as db:
                 db.execute(
@@ -743,9 +1230,10 @@ COMMIT;
             return int(row["id"])
         return self.create_controller(
             name=name,
-            api_root=api_root,
+            api_root=root,
             created_at=observed_at,
             cert_sha256=cert_sha256,
+            site_id=site,
         )
 
     def upsert_voucher(
@@ -767,7 +1255,16 @@ COMMIT;
         values = (
             controller_id, unifi_id, code, name, created_at, imported_at,
             duration_minutes, authorized_guest_limit, authorized_guest_count,
-            activated_at, expires_at, int(expired), data_limit_mb,
+            int(
+                authorized_guest_count > 0
+                or bool(activated_at)
+                or bool(expired)
+            ),
+            1,
+            activated_at,
+            expires_at,
+            int(expired),
+            data_limit_mb,
             download_limit_kbps, upload_limit_kbps, last_synced_at, last_synced_at,
         )
         def write(db: sqlite3.Connection) -> int:
@@ -775,19 +1272,51 @@ COMMIT;
                 """INSERT INTO vouchers (
                        controller_id, unifi_id, code, name, created_at, imported_at,
                        duration_minutes, authorized_guest_limit, authorized_guest_count,
-                       activated_at, expires_at, expired, data_limit_mb,
-                       download_limit_kbps, upload_limit_kbps, last_seen_at, last_synced_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ever_used, usage_observed, activated_at, expires_at, expired,
+                       data_limit_mb, download_limit_kbps, upload_limit_kbps,
+                       last_seen_at, last_synced_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(controller_id, unifi_id) DO UPDATE SET
                        code=excluded.code, name=excluded.name, created_at=excluded.created_at,
                        duration_minutes=excluded.duration_minutes,
                        authorized_guest_limit=excluded.authorized_guest_limit,
-                       authorized_guest_count=excluded.authorized_guest_count,
-                       activated_at=excluded.activated_at, expires_at=excluded.expires_at,
-                       expired=excluded.expired, data_limit_mb=excluded.data_limit_mb,
+                       authorized_guest_count=CASE
+                           WHEN excluded.authorized_guest_count >
+                                vouchers.authorized_guest_count
+                           THEN excluded.authorized_guest_count
+                           ELSE vouchers.authorized_guest_count
+                       END,
+                       ever_used=CASE
+                           WHEN vouchers.ever_used=1
+                                OR excluded.authorized_guest_count>0
+                                OR excluded.activated_at IS NOT NULL
+                                OR excluded.expired=1
+                           THEN 1 ELSE 0 END,
+                       usage_observed=1,
+                       activated_at=COALESCE(
+                           vouchers.activated_at,
+                           excluded.activated_at
+                       ),
+                       expires_at=COALESCE(
+                           excluded.expires_at,
+                           vouchers.expires_at
+                       ),
+                       expired=CASE
+                           WHEN vouchers.expired=1 OR excluded.expired=1
+                           THEN 1 ELSE 0
+                       END,
+                       expiry_observed=1,
+                       data_limit_mb=excluded.data_limit_mb,
                        download_limit_kbps=excluded.download_limit_kbps,
                        upload_limit_kbps=excluded.upload_limit_kbps,
-                       present_on_controller=1, archived_at=NULL,
+                       present_on_controller=1,
+                       missing_observation_count=0,
+                       missing_since=NULL,
+                       archived_at=NULL,
+                       origin=CASE
+                           WHEN vouchers.origin='UNKNOWN' THEN 'CONTROLLER'
+                           ELSE vouchers.origin
+                       END,
                        last_seen_at=excluded.last_seen_at,
                        last_synced_at=excluded.last_synced_at""",
                 values,
@@ -803,8 +1332,138 @@ COMMIT;
         with self.transaction() as db:
             return write(db)
 
+    def usage_state_for_remote_ids(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+    ) -> dict[str, bool | None]:
+        """Return True/False/None for used, observed-unused, or unknown usage."""
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.connection.execute(
+            f"""SELECT unifi_id, ever_used, usage_observed
+                FROM vouchers
+                WHERE controller_id=?
+                  AND unifi_id IN ({placeholders})""",
+            (int(controller_id), *ids),
+        ).fetchall()
+        result: dict[str, bool | None] = {}
+        for row in rows:
+            remote_id = str(row["unifi_id"])
+            if not bool(row["usage_observed"]):
+                result[remote_id] = None
+            else:
+                result[remote_id] = bool(row["ever_used"])
+        return result
+
+
+    def historically_used_remote_ids(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+    ) -> frozenset[str]:
+        """Return selected controller voucher ids that were ever observed used."""
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        if not ids:
+            return frozenset()
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.connection.execute(
+            f"""SELECT unifi_id
+                FROM vouchers
+                WHERE controller_id=?
+                  AND unifi_id IN ({placeholders})
+                  AND ever_used=1""",
+            (int(controller_id), *ids),
+        ).fetchall()
+        return frozenset(str(row["unifi_id"]) for row in rows)
+
+
+    def mark_application_created_vouchers(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str] | tuple[str, ...],
+        is_nominal: bool,
+        aligned_at: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        """Attach application-owned facts to a confirmed create result.
+
+        The recipient is the UniFi-owned name already persisted by the
+        controller snapshot. Voucher Management adds only its local
+        classification and knows that a newly-created voucher has not yet been
+        printed by this workstation.
+        """
+
+        ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        if not ids:
+            return
+
+        aligned_stamp = str(aligned_at or "").strip()
+        if not aligned_stamp:
+            raise ValueError("aligned_at is required")
+
+        placeholders = ",".join("?" for _ in ids)
+
+        def write(db: sqlite3.Connection) -> None:
+            params = (
+                "APPLICATION",
+                int(bool(is_nominal)),
+                PRINT_STATE_NOT_PRINTED,
+                aligned_stamp,
+                int(controller_id),
+                *ids,
+            )
+            cursor = db.execute(
+                f"""UPDATE vouchers
+                    SET origin=?, is_nominal=?, print_state=?,
+                        alignment_completed_at=?, nominality_redacted=0
+                    WHERE controller_id=?
+                      AND unifi_id IN ({placeholders})""",
+                params,
+            )
+            if cursor.rowcount != len(ids):
+                raise RuntimeError(
+                    "confirmed created vouchers are missing from the local snapshot"
+                )
+
+        if connection is not None:
+            write(connection)
+            return
+        with self.transaction() as db:
+            write(db)
+
     def print_summary(self, voucher_id: int) -> PrintAuditSummary:
-        """Return immutable print totals used before allowing a duplicate."""
+        """Return immutable print facts used before allowing a duplicate.
+
+        A legacy/aligned voucher may be positively known as PRINTED even when
+        no historical physical-print job can be reconstructed. That evidence
+        must still trigger the duplicate-print warning.
+        """
 
         row = self.connection.execute(
             """SELECT COUNT(*) AS jobs,
@@ -814,11 +1473,33 @@ COMMIT;
                FROM voucher_prints WHERE voucher_id=?""",
             (voucher_id,),
         ).fetchone()
+        jobs = int(row["jobs"])
+        state_row = self.connection.execute(
+            "SELECT print_state FROM vouchers WHERE id=?",
+            (int(voucher_id),),
+        ).fetchone()
+        print_state = (
+            str(state_row["print_state"] or PRINT_STATE_UNKNOWN).strip().upper()
+            if state_row is not None
+            else PRINT_STATE_UNKNOWN
+        )
+        if print_state not in {
+            PRINT_STATE_UNKNOWN,
+            PRINT_STATE_NOT_PRINTED,
+            PRINT_STATE_PRINTED,
+        }:
+            print_state = PRINT_STATE_UNKNOWN
+        known_printed_without_audit = bool(
+            jobs == 0
+            and print_state == PRINT_STATE_PRINTED
+        )
         return PrintAuditSummary(
-            print_jobs=int(row["jobs"]),
+            print_jobs=jobs,
             physical_copies=int(row["copies"]),
             first_printed_at=str(row["first_at"]),
             last_printed_at=str(row["last_at"]),
+            known_printed_without_audit=known_printed_without_audit,
+            print_state=print_state,
         )
 
     def print_summaries_for_codes(
@@ -853,6 +1534,36 @@ COMMIT;
             result[code] = self.print_summary(int(rows[0]["id"]))
         return result
 
+    def print_summaries_for_remote_ids(
+        self,
+        *,
+        controller_id: int,
+        unifi_ids: list[str],
+    ) -> dict[str, PrintAuditSummary]:
+        """Return print facts keyed by stable UniFi voucher UUID."""
+
+        normalized = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in unifi_ids
+                if str(value).strip()
+            )
+        )
+        result: dict[str, PrintAuditSummary] = {}
+        for remote_id in normalized:
+            rows = self.connection.execute(
+                """SELECT id FROM vouchers
+                   WHERE controller_id=? AND unifi_id=?
+                   ORDER BY id""",
+                (int(controller_id), remote_id),
+            ).fetchall()
+            if len(rows) != 1:
+                raise RuntimeError(
+                    "Voucher UUID is missing or ambiguous in the local database"
+                )
+            result[remote_id] = self.print_summary(int(rows[0]["id"]))
+        return result
+
     def record_print_audit(
         self,
         *,
@@ -860,6 +1571,7 @@ COMMIT;
         audit_id: str,
         codes: list[str],
         output_file: str,
+        unifi_ids: list[str] | None = None,
         document_copies: int,
         printed_at: str,
         windows_user: str,
@@ -883,37 +1595,68 @@ COMMIT;
         if document_copies < 1:
             raise ValueError("document_copies must be positive")
 
-        # PDF/history use the human-readable 12345-67890 form while UniFi
-        # may persist the same code without the separator. Resolve by canonical
-        # digits so print audit does not depend on presentation formatting.
-        counts = Counter(
+        normalized_codes = [
             str(code).strip().replace("-", "")
             for code in codes
             if str(code).strip()
-        )
-        if not counts:
+        ]
+        if not normalized_codes:
             raise ValueError("at least one voucher code is required")
 
-        with self.transaction() as db:
-            resolved: dict[str, int] = {}
-            for code in counts:
-                rows = db.execute(
-                    """SELECT id FROM vouchers
-                       WHERE controller_id=? AND REPLACE(code, '-', '')=?
-                       ORDER BY id""",
-                    (controller_id, code),
-                ).fetchall()
-                if len(rows) != 1:
-                    raise RuntimeError(
-                        "Voucher code is missing or ambiguous in the local database"
-                    )
-                resolved[code] = int(rows[0]["id"])
+        normalized_remote_ids: list[str] | None = None
+        if unifi_ids is not None:
+            normalized_remote_ids = [
+                str(value).strip()
+                for value in unifi_ids
+            ]
+            if (
+                len(normalized_remote_ids) != len(codes)
+                or any(not value for value in normalized_remote_ids)
+            ):
+                raise ValueError(
+                    "unifi_ids must identify every printed voucher label"
+                )
 
-            expected_prints = {
-                voucher_id: labels * document_copies
-                for code, labels in counts.items()
-                for voucher_id in (resolved[code],)
-            }
+        with self.transaction() as db:
+            expected_prints: dict[int, int] = {}
+            if normalized_remote_ids is not None:
+                counts_by_remote = Counter(normalized_remote_ids)
+                for remote_id, labels in counts_by_remote.items():
+                    rows = db.execute(
+                        """SELECT id FROM vouchers
+                           WHERE controller_id=? AND unifi_id=?
+                           ORDER BY id""",
+                        (int(controller_id), remote_id),
+                    ).fetchall()
+                    if len(rows) != 1:
+                        raise RuntimeError(
+                            "Voucher UUID is missing or ambiguous in the local database"
+                        )
+                    expected_prints[int(rows[0]["id"])] = (
+                        labels * document_copies
+                    )
+            else:
+                # Legacy callers can still resolve by canonical display code.
+                counts = Counter(normalized_codes)
+                resolved: dict[str, int] = {}
+                for code in counts:
+                    rows = db.execute(
+                        """SELECT id FROM vouchers
+                           WHERE controller_id=? AND REPLACE(code, '-', '')=?
+                           ORDER BY id""",
+                        (controller_id, code),
+                    ).fetchall()
+                    if len(rows) != 1:
+                        raise RuntimeError(
+                            "Voucher code is missing or ambiguous in the local database"
+                        )
+                    resolved[code] = int(rows[0]["id"])
+
+                expected_prints = {
+                    voucher_id: labels * document_copies
+                    for code, labels in counts.items()
+                    for voucher_id in (resolved[code],)
+                }
             existing = db.execute(
                 "SELECT * FROM print_jobs WHERE print_job_uuid=?",
                 (normalized_audit_id,),
@@ -942,6 +1685,11 @@ COMMIT;
                     raise RuntimeError(
                         "Print audit id already exists with different voucher data"
                     )
+                for voucher_id in expected_prints:
+                    db.execute(
+                        "UPDATE vouchers SET print_state=? WHERE id=?",
+                        (PRINT_STATE_PRINTED, voucher_id),
+                    )
                 return
 
             cursor = db.execute(
@@ -967,6 +1715,42 @@ COMMIT;
                     (voucher_id,),
                 ).fetchone()
                 sequence = int(row["sequence"]) + 1
+                state_row = db.execute(
+                    "SELECT print_state FROM vouchers WHERE id=?",
+                    (voucher_id,),
+                ).fetchone()
+                prior_print_state = (
+                    str(
+                        state_row["print_state"]
+                        if state_row is not None
+                        else PRINT_STATE_UNKNOWN
+                    )
+                    .strip()
+                    .upper()
+                )
+                if (
+                    sequence == 1
+                    and prior_print_state == PRINT_STATE_UNKNOWN
+                ):
+                    db.execute(
+                        """INSERT INTO voucher_events(
+                               event_uuid, voucher_id, event_type, occurred_at,
+                               source, windows_user, details_json
+                           ) VALUES (?, ?, 'PRINTED_FROM_UNKNOWN_STATE', ?,
+                                     'OPERATOR', ?, ?)""",
+                        (
+                            str(uuid4()),
+                            voucher_id,
+                            normalized_time,
+                            normalized_user,
+                            self.encode_event_details(
+                                {
+                                    "prior_print_state": PRINT_STATE_UNKNOWN,
+                                    "print_job_uuid": normalized_audit_id,
+                                }
+                            ),
+                        ),
+                    )
                 db.execute(
                     """INSERT INTO voucher_prints
                        (print_job_id, voucher_id, printed_at, windows_user,
@@ -982,6 +1766,10 @@ COMMIT;
                         int(sequence > 1),
                     ),
                 )
+                db.execute(
+                    "UPDATE vouchers SET print_state=? WHERE id=?",
+                    (PRINT_STATE_PRINTED, voucher_id),
+                )
 
     def controller_name(self, controller_id: int) -> str | None:
         """Return one persisted non-secret controller display name."""
@@ -993,6 +1781,21 @@ COMMIT;
         if row is None:
             return None
         return str(row["name"] or "").strip() or None
+
+    def rename_controller(self, controller_id: int, name: str) -> None:
+        """Change only the non-secret operator-facing controller name."""
+
+        normalized = str(name or "").strip()
+        if not normalized:
+            raise ValueError("Il nome del controller non può essere vuoto.")
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """UPDATE controllers SET name=?
+                   WHERE id=? AND is_active=1""",
+                (normalized, int(controller_id)),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("Controller locale non trovato.")
 
     def report_voucher_rows(
         self,
@@ -1018,9 +1821,17 @@ COMMIT;
                     v.id AS voucher_id,
                     v.controller_id,
                     c.name AS controller_name,
+                    v.unifi_id,
                     v.code,
                     v.name,
                     v.assigned_to,
+                    v.notes,
+                    v.origin,
+                    v.is_nominal,
+                    v.print_state,
+                    v.nominality_redacted,
+                    v.ever_used,
+                    v.usage_observed,
                     v.created_at,
                     v.imported_at,
                     v.duration_minutes,
@@ -1033,6 +1844,43 @@ COMMIT;
                     v.archived_at,
                     v.last_seen_at,
                     v.last_synced_at,
+                    COALESCE((
+                        SELECT MAX(ve.occurred_at)
+                        FROM voucher_events AS ve
+                        WHERE ve.voucher_id=v.id
+                          AND ve.event_type='SECURITY_REVOKED'
+                    ), '') AS security_revoked_at,
+                    COALESCE((
+                        SELECT MAX(ve.occurred_at)
+                        FROM voucher_events AS ve
+                        WHERE ve.voucher_id=v.id
+                          AND ve.event_type IN (
+                              'PREPARATION_DELETED',
+                              'CONTROLLER_DELETED'
+                          )
+                    ), '') AS preparation_deleted_at,
+                    COALESCE((
+                        SELECT ve.event_type
+                        FROM voucher_events AS ve
+                        WHERE ve.voucher_id=v.id
+                          AND ve.event_type IN (
+                              'PREPARATION_DELETED',
+                              'CONTROLLER_DELETED'
+                          )
+                        ORDER BY ve.occurred_at DESC, ve.id DESC
+                        LIMIT 1
+                    ), '') AS controller_delete_event_type,
+                    COALESCE((
+                        SELECT ve.details_json
+                        FROM voucher_events AS ve
+                        WHERE ve.voucher_id=v.id
+                          AND ve.event_type IN (
+                              'PREPARATION_DELETED',
+                              'CONTROLLER_DELETED'
+                          )
+                        ORDER BY ve.occurred_at DESC, ve.id DESC
+                        LIMIT 1
+                    ), '') AS preparation_delete_details,
                     COUNT(vp.id) AS print_jobs,
                     COALESCE(SUM(vp.physical_copies), 0) AS physical_copies,
                     COALESCE(SUM(CASE WHEN vp.is_reprint=1 THEN 1 ELSE 0 END), 0)

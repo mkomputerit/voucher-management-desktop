@@ -7,6 +7,7 @@ from voucher_management.settings import DEFAULT_SETTINGS, SettingsStore
 
 def test_public_defaults_contain_no_operational_controller_address(tmp_path):
     assert DEFAULT_SETTINGS["controller_api_root"] == ""
+    assert DEFAULT_SETTINGS["controller_site_id"] == ""
     assert DEFAULT_SETTINGS["controller_cert_sha256"] == ""
     assert DEFAULT_SETTINGS["structure_name"] == ""
     assert DEFAULT_SETTINGS["wifi_title"] == "Guest Wi-Fi"

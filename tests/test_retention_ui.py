@@ -25,6 +25,11 @@ def test_retention_intro_is_skipped_after_installation_ack(monkeypatch):
     )
     monkeypatch.setattr(
         retention_ui,
+        "retention_days_configured",
+        lambda database: True,
+    )
+    monkeypatch.setattr(
+        retention_ui,
         "RetentionIntroDialog",
         lambda parent: (_ for _ in ()).throw(
             AssertionError("dialog must not reopen after acknowledgement")
@@ -36,7 +41,7 @@ def test_retention_intro_is_skipped_after_installation_ack(monkeypatch):
     assert calls and calls[0][0] == "ensure"
 
 
-def test_retention_intro_continue_marks_installation_seen(monkeypatch):
+def test_retention_intro_continue_marks_seen_and_opens_required_review(monkeypatch):
     calls = []
     fake = SimpleNamespace(
         database=object(),
@@ -55,6 +60,11 @@ def test_retention_intro_continue_marks_installation_seen(monkeypatch):
     )
     monkeypatch.setattr(
         retention_ui,
+        "retention_days_configured",
+        lambda database: False,
+    )
+    monkeypatch.setattr(
+        retention_ui,
         "mark_retention_intro_seen",
         lambda database, now: calls.append(("seen", database, now)),
     )
@@ -66,7 +76,7 @@ def test_retention_intro_continue_marks_installation_seen(monkeypatch):
 
     RetentionMixin.show_retention_intro_if_needed(fake)
 
-    assert [entry[0] for entry in calls] == ["ensure", "seen"]
+    assert [entry[0] for entry in calls] == ["ensure", "seen", "review"]
 
 
 def test_retention_intro_review_marks_seen_then_opens_advanced_review(monkeypatch):
@@ -88,6 +98,11 @@ def test_retention_intro_review_marks_seen_then_opens_advanced_review(monkeypatc
     )
     monkeypatch.setattr(
         retention_ui,
+        "retention_days_configured",
+        lambda database: False,
+    )
+    monkeypatch.setattr(
+        retention_ui,
         "mark_retention_intro_seen",
         lambda database, now: calls.append(("seen", database, now)),
     )
@@ -102,6 +117,41 @@ def test_retention_intro_review_marks_seen_then_opens_advanced_review(monkeypatc
     assert [entry[0] for entry in calls] == ["ensure", "seen", "review"]
 
 
+def test_seen_intro_but_missing_threshold_still_opens_review(monkeypatch):
+    calls = []
+    fake = SimpleNamespace(
+        database=object(),
+        open_retention_review=lambda: calls.append(("review",)),
+    )
+
+    monkeypatch.setattr(
+        retention_ui,
+        "ensure_retention_policy",
+        lambda database, now: calls.append(("ensure", database, now)),
+    )
+    monkeypatch.setattr(
+        retention_ui,
+        "retention_intro_seen",
+        lambda database: True,
+    )
+    monkeypatch.setattr(
+        retention_ui,
+        "retention_days_configured",
+        lambda database: False,
+    )
+    monkeypatch.setattr(
+        retention_ui,
+        "RetentionIntroDialog",
+        lambda parent: (_ for _ in ()).throw(
+            AssertionError("old intro must not reopen")
+        ),
+    )
+
+    RetentionMixin.show_retention_intro_if_needed(fake)
+
+    assert [entry[0] for entry in calls] == ["ensure", "review"]
+
+
 def test_cancelled_retention_intro_is_not_acknowledged(monkeypatch):
     calls = []
     fake = SimpleNamespace(database=object())
@@ -114,6 +164,11 @@ def test_cancelled_retention_intro_is_not_acknowledged(monkeypatch):
     monkeypatch.setattr(
         retention_ui,
         "retention_intro_seen",
+        lambda database: False,
+    )
+    monkeypatch.setattr(
+        retention_ui,
+        "retention_days_configured",
         lambda database: False,
     )
     monkeypatch.setattr(

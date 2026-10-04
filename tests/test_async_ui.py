@@ -64,9 +64,16 @@ def test_connect_clears_visible_api_key_and_only_schedules_network(monkeypatch):
     failed = []
 
     class FakeClient:
-        def __init__(self, api_root, *, trusted_cert_sha256=None):
+        def __init__(
+            self,
+            api_root,
+            *,
+            trusted_cert_sha256=None,
+            preferred_site_id=None,
+        ):
             self.base_url = api_root
             self.trusted_cert_sha256 = trusted_cert_sha256 or ""
+            self.preferred_site_id = preferred_site_id
 
         def connect(self, _key):
             raise AssertionError("network called from Tk connect()")
@@ -100,12 +107,15 @@ def test_connect_clears_visible_api_key_and_only_schedules_network(monkeypatch):
     assert scheduled[0][1] == "secret-key"
 
 
-def test_connect_worker_contains_network_and_tls_prompt_is_callback_only():
+def test_connect_worker_contains_network_persistence_and_tls_prompt_is_callback_only(
+    monkeypatch,
+):
     calls = []
     captured = {}
 
     class FakeClient:
         base_url = "https://controller.invalid/v1"
+        trusted_cert_sha256 = ""
 
         def connect(self, key):
             calls.append(("connect", key))
@@ -115,14 +125,28 @@ def test_connect_worker_contains_network_and_tls_prompt_is_callback_only():
             calls.append(("list", None))
             return ["voucher"]
 
+    persisted = SimpleNamespace(
+        controller_id=7,
+        controller_name="Reception",
+        observed_at="2026-09-28T07:30:00+00:00",
+    )
+    monkeypatch.setattr(
+        connection_ui,
+        "persist_connection_snapshot_to_path",
+        lambda *args, **kwargs: calls.append(("persist", kwargs)) or persisted,
+    )
     fake = SimpleNamespace(
+        paths=SimpleNamespace(database="test.sqlite"),
+        _requested_controller_name="Reception",
         _run_network_task=lambda label, worker, success, error: captured.update(
             label=label,
             worker=worker,
             success=success,
             error=error,
         ),
-        _finish_connection=lambda *args: calls.append(("finish", args)),
+        _finish_connection=lambda *args, **kwargs: calls.append(
+            ("finish", args, kwargs)
+        ),
         _confirm_changed_certificate=lambda *args: calls.append(
             ("changed-prompt", args)
         ),
@@ -141,7 +165,8 @@ def test_connect_worker_contains_network_and_tls_prompt_is_callback_only():
 
     assert calls == []
     result = captured["worker"]()
-    assert calls == [("connect", "secret-key"), ("list", None)]
+    assert calls[0:2] == [("connect", "secret-key"), ("list", None)]
+    assert calls[2][0] == "persist"
 
     captured["success"](result)
     assert calls[-1][0] == "finish"
@@ -189,12 +214,15 @@ def test_network_busy_state_drives_progress_and_network_buttons():
     assert label.visible is False
 
 
-def test_refresh_defers_controller_access_to_worker(monkeypatch):
+def test_refresh_defers_network_and_snapshot_persistence_to_worker(monkeypatch):
     captured = {}
     calls = []
     client = SimpleNamespace()
+    fresh = SimpleNamespace(id="fresh")
     fake = SimpleNamespace(
         client=client,
+        active_controller_id=9,
+        paths=SimpleNamespace(database="test.sqlite"),
         bell=lambda: None,
         vouchers=[],
         create_guard=SimpleNamespace(clear=lambda: False),
@@ -209,7 +237,39 @@ def test_refresh_defers_controller_access_to_worker(monkeypatch):
     monkeypatch.setattr(
         app_module,
         "refresh_vouchers",
-        lambda current: calls.append(("network", current)) or ["fresh"],
+        lambda current: calls.append(("network", current)) or [fresh],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "inspect_snapshot_absences_to_path",
+        lambda *args, **kwargs: SimpleNamespace(
+            suspected_ids=(),
+            confirmation_ids=(),
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "verify_snapshot_absences",
+        lambda current_client, snapshot, confirmation_ids: SimpleNamespace(
+            vouchers=tuple(snapshot),
+            recovered_ids=frozenset(),
+            confirmed_absent_ids=frozenset(),
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "persist_refresh_snapshot_to_path",
+        lambda *args, **kwargs: calls.append(("persist", kwargs)),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "reconcile_pending_create_reporting_to_path",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "reconcile_pending_security_revocations_to_path",
+        lambda *args, **kwargs: None,
     )
 
     VoucherApp.refresh(fake)
@@ -218,10 +278,14 @@ def test_refresh_defers_controller_access_to_worker(monkeypatch):
     assert calls == []
 
     result = captured["worker"]()
-    assert calls == [("network", client)]
+    assert calls[0] == ("network", client)
+    assert calls[1][0] == "persist"
+    assert calls[1][1]["controller_id"] == 9
 
+    before_success = list(calls)
     captured["success"](result)
-    assert fake.vouchers == ["fresh"]
+    assert fake.vouchers == [fresh]
+    assert calls[:-1] == before_success
     assert calls[-1] == ("populate", None)
 
 
@@ -252,12 +316,65 @@ def test_unexpected_background_error_is_redacted(monkeypatch):
     assert "Errore imprevisto" in shown[0][0][1]
 
 
+def test_persisted_connection_completion_does_not_write_sqlite_on_tk_thread():
+    calls = []
+
+    class NoTkWritesDatabase:
+        def find_controller_by_api_root(self, _root):
+            raise AssertionError("Tk callback must not resolve controller in SQLite")
+
+        def get_or_create_controller(self, **_kwargs):
+            raise AssertionError("Tk callback must not write controller in SQLite")
+
+    fake = SimpleNamespace(
+        database=NoTkWritesDatabase(),
+        active_controller_id=None,
+        client=None,
+        vouchers=[],
+        api_root_var=_Var(),
+        controller_name_var=_Var(),
+        settings={},
+        settings_store=SimpleNamespace(
+            update=lambda **kwargs: kwargs
+        ),
+        connection_var=_Var(),
+        checked_ids=set(),
+        populate=lambda: calls.append("populate"),
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+    )
+    client = SimpleNamespace(
+        base_url="https://controller.example/proxy/network/integration/v1",
+        trusted_cert_sha256="",
+    )
+    persisted = connection_ui.PersistedControllerSnapshot(
+        controller_id=7,
+        controller_name="Reception",
+        observed_at="2026-09-28T07:30:00+00:00",
+    )
+
+    modern_app.ModernVoucherApp._finish_connection(
+        fake,
+        client,
+        {
+            "applicationVersion": "10.6.106",
+            "siteName": "Default Site",
+        },
+        [],
+        persisted=persisted,
+    )
+
+    assert fake.active_controller_id == 7
+    assert fake.controller_name_var.get() == "Reception"
+    assert calls == ["populate"]
+
+
 def test_onboarding_profile_name_does_not_replace_real_site_label(monkeypatch):
     persisted = []
     status = _Var()
     settings_updates = []
     fake_database = SimpleNamespace(
         find_controller_by_api_root=lambda _root: None,
+        find_controller_by_identity=lambda **_kwargs: None,
         controller_name=lambda _controller_id: None,
         get_or_create_controller=lambda **kwargs: (
             persisted.append(kwargs) or 7
@@ -314,6 +431,7 @@ def test_reconnect_preserves_named_controller_profile(monkeypatch):
     status = _Var()
     fake_database = SimpleNamespace(
         find_controller_by_api_root=lambda _root: 7,
+        find_controller_by_identity=lambda **_kwargs: 7,
         controller_name=lambda _controller_id: "Reception",
         get_or_create_controller=lambda **kwargs: (
             persisted.append(kwargs) or 7

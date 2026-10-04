@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from voucher_management.database import Database
 from voucher_management.history import HistoryError
 from voucher_management.retention import (
@@ -41,7 +43,7 @@ def _history(*, generated_codes=()):
 
     return SimpleNamespace(stats_for_codes=stats_for_codes)
 
-def _database(tmp_path):
+def _database(tmp_path, *, configure=True):
     database = Database(tmp_path / "retention.db")
     database.initialize()
     controller_id = database.create_controller(
@@ -49,6 +51,12 @@ def _database(tmp_path):
         api_root="https://controller.example",
         created_at=OLD,
     )
+    if configure:
+        update_retention_days(
+            database,
+            days=DEFAULT_UNUSED_UNPRINTED_DAYS,
+            now=NOW,
+        )
     return database, controller_id
 
 
@@ -61,6 +69,7 @@ def _voucher(
     imported_at=OLD,
     created_at=OLD,
     expires_at=None,
+    expired=False,
     uses=0,
     present=False,
 ):
@@ -72,15 +81,19 @@ def _voucher(
         created_at=created_at,
         imported_at=imported_at,
         expires_at=expires_at,
+        expired=expired,
         authorized_guest_count=uses,
         last_synced_at=imported_at,
     )
-    if not present:
-        with database.transaction() as db:
-            db.execute(
-                "UPDATE vouchers SET present_on_controller=0 WHERE id=?",
-                (voucher_id,),
-            )
+    with database.transaction() as db:
+        db.execute(
+            """UPDATE vouchers
+               SET alignment_completed_at=?,
+                   print_state='NOT_PRINTED',
+                   present_on_controller=?
+               WHERE id=?""",
+            (imported_at, int(bool(present)), voucher_id),
+        )
     return voucher_id
 
 
@@ -154,6 +167,7 @@ def test_candidates_require_old_absent_unused_unprinted_rows(tmp_path):
             code="5555566666",
             imported_at=RECENT,
             created_at=RECENT,
+            expires_at=RECENT,
         )
         database.record_print_audit(
             controller_id=controller,
@@ -176,6 +190,108 @@ def test_candidates_require_old_absent_unused_unprinted_rows(tmp_path):
         database.close()
 
 
+def test_historically_used_voucher_never_becomes_retention_candidate_after_counter_reset(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="used-then-reset",
+            code="1919191919",
+            uses=1,
+        )
+        database.upsert_voucher(
+            controller_id=controller,
+            unifi_id="used-then-reset",
+            code="1919191919",
+            name="Guest used-then-reset",
+            created_at=OLD,
+            imported_at=OLD,
+            authorized_guest_count=0,
+            last_synced_at=NOW,
+        )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET present_on_controller=0 WHERE id=?",
+                (voucher_id,),
+            )
+
+        row = database.connection.execute(
+            "SELECT authorized_guest_count, ever_used FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["authorized_guest_count"] == 1
+        assert row["ever_used"] == 1
+        assert all(
+            candidate.voucher_id != voucher_id
+            for candidate in retention_candidates(database, now=NOW)
+        )
+    finally:
+        database.close()
+
+
+def test_usage_indeterminate_row_is_never_offered_for_retention(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="usage-unknown",
+            code="9090909090",
+        )
+        with database.transaction() as db:
+            db.execute(
+                "UPDATE vouchers SET usage_observed=0 WHERE id=?",
+                (voucher_id,),
+            )
+
+        assert retention_candidates(database, now=NOW) == ()
+        with pytest.raises(RuntimeError, match="privacy minimization"):
+            archive_retention_candidates(
+                database,
+                voucher_ids=[voucher_id],
+                archived_at=NOW,
+                windows_user="operator",
+                history=_history(),
+                settings={},
+            )
+        row = database.connection.execute(
+            "SELECT code, archived_at FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["code"] == "9090909090"
+        assert row["archived_at"] is None
+    finally:
+        database.close()
+
+def test_absence_without_post_expiry_observation_is_not_retention_proof(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="vanished-before-proof",
+            code="8181818181",
+            imported_at="2026-01-01T08:00:00+00:00",
+            created_at="2026-01-01T08:00:00+00:00",
+            expires_at="2026-01-02T08:00:00+00:00",
+            expired=False,
+        )
+        with database.transaction() as db:
+            db.execute(
+                """UPDATE vouchers
+                   SET present_on_controller=0,
+                       last_seen_at='2026-01-01T12:00:00+00:00',
+                       last_synced_at='2026-01-03T08:00:00+00:00'
+                   WHERE id=?""",
+                (voucher_id,),
+            )
+
+        assert retention_candidates(database, now=NOW) == ()
+    finally:
+        database.close()
+
+
 def test_expiry_is_conservative_age_basis_when_present(tmp_path):
     database, controller = _database(tmp_path)
     try:
@@ -187,6 +303,7 @@ def test_expiry_is_conservative_age_basis_when_present(tmp_path):
             created_at=OLD,
             imported_at=OLD,
             expires_at="2026-12-01T08:00:00+00:00",
+            expired=False,
         )
 
         assert retention_candidates(database, now=NOW) == ()
@@ -194,57 +311,56 @@ def test_expiry_is_conservative_age_basis_when_present(tmp_path):
         database.close()
 
 
-def test_reviewed_archive_scrubs_credential_and_personal_text(tmp_path):
+def test_privacy_minimization_is_disabled_and_preserves_local_data(tmp_path):
     database, controller = _database(tmp_path)
     try:
         voucher_id = _voucher(
             database,
             controller,
-            remote_id="archive-me",
+            remote_id="preserve-me",
             code="1234567890",
         )
         with database.transaction() as db:
             db.execute(
                 """UPDATE vouchers
-                   SET assigned_to='Mario Rossi', notes='private note'
+                   SET assigned_to='Mario Rossi', notes='private note',
+                       is_nominal=1
                    WHERE id=?""",
                 (voucher_id,),
             )
 
-        result = archive_retention_candidates(
-            database,
-            voucher_ids=[voucher_id],
-            archived_at=NOW,
-            windows_user=r"PC\operator",
-            history=_history(),
-            settings={},
-        )
+        with pytest.raises(RuntimeError, match="privacy minimization"):
+            archive_retention_candidates(
+                database,
+                voucher_ids=[voucher_id],
+                archived_at=NOW,
+                windows_user=r"PC\operator",
+                history=_history(),
+                settings={},
+            )
 
-        assert result.archived_ids == (voucher_id,)
-        assert result.skipped_ids == ()
         row = database.connection.execute(
-            "SELECT * FROM vouchers WHERE id=?",
+            """SELECT code, name, assigned_to, notes, is_nominal,
+                      nominality_redacted, archived_at
+               FROM vouchers WHERE id=?""",
             (voucher_id,),
         ).fetchone()
-        assert row["code"] == f"ARCHIVED-{voucher_id}"
-        assert row["name"] == ""
-        assert row["assigned_to"] == ""
-        assert row["notes"] == ""
-        assert row["archived_at"] == NOW
-
-        event = database.connection.execute(
-            """SELECT * FROM voucher_events
+        assert row["code"] == "1234567890"
+        assert row["name"] == "Guest preserve-me"
+        assert row["assigned_to"] == "Mario Rossi"
+        assert row["notes"] == "private note"
+        assert row["is_nominal"] == 1
+        assert row["nominality_redacted"] == 0
+        assert row["archived_at"] is None
+        assert database.connection.execute(
+            """SELECT COUNT(*) FROM voucher_events
                WHERE voucher_id=? AND event_type='RETENTION_ARCHIVED'""",
             (voucher_id,),
-        ).fetchone()
-        assert event is not None
-        assert event["windows_user"] == r"PC\operator"
-        assert '"credential_removed":true' in event["details_json"]
+        ).fetchone()[0] == 0
     finally:
         database.close()
 
-
-def test_archive_revalidates_and_skips_row_that_became_used(tmp_path):
+def test_candidate_that_became_used_is_removed_from_review(tmp_path):
     database, controller = _database(tmp_path)
     try:
         voucher_id = _voucher(
@@ -260,21 +376,13 @@ def test_archive_revalidates_and_skips_row_that_became_used(tmp_path):
 
         with database.transaction() as db:
             db.execute(
-                "UPDATE vouchers SET authorized_guest_count=1 WHERE id=?",
+                """UPDATE vouchers
+                   SET authorized_guest_count=1, ever_used=1
+                   WHERE id=?""",
                 (voucher_id,),
             )
 
-        result = archive_retention_candidates(
-            database,
-            voucher_ids=[voucher_id],
-            archived_at=NOW,
-            windows_user="operator",
-            history=_history(),
-            settings={},
-        )
-
-        assert result.archived_ids == ()
-        assert result.skipped_ids == (voucher_id,)
+        assert retention_candidates(database, now=NOW) == ()
         row = database.connection.execute(
             "SELECT code, archived_at FROM vouchers WHERE id=?",
             (voucher_id,),
@@ -284,29 +392,32 @@ def test_archive_revalidates_and_skips_row_that_became_used(tmp_path):
     finally:
         database.close()
 
-
-def test_archived_row_is_not_offered_again(tmp_path):
+def test_retention_review_is_read_only(tmp_path):
     database, controller = _database(tmp_path)
     try:
         voucher_id = _voucher(
             database,
             controller,
-            remote_id="once",
+            remote_id="read-only",
             code="1234567890",
         )
-        archive_retention_candidates(
-            database,
-            voucher_ids=[voucher_id],
-            archived_at=NOW,
-            windows_user="operator",
-            history=_history(),
-            settings={},
-        )
+        before = dict(database.connection.execute(
+            "SELECT * FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone())
 
-        assert retention_candidates(database, now=NOW) == ()
+        assert [item.voucher_id for item in retention_candidates(
+            database,
+            now=NOW,
+        )] == [voucher_id]
+
+        after = dict(database.connection.execute(
+            "SELECT * FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone())
+        assert after == before
     finally:
         database.close()
-
 
 def test_retention_intro_marker_is_installation_scoped(tmp_path):
     database, _controller = _database(tmp_path)
@@ -321,7 +432,7 @@ def test_retention_intro_marker_is_installation_scoped(tmp_path):
 
 
 
-def test_generated_pdf_evidence_blocks_review_and_archive(tmp_path):
+def test_generated_pdf_evidence_blocks_review(tmp_path):
     database, controller = _database(tmp_path)
     try:
         voucher_id = _voucher(
@@ -343,17 +454,6 @@ def test_generated_pdf_evidence_blocks_review_and_archive(tmp_path):
             now=NOW,
         ) == ()
 
-        result = archive_retention_candidates(
-            database,
-            voucher_ids=[voucher_id],
-            archived_at=NOW,
-            windows_user="operator",
-            history=history,
-            settings={},
-        )
-
-        assert result.archived_ids == ()
-        assert result.skipped_ids == (voucher_id,)
         row = database.connection.execute(
             "SELECT code, archived_at FROM vouchers WHERE id=?",
             (voucher_id,),
@@ -363,9 +463,7 @@ def test_generated_pdf_evidence_blocks_review_and_archive(tmp_path):
     finally:
         database.close()
 
-
-
-def test_unverifiable_history_blocks_archive_without_partial_change(tmp_path):
+def test_unverifiable_history_blocks_review_without_partial_change(tmp_path):
     database, controller = _database(tmp_path)
     try:
         voucher_id = _voucher(
@@ -380,19 +478,13 @@ def test_unverifiable_history_blocks_archive_without_partial_change(tmp_path):
             )
         )
 
-        try:
-            archive_retention_candidates(
+        with pytest.raises(HistoryError):
+            reviewable_retention_candidates(
                 database,
-                voucher_ids=[voucher_id],
-                archived_at=NOW,
-                windows_user="operator",
                 history=history,
                 settings={},
+                now=NOW,
             )
-        except HistoryError:
-            pass
-        else:
-            raise AssertionError("unverifiable history must block retention")
 
         row = database.connection.execute(
             "SELECT code, archived_at FROM vouchers WHERE id=?",
@@ -400,10 +492,104 @@ def test_unverifiable_history_blocks_archive_without_partial_change(tmp_path):
         ).fetchone()
         assert row["code"] == "1234567890"
         assert row["archived_at"] is None
+    finally:
+        database.close()
+
+def test_legacy_materialized_generation_blocks_retention_with_empty_live_history(
+    tmp_path,
+):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="legacy-generated",
+            code="1234567890",
+        )
+        with database.transaction() as db:
+            db.execute(
+                """INSERT INTO voucher_events
+                   (event_uuid, voucher_id, event_type, occurred_at, source,
+                    windows_user, details_json)
+                   VALUES ('legacy-generated-event', ?,
+                           'LEGACY_PDF_GENERATED', ?, 'MIGRATION', NULL, '{}')""",
+                (voucher_id, OLD),
+            )
+
+        assert reviewable_retention_candidates(
+            database,
+            history=_history(),
+            settings={},
+            now=NOW,
+        ) == ()
         assert database.connection.execute(
-            """SELECT COUNT(*) FROM voucher_events
-               WHERE voucher_id=? AND event_type='RETENTION_ARCHIVED'""",
+            "SELECT code FROM vouchers WHERE id=?",
             (voucher_id,),
-        ).fetchone()[0] == 0
+        ).fetchone()["code"] == "1234567890"
+    finally:
+        database.close()
+
+def test_legacy_evidence_ready_generation_blocks_before_materialization(tmp_path):
+    database, controller = _database(tmp_path)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="legacy-evidence",
+            code="1234567890",
+        )
+        with database.transaction() as db:
+            db.execute(
+                """INSERT INTO migration_runs
+                   (migration_uuid, source_kind, source_history_sha256,
+                    started_at, status, total_rows, resolved_rows,
+                    ambiguous_rows, unresolved_rows)
+                   VALUES ('retention-legacy-run', 'LEGACY_4X_HISTORY',
+                           'history-sha', ?, 'EVIDENCE_READY', 1, 1, 0, 0)""",
+                (OLD,),
+            )
+            db.execute(
+                """INSERT INTO legacy_audit_events
+                   (legacy_event_key, source_line, voucher_digest, event_type,
+                    occurred_at, payload_json, resolution_status, voucher_id,
+                    first_migration_uuid, last_migration_uuid)
+                   VALUES ('legacy-evidence-key', 1, ?, 'generate', ?, '{}',
+                           'RESOLVED', ?, 'retention-legacy-run',
+                           'retention-legacy-run')""",
+                ("a" * 64, OLD, voucher_id),
+            )
+
+        assert reviewable_retention_candidates(
+            database,
+            history=_history(),
+            settings={},
+            now=NOW,
+        ) == ()
+        assert database.connection.execute(
+            "SELECT code FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()["code"] == "1234567890"
+    finally:
+        database.close()
+
+
+
+
+def test_candidates_are_disabled_until_operator_chooses_threshold(tmp_path):
+    database, controller = _database(tmp_path, configure=False)
+    try:
+        voucher_id = _voucher(
+            database,
+            controller,
+            remote_id="unconfigured",
+            code="4545454545",
+        )
+        assert retention_candidates(database, now=NOW) == ()
+
+        update_retention_days(database, days=30, now=NOW)
+        assert [item.voucher_id for item in retention_candidates(
+            database,
+            now=NOW,
+        )] == [voucher_id]
     finally:
         database.close()

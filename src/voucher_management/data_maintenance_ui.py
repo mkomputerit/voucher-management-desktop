@@ -16,13 +16,19 @@ from tkinter import filedialog, messagebox
 from .backup import BackupArtifactInfo, BackupError, BackupService
 from .database import Database
 from .dialogs import ask_password
+from .backup_options_ui import ask_backup_options, default_backup_directory
 from .history import HistoryError
 from .history_exchange import HistoryExchangeError, HistoryExchangeService
+from .legacy_backup_import import (
+    execute_legacy_backup_import,
+    inspect_legacy_backup,
+)
 from .legacy_migration import (
     LegacyMigrationError,
     build_legacy_migration_plan,
     execute_legacy_migration,
     legacy_candidates_from_database,
+    legacy_migration_plan_needs_reconciliation,
 )
 from .shared_data_migration import (
     SharedDataMigrationError,
@@ -82,6 +88,12 @@ class DataMaintenanceMixin:
                     None if error is None else type(error).__name__
                 ),
             )
+            refresh = getattr(self, "_refresh_backup_summary", None)
+            if refresh is not None:
+                try:
+                    refresh()
+                except Exception as exc:
+                    self.logger.warning("backup_summary_refresh_failed type=%s", type(exc).__name__)
             return True
         except Exception as exc:
             self.logger.warning(
@@ -91,10 +103,10 @@ class DataMaintenanceMixin:
             return False
 
     def request_close(self, *, on_abort=None) -> None:
-        """Close safely, creating the configured encrypted recovery snapshot.
+        """Offer a recovery snapshot with per-attempt operator choices.
 
-        The password exists only for this close attempt. Cancelling either the
-        password prompt or a failed-backup decision leaves the application
+        The password exists only for this close attempt. Cancelling the
+        options dialog or a failed-backup decision leaves the application
         open. A running background operation is never interrupted by shutdown.
         """
 
@@ -116,28 +128,18 @@ class DataMaintenanceMixin:
             )
             return
 
-        password = ask_password(
-            self,
-            title="Backup alla chiusura",
-            prompt=(
-                "Prima di chiudere verrà creato un backup cifrato e "
-                "autenticato dell'archivio locale. Inserire la password "
-                "del backup (almeno 12 caratteri). La password non viene "
-                "salvata."
-            ),
+        choice = ask_backup_options(
+            self, default_directory=default_backup_directory(self), closing=True,
+            data_root=getattr(self.paths, "user_root", None),
         )
-        if password is None:
+        if choice is None:
             if on_abort is not None:
                 on_abort()
             return
-
-        target = (
-            Path(self.paths.automatic_backups)
-            / (
-                "VoucherManagement-auto-"
-                f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.vmbk"
-            )
-        )
+        if choice.skip:
+            self._finish_close(close_status="CLOSED_WITHOUT_BACKUP", backup_status="SKIPPED")
+            return
+        target, password = choice.target, choice.password
         if on_abort is None:
             self._start_close_backup(target, password)
         else:
@@ -146,11 +148,11 @@ class DataMaintenanceMixin:
     def _start_close_backup(
         self,
         target: Path,
-        password: str,
+        password: str | None,
         *,
         on_abort=None,
     ) -> None:
-        """Run one encrypted shutdown backup attempt without blocking Tk."""
+        """Run one verified shutdown backup attempt without blocking Tk."""
 
         service = self._backup_service()
         started_at = self._backup_audit_started_at()
@@ -165,7 +167,7 @@ class DataMaintenanceMixin:
             if not audited:
                 messagebox.showwarning(
                     "Backup completato",
-                    "Il backup cifrato è stato creato e verificato, ma il suo "
+                    "Il backup è stato creato e verificato, ma il suo "
                     "audit locale non è stato registrato. La chiusura può "
                     "comunque proseguire.",
                     parent=self,
@@ -190,7 +192,7 @@ class DataMaintenanceMixin:
             )
             decision = messagebox.askyesnocancel(
                 "Backup di chiusura non riuscito",
-                "Non è stato possibile creare e verificare il backup cifrato.\n\n"
+                "Non è stato possibile creare e verificare il backup.\n\n"
                 "Sì: riprova il backup.\n"
                 "No: chiudi comunque senza un nuovo backup.\n"
                 "Annulla: resta nel programma.",
@@ -229,8 +231,6 @@ class DataMaintenanceMixin:
                 "un'altra operazione.",
                 parent=self,
             )
-            if on_abort is not None:
-                on_abort()
             if on_abort is not None:
                 on_abort()
 
@@ -408,7 +408,11 @@ class DataMaintenanceMixin:
                             parent=parent,
                         )
                         return
-                self.populate()
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="pending_print_recovery",
+                )
+                if not refreshed:
+                    return
                 messagebox.showinfo(
                     "Registrazione stampa",
                     "La stampa pendente è stata registrata correttamente "
@@ -604,7 +608,11 @@ class DataMaintenanceMixin:
             def applied(added) -> None:
                 self.settings = self.settings_store.load()
                 self._history_error_shown = False
-                self.populate()
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="history_exchange_import",
+                )
+                if not refreshed:
+                    return
                 messagebox.showinfo(
                     "Importa cronologia",
                     "Merge completato.\n\n"
@@ -644,7 +652,343 @@ class DataMaintenanceMixin:
             busy_scope=self._dialog_busy_scope(parent),
         )
 
-    def migrate_legacy_history(self, *, parent=None) -> None:
+    def import_legacy_backup(self, *, parent=None) -> None:
+        """Import verified print history directly from a pre-SQLite ZIP backup."""
+
+        parent = parent or self
+        source = filedialog.askopenfilename(
+            parent=parent,
+            title="Importa backup precedente",
+            filetypes=[
+                ("Backup ZIP Voucher Management", "*.zip"),
+                ("File ZIP", "*.zip"),
+            ],
+        )
+        if not source:
+            return
+
+        source_path = Path(source)
+        validator = self._backup_service()
+
+        def inspected(info) -> None:
+            summary = (
+                f"Backup: {source_path.name}\n"
+                f"Creato: {info.created_utc or 'data sconosciuta'}\n\n"
+                f"Eventi cronologia: {info.history_rows}\n"
+                f"Generazioni PDF: {info.generated_rows}\n"
+                f"Stampe fisiche: {info.print_rows}\n"
+                f"Voucher storici: {info.unique_history_vouchers}\n"
+                f"PDF presenti: {info.pdf_files}\n"
+                f"Sequenze candidate recuperate dai PDF: "
+                f"{info.recovered_codes}\n"
+                f"Voucher correlati con HMAC: "
+                f"{info.matched_history_vouchers}\n"
+                f"Sequenze PDF ignorate perché senza HMAC: "
+                f"{info.unmatched_pdf_codes}\n"
+                f"Eventi storici non correlati: "
+                f"{info.unmatched_history_vouchers}\n\n"
+                f"SHA-256 sorgente:\n{info.source_sha256}\n\n"
+                "Il formato ZIP precedente non è autenticato contro una "
+                "fonte esterna: importare solo archivi di provenienza nota. "
+                "L'importazione non sovrascrive la configurazione corrente. "
+                "Prima di modificare il database verrà creato un backup "
+                "cifrato di sicurezza della 5.x corrente.\n\n"
+                "Privacy / retention: i voucher con evidenza legacy di "
+                "generazione o stampa vengono conservati come archivio storico "
+                "e non sono candidati alla retention ordinaria. Un import "
+                "volontario può inoltre reintrodurre codice o destinatario "
+                "presenti nello ZIP ma già minimizzati nel database corrente "
+                "quando non esiste più un legame verificabile con quel record. "
+                "Procedere solo se il recupero storico è intenzionale.\n\n"
+                "Procedere?"
+            )
+            if not messagebox.askyesno(
+                "Importa backup precedente",
+                summary,
+                parent=parent,
+            ):
+                return
+
+            password = ask_password(
+                parent,
+                title="Backup di sicurezza pre-importazione",
+                prompt=(
+                    "Inserire una password di almeno 12 caratteri per il "
+                    "backup cifrato della situazione corrente."
+                ),
+                confirm=True,
+            )
+            if password is None:
+                return
+
+            default = (
+                "VoucherManagement-pre-import-"
+                f"{datetime.now().strftime('%Y%m%d-%H%M')}.vmbk"
+            )
+            target = filedialog.asksaveasfilename(
+                parent=parent,
+                title="Backup di sicurezza pre-importazione",
+                defaultextension=".vmbk",
+                initialfile=default,
+                filetypes=[
+                    (
+                        "Backup cifrato Voucher Management",
+                        "*.vmbk",
+                    )
+                ],
+            )
+            if not target:
+                return
+
+            imported_at = datetime.now(timezone.utc).isoformat(
+                timespec="seconds"
+            )
+            migration_uuid = secrets.token_hex(16)
+            database_path = Path(self.paths.database)
+            app_paths = self.paths
+            preferred_controller_id = getattr(
+                self,
+                "active_controller_id",
+                None,
+            )
+
+            def worker():
+                import_db = Database(database_path)
+                try:
+                    import_db.initialize()
+                    import_db.integrity_check()
+                    return execute_legacy_backup_import(
+                        database=import_db,
+                        live_backup_service=BackupService(app_paths),
+                        source=source_path,
+                        safety_backup_destination=Path(target),
+                        safety_backup_password=password,
+                        imported_at=imported_at,
+                        migration_uuid=migration_uuid,
+                        preferred_controller_id=preferred_controller_id,
+                    )
+                finally:
+                    import_db.close()
+
+            def completed(result) -> None:
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="legacy_backup_import",
+                )
+                refresh_backup = getattr(
+                    self,
+                    "_refresh_backup_summary",
+                    None,
+                )
+                if refresh_backup is not None:
+                    refresh_backup()
+                refresh_legacy = getattr(
+                    self,
+                    "_refresh_legacy_history_summary",
+                    None,
+                )
+                if refresh_legacy is not None:
+                    refresh_legacy()
+                if not refreshed:
+                    return
+
+                messagebox.showinfo(
+                    "Importazione completata",
+                    "Backup precedente importato nel database 5.x.\n\n"
+                    f"Eventi analizzati: "
+                    f"{result.evidence.total_rows}\n"
+                    f"Associati con certezza: "
+                    f"{result.evidence.resolved_rows}\n"
+                    f"Ambigui conservati: "
+                    f"{result.evidence.ambiguous_rows}\n"
+                    f"Non associati conservati: "
+                    f"{result.evidence.unresolved_rows}\n"
+                    f"Stampe materializzate/verificate: "
+                    f"{result.materialization.print_rows}\n"
+                    f"Voucher esistenti riutilizzati: "
+                    f"{result.reused_vouchers}\n"
+                    f"Voucher storici creati: "
+                    f"{result.historical_vouchers_created}\n"
+                    f"Voucher già minimizzati preservati: "
+                    f"{result.minimized_vouchers_preserved}\n"
+                    f"PDF importati: {result.pdfs_copied}\n"
+                    f"PDF già presenti: "
+                    f"{result.pdfs_already_present}\n\n"
+                    f"Backup di sicurezza della 5.x:\n"
+                    f"{result.safety_backup_path}\n\n"
+                    "Consigliato: dopo aver verificato l'importazione, crea "
+                    "un nuovo backup .vmbk della base dati aggiornata.",
+                    parent=parent,
+                )
+
+            def failed(exc: Exception) -> None:
+                detail = (
+                    str(exc)
+                    if isinstance(
+                        exc,
+                        (LegacyMigrationError, BackupError),
+                    )
+                    else "Importazione del backup precedente non riuscita."
+                )
+                messagebox.showerror(
+                    "Importa backup precedente",
+                    detail,
+                    parent=parent,
+                )
+
+            self._run_background_task(
+                "Importazione backup precedente…",
+                worker,
+                completed,
+                failed,
+                busy_scope=self._dialog_busy_scope(parent),
+            )
+
+        def inspection_failed(exc: Exception) -> None:
+            detail = (
+                str(exc)
+                if isinstance(
+                    exc,
+                    (LegacyMigrationError, BackupError),
+                )
+                else "Impossibile analizzare il backup precedente."
+            )
+            messagebox.showerror(
+                "Importa backup precedente",
+                detail,
+                parent=parent,
+            )
+
+        self._run_background_task(
+            "Analisi backup precedente…",
+            lambda: inspect_legacy_backup(
+                source_path,
+                validator=validator,
+            ),
+            inspected,
+            inspection_failed,
+            busy_scope=self._dialog_busy_scope(parent),
+        )
+
+    def offer_legacy_reconciliation_after_sync(self) -> None:
+        """Analyse legacy HMAC evidence after the first authoritative sync.
+
+        The analysis is automatic once per application session.  No migration
+        write is automatic: when useful evidence remains, the existing guided
+        workflow still requires operator confirmation and a verified encrypted
+        pre-migration backup.
+        """
+
+        if getattr(
+            self,
+            "_legacy_reconciliation_checked_this_session",
+            False,
+        ):
+            return
+        self._legacy_reconciliation_checked_this_session = True
+
+        history_path = Path(self.paths.history)
+        try:
+            if not history_path.is_file() or history_path.stat().st_size == 0:
+                return
+            fingerprint, history_key = (
+                self.history.verified_identity_material()
+            )
+            candidates = legacy_candidates_from_database(
+                self.database,
+                preferred_controller_id=getattr(
+                    self,
+                    "active_controller_id",
+                    None,
+                ),
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "legacy_reconciliation_preflight_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showwarning(
+                "Storico precedente da verificare",
+                "È presente uno storico locale, ma non può essere verificato "
+                "automaticamente. Aprire Manutenzione e usare la procedura "
+                "'Migrazione storico 4.x' dopo aver verificato il backup/chiave.",
+                parent=self,
+            )
+            return
+
+        def planned(plan) -> None:
+            try:
+                needs_work = legacy_migration_plan_needs_reconciliation(
+                    self.database,
+                    plan,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "legacy_reconciliation_compare_failed type=%s",
+                    type(exc).__name__,
+                )
+                messagebox.showwarning(
+                    "Storico precedente da verificare",
+                    "Lo storico precedente è stato letto, ma il confronto con "
+                    "l'archivio locale non è conclusivo. Usare Manutenzione per "
+                    "la verifica guidata.",
+                    parent=self,
+                )
+                return
+
+            if not needs_work:
+                self.logger.info(
+                    "legacy_reconciliation_no_pending_work rows=%s",
+                    plan.total_rows,
+                )
+                return
+
+            self.logger.info(
+                "legacy_reconciliation_guided_offer rows=%s resolved=%s "
+                "ambiguous=%s unresolved=%s",
+                plan.total_rows,
+                len(plan.resolved),
+                len(plan.ambiguous),
+                len(plan.unresolved),
+            )
+            self.migrate_legacy_history(
+                parent=self,
+                prebuilt_plan=plan,
+            )
+
+        def planning_failed(exc: Exception) -> None:
+            self.logger.warning(
+                "legacy_reconciliation_plan_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showwarning(
+                "Storico precedente da verificare",
+                str(exc)
+                if isinstance(exc, LegacyMigrationError)
+                else (
+                    "Impossibile analizzare automaticamente lo storico "
+                    "precedente. Usare Manutenzione per la verifica guidata."
+                ),
+                parent=self,
+            )
+
+        self._run_background_task(
+            "Verifica storico precedente…",
+            lambda: build_legacy_migration_plan(
+                history_path=history_path,
+                expected_fingerprint=fingerprint,
+                secret=history_key,
+                candidates=candidates,
+            ),
+            planned,
+            planning_failed,
+        )
+
+    def migrate_legacy_history(
+        self,
+        *,
+        parent=None,
+        prebuilt_plan=None,
+    ) -> None:
         """Run the explicit 4.x history migration after operator review.
 
         Candidate voucher identities are snapshotted on the Tk thread from the
@@ -654,23 +998,33 @@ class DataMaintenanceMixin:
         """
 
         parent = parent or self
-        try:
-            fingerprint, history_key = self.history.verified_identity_material()
-            candidates = legacy_candidates_from_database(self.database)
-        except Exception as exc:
-            detail = (
-                str(exc)
-                if isinstance(exc, (HistoryError, LegacyMigrationError))
-                else "Impossibile preparare la migrazione dello storico."
+        if prebuilt_plan is None:
+            try:
+                fingerprint, history_key = (
+                    self.history.verified_identity_material()
+                )
+                candidates = legacy_candidates_from_database(
+                self.database,
+                preferred_controller_id=getattr(
+                    self,
+                    "active_controller_id",
+                    None,
+                ),
             )
-            messagebox.showerror(
-                "Migrazione storico 4.x",
-                detail,
-                parent=parent,
-            )
-            return
+            except Exception as exc:
+                detail = (
+                    str(exc)
+                    if isinstance(exc, (HistoryError, LegacyMigrationError))
+                    else "Impossibile preparare la migrazione dello storico."
+                )
+                messagebox.showerror(
+                    "Migrazione storico 4.x",
+                    detail,
+                    parent=parent,
+                )
+                return
 
-        history_path = Path(self.paths.history)
+            history_path = Path(self.paths.history)
 
         def planned(plan) -> None:
             if plan.total_rows == 0:
@@ -759,7 +1113,11 @@ class DataMaintenanceMixin:
                     migration_db.close()
 
             def completed(result) -> None:
-                self.populate()
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="legacy_history_migration",
+                )
+                if not refreshed:
+                    return
                 messagebox.showinfo(
                     "Migrazione storico 4.x",
                     "Migrazione completata.\n\n"
@@ -810,6 +1168,10 @@ class DataMaintenanceMixin:
                 detail,
                 parent=parent,
             )
+
+        if prebuilt_plan is not None:
+            planned(prebuilt_plan)
+            return
 
         self._run_background_task(
             "Analisi storico 4.x…",
@@ -1002,36 +1364,16 @@ class DataMaintenanceMixin:
                 )
 
     def create_backup(self, *, parent=None) -> None:
-        """Create the normal 5.0 backup only through the encrypted format."""
+        """Create a verified ZIP or encrypted backup with per-copy choices."""
 
         parent = parent or self
-        password = ask_password(
-            parent,
-            title="Password backup",
-            prompt=(
-                "Inserire una password di almeno 12 caratteri per proteggere "
-                "il backup cifrato e autenticato."
-            ),
-            confirm=True,
+        choice = ask_backup_options(
+            parent, default_directory=default_backup_directory(self), closing=False,
+            data_root=getattr(self.paths, "user_root", None),
         )
-        if password is None:
+        if choice is None or choice.skip:
             return
-
-        default = (
-            "VoucherManagement-backup-"
-            f"{datetime.now().strftime('%Y%m%d-%H%M')}.vmbk"
-        )
-        target = filedialog.asksaveasfilename(
-            parent=parent,
-            title="Crea backup cifrato",
-            defaultextension=".vmbk",
-            initialfile=default,
-            filetypes=[
-                ("Backup cifrato Voucher Management", "*.vmbk"),
-            ],
-        )
-        if not target:
-            return
+        target, password = choice.target, choice.password
 
         service = self._backup_service()
         started_at = self._backup_audit_started_at()
@@ -1130,11 +1472,23 @@ class DataMaintenanceMixin:
                 "created_utc",
                 "data sconosciuta",
             )
+            legacy_without_sqlite = manifest.get("sqlite_snapshot") is None
+            migration_note = (
+                "\n\nQuesto backup appartiene a una versione precedente e "
+                "non contiene ancora il database SQLite 5.x. Verranno "
+                "ripristinati configurazione, cronologia stampe, PDF, logo e "
+                "chiave della cronologia. Dopo il riavvio sarà necessario "
+                "sincronizzare il controller e importare la cronologia "
+                "precedente nel database 5.x."
+                if legacy_without_sqlite
+                else ""
+            )
             if not messagebox.askyesno(
                 "Ripristina backup",
                 f"Ripristinare il backup creato il {created}?\n\n"
                 "Prima della sostituzione verrà conservata automaticamente "
-                "una copia di rollback dei dati attuali.\n\n"
+                "una copia di rollback dei dati attuali."
+                f"{migration_note}\n\n"
                 "Dopo il ripristino il programma verrà chiuso.",
                 parent=parent,
             ):
@@ -1151,11 +1505,21 @@ class DataMaintenanceMixin:
                         + "\n\nSe necessario, selezionare nuovamente un logo "
                         "dalle impostazioni."
                     )
+                next_steps = (
+                    "\n\nPassi successivi:\n"
+                    "1. Riavviare Voucher Management.\n"
+                    "2. Ricollegare e sincronizzare il controller UniFi.\n"
+                    "3. Aprire Impostazioni > Manutenzione e scegliere "
+                    "'Importa cronologia stampe precedente…'.\n\n"
+                    "Solo dopo questa importazione lo storico precedente sarà "
+                    "materializzato nel database 5.x e nei report."
+                    if legacy_without_sqlite
+                    else "\n\nRiavviare Voucher Management."
+                )
                 messagebox.showinfo(
                     "Ripristino completato",
                     f"Dati ripristinati.\n\nCopia di sicurezza precedente:\n"
-                    f"{rollback}{warning_text}\n\n"
-                    "Riavviare Voucher Management.",
+                    f"{rollback}{warning_text}{next_steps}",
                     parent=parent,
                 )
                 self.destroy()

@@ -41,6 +41,7 @@ def test_confirmed_print_is_mirrored_with_stable_audit_identity():
             "audit_id": "abc123",
             "codes": ["12345-67890", "12345-67890"],
             "output_file": "Voucher_Test.pdf",
+            "unifi_ids": None,
             "document_copies": 2,
             "printed_at": "2026-09-26T09:00:00+00:00",
             "windows_user": r"SALA\operatore",
@@ -48,7 +49,7 @@ def test_confirmed_print_is_mirrored_with_stable_audit_identity():
     ]
 
 
-def test_confirmed_print_deselects_only_printed_vouchers():
+def test_confirmed_print_clears_global_voucher_selection():
     refreshed = []
     fake = SimpleNamespace(
         checked_ids={"v1", "v2", "v3"},
@@ -59,13 +60,18 @@ def test_confirmed_print_deselects_only_printed_vouchers():
         ],
         populate=lambda: refreshed.append(True),
     )
+    fake._finalize_voucher_operation_ui = lambda **kwargs: (
+        fake.checked_ids.clear(),
+        fake.populate(),
+        True,
+    )[-1]
 
     VoucherApp._deselect_printed_codes(
         fake,
         ["1111122222", "55555-66666"],
     )
 
-    assert fake.checked_ids == {"v2"}
+    assert fake.checked_ids == set()
     assert refreshed == [True]
 
 
@@ -96,7 +102,7 @@ def test_pending_print_recovery_commits_sqlite_before_marker_finalize():
     calls = []
 
     class History:
-        def resolve_pending_print(self, candidate_codes, settings):
+        def resolve_pending_print(self, candidate_codes, settings, **kwargs):
             calls.append(("resolve", tuple(candidate_codes), dict(settings)))
             return SimpleNamespace(
                 state="submitted",
@@ -105,16 +111,18 @@ def test_pending_print_recovery_commits_sqlite_before_marker_finalize():
                 output_file="Voucher_Recover.pdf",
                 document_copies=2,
                 submitted_at="2026-09-26T09:45:00+00:00",
+                unifi_ids=(),
             )
 
         def finalize_pending_print_audit(self, audit_id):
             calls.append(("finalize", audit_id))
 
     fake = SimpleNamespace(
+        active_controller_id=None,
         history=History(),
-        vouchers=[SimpleNamespace(code_formatted="12345-67890")],
+        vouchers=[SimpleNamespace(code_formatted="12345-67890", id="voucher-1")],
         settings={"structure_name": "Test"},
-        _record_sqlite_print_audit=lambda pending, codes, path: calls.append(
+        _record_sqlite_print_audit=lambda pending, codes, path, **kwargs: calls.append(
             ("sqlite", dict(pending), tuple(codes), path.name)
         ),
     )
@@ -130,7 +138,9 @@ def test_reprint_preflight_allows_first_physical_print(monkeypatch):
         def print_summaries_for_codes(self, *, controller_id, codes):
             assert controller_id == 7
             return {
-                "1234567890": PrintAuditSummary(0, 0, "", ""),
+                "1234567890": PrintAuditSummary(
+                    0, 0, "", "", print_state="NOT_PRINTED"
+                ),
             }
 
     monkeypatch.setattr(
@@ -161,7 +171,9 @@ def test_reprint_preflight_collects_only_previously_printed_vouchers(monkeypatch
                 "1111122222": PrintAuditSummary(
                     2, 3, "2026-09-26T08:00:00+00:00", "2026-09-26T09:00:00+00:00"
                 ),
-                "3333344444": PrintAuditSummary(0, 0, "", ""),
+                "3333344444": PrintAuditSummary(
+                    0, 0, "", "", print_state="NOT_PRINTED"
+                ),
                 "5555566666": PrintAuditSummary(
                     1, 1, "2026-09-26T09:15:00+00:00", "2026-09-26T09:15:00+00:00"
                 ),

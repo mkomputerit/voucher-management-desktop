@@ -12,12 +12,16 @@ from pathlib import Path
 
 from .database import Database
 from .identity import DEFAULT_STRUCTURE_TYPE, DEFAULT_WIFI_TITLE
-from .retention import RETENTION_INTRO_KEY
+from .operational_alerts import UNPRINTED_WARNING_DAYS_KEY
+from .security_revocation import SECURITY_REVOKE_DAYS_KEY
 from .settings import DEFAULT_SETTINGS, SettingsStore
 
 
-DEFAULT_VOUCHER_RETENTION_DAYS = 180
+DEFAULT_UNPRINTED_WARNING_DAYS = 0
+DEFAULT_SECURITY_REVOKE_DAYS = 0
 ONBOARDING_IN_PROGRESS_KEY = "onboarding_in_progress"
+SHARED_FRESH_START_KEY = "shared_per_user_migration_decision"
+SHARED_FRESH_START_VALUE = "fresh_start"
 
 
 class OnboardingState(str, Enum):
@@ -43,7 +47,10 @@ class OnboardingDraft:
     pdf_subtitle: str = ""
     pdf_contact: str = ""
     pdf_notes: str = ""
-    unused_unprinted_days: int = DEFAULT_VOUCHER_RETENTION_DAYS
+    backup_directory: str = ""
+    backup_on_close: bool = True
+    unprinted_warning_days: int = DEFAULT_UNPRINTED_WARNING_DAYS
+    security_revoke_days: int = DEFAULT_SECURITY_REVOKE_DAYS
 
 
 def legacy_installation_has_evidence(paths, settings: dict) -> bool:
@@ -112,6 +119,24 @@ def begin_onboarding(database: Database) -> None:
     database.set_metadata_value(ONBOARDING_IN_PROGRESS_KEY, "1")
 
 
+def choose_shared_fresh_start(database: Database) -> None:
+    """Persist an explicit decision to ignore, not delete, old per-user data."""
+
+    database.set_metadata_value(
+        SHARED_FRESH_START_KEY,
+        SHARED_FRESH_START_VALUE,
+    )
+
+
+def shared_fresh_start_selected(database: Database) -> bool:
+    """Return whether the operator explicitly chose a separate new archive."""
+
+    return (
+        database.metadata_value(SHARED_FRESH_START_KEY)
+        == SHARED_FRESH_START_VALUE
+    )
+
+
 def validate_onboarding_draft(draft: OnboardingDraft) -> OnboardingDraft:
     """Validate only fields that can be persisted by onboarding."""
 
@@ -125,10 +150,17 @@ def validate_onboarding_draft(draft: OnboardingDraft) -> OnboardingDraft:
         raise ValueError("Inserire il nome della struttura")
     if not wifi_title:
         raise ValueError("Inserire il titolo Wi-Fi")
-    days = int(draft.unused_unprinted_days)
-    if not 1 <= days <= 3650:
+    unprinted_days = int(draft.unprinted_warning_days)
+    if not 1 <= unprinted_days <= 3650:
         raise ValueError(
-            "La retention voucher deve essere compresa tra 1 e 3650 giorni"
+            "La soglia per voucher creati ma non stampati deve essere compresa "
+            "tra 1 e 3650 giorni"
+        )
+    security_days = int(draft.security_revoke_days)
+    if not 1 <= security_days <= 3650:
+        raise ValueError(
+            "La soglia per voucher stampati ma non utilizzati deve essere "
+            "compresa tra 1 e 3650 giorni"
         )
     return OnboardingDraft(
         installation_name=installation_name,
@@ -141,7 +173,10 @@ def validate_onboarding_draft(draft: OnboardingDraft) -> OnboardingDraft:
         pdf_subtitle=draft.pdf_subtitle.strip(),
         pdf_contact=draft.pdf_contact.strip(),
         pdf_notes=draft.pdf_notes.strip(),
-        unused_unprinted_days=days,
+        backup_directory=draft.backup_directory.strip(),
+        backup_on_close=bool(draft.backup_on_close),
+        unprinted_warning_days=unprinted_days,
+        security_revoke_days=security_days,
     )
 
 
@@ -155,10 +190,10 @@ def complete_onboarding(
     """Persist onboarding with the profile row written last as completion marker.
 
     settings.json is atomic by itself but cannot share a transaction with
-    SQLite. Write it first; then write retention and installation profile in one
-    SQLite transaction. If SQLite fails, no completion marker exists and the
-    wizard safely repeats on the next launch rather than pretending setup
-    finished.
+    SQLite. Write it first; then persist both explicit voucher thresholds and
+    the installation profile in one SQLite transaction. If SQLite fails, no
+    completion marker exists and the wizard safely repeats on the next launch
+    rather than pretending setup finished.
     """
 
     clean = validate_onboarding_draft(draft)
@@ -168,20 +203,23 @@ def complete_onboarding(
         structure_name=clean.structure_name,
         wifi_title=clean.wifi_title,
         logo_path=clean.logo_path,
+        backup_directory=clean.backup_directory,
+        backup_on_close=clean.backup_on_close,
     )
 
     with database.transaction() as db:
-        database.upsert_retention_policy(
-            unused_unprinted_days=clean.unused_unprinted_days,
-            observed_at=observed_at,
-            connection=db,
-        )
-        db.execute(
-            """INSERT INTO settings(key, value, updated_at)
-               VALUES (?, '1', ?)
-               ON CONFLICT(key) DO UPDATE SET value='1', updated_at=excluded.updated_at""",
-            (RETENTION_INTRO_KEY, observed_at),
-        )
+        for key, value in (
+            (UNPRINTED_WARNING_DAYS_KEY, clean.unprinted_warning_days),
+            (SECURITY_REVOKE_DAYS_KEY, clean.security_revoke_days),
+        ):
+            db.execute(
+                """INSERT INTO settings(key, value, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET
+                       value=excluded.value,
+                       updated_at=excluded.updated_at""",
+                (key, str(value), observed_at),
+            )
         database.upsert_installation_profile(
             installation_name=clean.installation_name,
             description=clean.description,

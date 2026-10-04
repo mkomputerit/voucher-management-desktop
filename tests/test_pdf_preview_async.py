@@ -229,3 +229,80 @@ def test_stale_preview_worker_error_is_ignored_for_newer_generation():
     assert page_var.value == ""
     assert fake._render_after == "latest-token"
     assert scheduled and scheduled[0][0] == 0
+
+
+
+def test_report_preview_save_copy_uses_existing_rendered_pdf(monkeypatch, tmp_path):
+    source = tmp_path / "preview.pdf"
+    source.write_bytes(b"pdf")
+    target = tmp_path / "saved.pdf"
+    messages = []
+    fake = SimpleNamespace(
+        allow_save_copy=True,
+        pdf_path=source,
+        suggested_save_name="Report-test.pdf",
+    )
+    monkeypatch.setattr(
+        pdf_preview.filedialog,
+        "asksaveasfilename",
+        lambda **kwargs: str(target),
+    )
+    monkeypatch.setattr(
+        pdf_preview.messagebox,
+        "showinfo",
+        lambda title, message, parent=None: messages.append((title, message)),
+    )
+
+    PdfPreview.save_copy(fake)
+
+    assert target.read_bytes() == b"pdf"
+    assert messages and messages[0][0] == "Salva report"
+
+
+def test_report_mode_prints_without_voucher_audit(monkeypatch):
+    events = []
+
+    class Button:
+        def state(self, value):
+            events.append(("state", tuple(value)))
+
+    fake = SimpleNamespace(
+        allow_physical_print=True,
+        _printing=False,
+        printer_var=SimpleNamespace(get=lambda: "Printer"),
+        copies_var=SimpleNamespace(get=lambda: 1),
+        print_button=Button(),
+        register_print_button=Button(),
+        report_mode=True,
+        pdf_path=Path("report.pdf"),
+        codes=[],
+        history=None,
+        settings={},
+        site_id="",
+        unifi_ids=None,
+        confirm_print=None,
+        on_audit=None,
+        on_print=None,
+        _pending_print_audit=None,
+        _print_windows=lambda printer, copies: events.append(
+            ("print", printer, copies)
+        ),
+        winfo_exists=lambda: True,
+    )
+
+    def run_background(label, worker, success, error):
+        events.append(("label", label))
+        success(worker())
+        return True
+
+    fake.app = SimpleNamespace(_run_background_task=run_background)
+    monkeypatch.setattr(
+        pdf_preview.messagebox,
+        "showinfo",
+        lambda title, message, parent=None: events.append(("info", title)),
+    )
+
+    PdfPreview.print_document(fake)
+
+    assert ("print", "Printer", 1) in events
+    assert ("info", "Stampa report") in events

@@ -16,17 +16,32 @@ class ReprintWarning:
     previous_physical_copies: int = 0
     first_printed_at: str = ""
     last_printed_at: str = ""
+    print_history_incomplete: bool = False
 
 
-def evaluate_reprint(summary: PrintAuditSummary) -> ReprintWarning:
-    """Require explicit confirmation after any prior physical print.
+def evaluate_reprint(
+    summary: PrintAuditSummary,
+    *,
+    ever_used: bool | None = None,
+) -> ReprintWarning:
+    """Require confirmation only when duplicate-print evidence is meaningful.
 
-    PDF generation alone is intentionally not a reprint boundary. Only a
-    recorded physical-print audit requires the duplicate warning.
+    A verified physical print always requires confirmation. Legacy PRINTED
+    state without an auditable print job is weaker evidence: if UniFi has
+    positively observed no use, Voucher Management allows an operational print;
+    if the voucher was used, or usage evidence is indeterminate, it remains a
+    conservative duplicate warning.
     """
 
     if summary.print_jobs <= 0:
-        return ReprintWarning(required=False)
+        if not summary.known_printed_without_audit:
+            return ReprintWarning(required=False)
+        if ever_used is False:
+            return ReprintWarning(required=False)
+        return ReprintWarning(
+            required=True,
+            print_history_incomplete=True,
+        )
     return ReprintWarning(
         required=True,
         previous_print_jobs=summary.print_jobs,

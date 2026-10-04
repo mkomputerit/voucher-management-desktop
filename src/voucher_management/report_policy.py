@@ -34,13 +34,16 @@ def voucher_code_policy(
 ) -> ReportCodePolicy:
     """Return whether a clear voucher code may be included in a report.
 
-    Summary and audit reports are historical/administrative outputs and never
-    need a reusable credential. Operational handoff is the only report purpose
-    allowed to expose codes, and only after an explicit operator request.
+    Summary reports never expose reusable credentials. Audit/full-history and
+    operational-handoff exports may expose codes only after an explicit
+    operator request; this keeps routine reports privacy-safe while preserving
+    the operator's ability to read the complete local historical credential.
     """
 
-    if purpose is ReportPurpose.OPERATIONAL_HANDOFF and include_code_requested:
+    if include_code_requested and purpose is ReportPurpose.OPERATIONAL_HANDOFF:
         return ReportCodePolicy(True, "explicit_operational_handoff")
+    if include_code_requested and purpose is ReportPurpose.AUDIT:
+        return ReportCodePolicy(True, "explicit_audit_history")
 
     if include_code_requested:
         return ReportCodePolicy(False, "code_not_required_for_report_purpose")

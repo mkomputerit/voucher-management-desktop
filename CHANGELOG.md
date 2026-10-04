@@ -1,5 +1,147 @@
 # Changelog
 
+## 5.1.0 - Unreleased
+
+- Update the locked `cryptography` runtime from 50.0.1 to **50.0.2** so the
+  packaged Windows wheel includes OpenSSL 4.0.3 security fixes. No other
+  dependency was upgraded during the final pre-main audit.
+
+- Redesign the Windows operator interface around first-class **Home**, **Voucher**,
+  **Report** and **Settings** workspaces, with UniFi-portal-inspired Home layout,
+  DPI-aware sidebar icons, keyboard-safe voucher selection and clearer
+  green/amber/red controller health indicators.
+- Make **Home strictly live**: operational counters are shown only from an
+  authoritative UniFi snapshot in the current session. Retryable transport loss
+  enters a finite amber automatic-reconnect state; after the retry budget is
+  exhausted the state turns red and requires an explicit reconnect.
+- Keep **Report strictly historical/local**: SQLite-backed administrative views
+  remain available offline, expose controller-data freshness and distinguish
+  positive evidence from indeterminate/negative observations.
+- Restore the operator-facing **report guide** and preview-first PDF workflow:
+  the guide starts from the operator's goal, preselects the matching report,
+  and generated PDFs open in preview before optional save or print. The owner
+  guide explicitly exposes the existing **Voucher nominali** report and the
+  **Voucher eliminati dalla controller** preparation-error report, while
+  security revocations remain a separate report.
+- Consolidate Voucher local actions into one dynamic **Allinea / modifica**
+  menu driven by the blue workspace selection. Alignment, nominality and notes
+  no longer open a second selector; unavailable actions are disabled
+  fail-closed. Expired rows may still be selected for permitted local metadata
+  corrections, while print/delete continue to exclude them defensively.
+- Standardize every successful voucher-changing workflow on one post-operation
+  refresh invariant: clear the shared Home/Voucher selection, rebuild affected
+  local projections, refresh threshold/report summaries as applicable and avoid
+  unnecessary UniFi reads for local-only metadata changes.
+- Make the corrected modal dialogs DPI-safe so action footers remain reachable
+  without manual resizing; real-Windows UAT confirmed the corrected dialog set.
+- Upgrade the SQLite model to **schema 10**, preserving durable controller/Site
+  identity, voucher provenance, explicit print state/alignment, monotonic
+  positive-use/expiry evidence, conservative absence tracking and migration
+  compatibility with older databases.
+- Identify a controller by **API root + verified UniFi Site UUID**. First
+  association must be unambiguous; later sessions reconnect only to the same
+  Site UUID instead of silently selecting another Site hosted at the same URL.
+- Keep UniFi-owned voucher fields read-only. Voucher Management no longer uses a
+  second editable recipient field: the UniFi description/name is the
+  recipient/destinatario, while local metadata is limited to nominality, notes
+  and audit/classification facts.
+- Add explicit **Voucher nominale / Non nominale** classification for reporting.
+  Nominality is never sent to UniFi, supports multi-selection, and cannot be set
+  to Nominale when the UniFi description/destinatario is empty. Notes remain
+  single-voucher only.
+- Treat controller-discovered vouchers conservatively. Without verified print
+  evidence they keep **Stampa non determinabile** rather than being guessed as
+  printed or not printed. Printing such a voucher requires explicit operator
+  acknowledgement; a successful physical print then becomes verified and is
+  auditable as having started from indeterminate prior history.
+- Add a narrow controlled cleanup path for an unusable controller-created
+  voucher with empty recipient, positive unused observation and no verified
+  print. The operator must provide a deletion reason; no recipient or print
+  history is invented.
+- Harden non-idempotent voucher creation. Before POST, Voucher Management writes
+  an anti-repeat guard plus a privacy-safe recovery intent. After an uncertain
+  outcome, even an exact set of compatible new UUIDs is **never associated
+  automatically**: the operator must explicitly associate it with the
+  interrupted request or leave it as controller-created.
+- Require an authoritative live snapshot before starting voucher creation and
+  preserve confirmed POST UUIDs/classification through stale follow-up reads or
+  later local-persistence recovery.
+- Harden controller absence handling. A missing row in one list is only
+  suspicious; repeated absence triggers a direct voucher-UUID read and only a
+  typed not-found result proves external deletion. Confirmed app DELETE
+  responses are persisted immediately and do not depend on read-after-write
+  list consistency.
+- Distinguish **cancellation requested by Voucher Management** from
+  **deletion observed on the controller** in local audit/reporting. External
+  deletion records the fact and timestamp without inventing an operator reason.
+- Keep ordinary preparation-error deletion separate from **security revocation**.
+  Ordinary deletion is restricted to eligible unused/unprinted preparation
+  mistakes (plus the narrow invalid-external exception). Security revocation
+  re-reads the voucher directly from UniFi before DELETE and preserves the
+  complete local historical record.
+- Add two independent operator-defined thresholds with no invented defaults:
+  **created but never printed** for operational review and **printed but without
+  positive-use evidence** for security review. A reprint restarts the latter
+  from the latest verified physical print; a positive legacy PRINTED fact whose
+  print date is not determinable is surfaced immediately for review because its
+  security age cannot be calculated.
+- Keep multi-use semantics simple: a voucher belongs to **Utilizzati** from the
+  first positive authorization, while the n/quota value remains the quantitative
+  reference. No separate business state is created for “quota exhausted”.
+- Clarify UniFi validity semantics in the UI: the configured duration is
+  **validity from first use**, not an absolute expiry date derived from voucher
+  creation.
+- Rework print identity around the stable **Site UUID + voucher UUID** for new
+  HMAC history rows and SQLite physical-print audit, while retaining legacy
+  code-HMAC compatibility. This prevents future code reuse from conflating
+  distinct modern vouchers.
+- Make **Apri PDF storico** consultation-only. All physical reprints now pass
+  through **Stampa selezionati**, preventing accidental reprint of an entire
+  historical batch when only one voucher was requested.
+- Preserve the proven physical-print crash boundary: PDF generation alone is
+  not a print; audit intent is durable before Windows submission, submitted
+  prints can be recovered idempotently, and an audit failure never instructs
+  the operator to resend a document that Windows already accepted.
+- Keep the configured logo and UniFi recipient inside each cut voucher while
+  preserving the established 2-column × 5-row A4 layout and cutting guides.
+- Rebuild administrative report semantics around durable facts. Summary is
+  aggregate-only; detailed reports expose source/freshness/nominality/print
+  evidence without inventing a local recipient. Routine reports hide voucher
+  codes; full history can expose preserved clear codes only through the
+  explicit audit-purpose path.
+- Keep report categories intentionally overlapping where useful: for example a
+  nominal expired voucher can appear in both nominality and expired views.
+  Nominality reports use the latest current local classification.
+- Keep privacy minimization **disabled for this release**. Voucher codes and
+  historical metadata are not automatically scrubbed or deleted; security
+  review/revocation is a separate operational workflow.
+- Add first-run **Ripristina backup esistente…** access while retaining the
+  reviewed restore validation/rollback flow. Restore clears saved live API root,
+  Site UUID setting and TLS pin, and backup/restore is blocked while an
+  uncertain create intent still needs reconciliation.
+- Continue supporting password-protected `.vmbk` backups and an explicitly
+  chosen readable ZIP. Password protection is selected by default; passwords
+  remain operation-only and are never persisted.
+- Add a self-contained elevated Windows **Setup.exe** around the reviewed shared
+  deployment path. The Setup embeds the verified portable payload, installs
+  under protected Program Files/ProgramData locations and gives the Windows
+  built-in Users group modify access only to the shared application data; no
+  per-user detection or application-specific local group is required. The same
+  ACL/integration path is exercised by CI.
+- Keep the application API key **memory-only for every session**, including
+  reconnects. TLS remains verified by default with explicit SHA-256 pinning for
+  approved local/self-signed controllers.
+- Add `tools/verify_unifi_contract_live.py`, a privacy-safe read-only smoke
+  test that exercises the production UniFi adapter against a real installation
+  without printing voucher codes, names or raw UUIDs.
+- Field validation remains based on Ubiquiti's documented Network integration
+  API. Unlimited multi-use behavior has been verified with multiple real guest
+  clients when `authorizedGuestLimit` is omitted.
+- Align package, window title and Windows executable metadata to **5.1.0** for
+  field/release-candidate testing. The release remains **Unreleased** until the
+  final external review, exact-head Windows CI, real UniFi field test and Setup
+  verification gates are complete.
+
 ## 5.0.0 - 2026-09-27
 
 - Introduced the SQLite 5.0 persistence foundation with WAL mode, integrity
@@ -11,9 +153,11 @@
 - Added explicit 4.x history migration with verified HMAC association,
   resolved/ambiguous/unresolved evidence, idempotent materialization and
   encrypted pre-migration safety backups.
-- Added installer-controlled shared Windows deployment under ProgramData with a
-  dedicated operator group, machine-wide file locking, restrictive verified
-  NTFS ACLs and explicit LocalAppData-to-ProgramData migration.
+- Added installer-controlled shared Windows deployment under ProgramData with
+  machine-wide file locking, verified NTFS ACLs and explicit
+  LocalAppData-to-ProgramData migration. Current 5.1 setup uses the Windows
+  built-in Users group for shared data access instead of a dedicated local
+  application group.
 - Added first-run onboarding for genuinely new 5.0 installations with
   installation identity, structure/Wi-Fi branding, managed logo selection,
   ephemeral UniFi API-key verification, explicit TLS trust, a persistent
