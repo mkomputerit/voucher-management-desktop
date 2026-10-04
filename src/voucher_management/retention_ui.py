@@ -7,16 +7,16 @@ from datetime import datetime, timezone
 from tkinter import messagebox, ttk
 
 from .history import HistoryError
+from .ui_layout import fit_toplevel_to_content
 from .retention import (
     ensure_retention_policy,
     load_retention_policy,
     mark_retention_intro_seen,
     retention_intro_seen,
+    retention_days_configured,
     reviewable_retention_candidates,
-    update_retention_days,
-    archive_retention_candidates,
+    update_retention_days
 )
-from .sync_store import load_local_vouchers
 
 
 def _display_time(value: str) -> str:
@@ -55,10 +55,9 @@ class RetentionIntroDialog(tk.Toplevel):
             frame,
             text=(
                 "Voucher Management conserva lo storico locale per audit e "
-                "report. I voucher utilizzati o stampati sono sempre protetti. "
-                "Solo voucher mai usati, mai stampati, non più presenti sul "
-                "controller, senza PDF generati e abbastanza vecchi possono "
-                "essere proposti per la minimizzazione."
+                "report. In questa release nessun codice voucher o dato storico "
+                "locale viene minimizzato automaticamente. La soglia serve a "
+                "individuare record anziani da riesaminare, senza cancellarli."
             ),
             wraplength=560,
             justify="left",
@@ -66,9 +65,9 @@ class RetentionIntroDialog(tk.Toplevel):
         ttk.Label(
             frame,
             text=(
-                "La soglia consigliata è 180 giorni. Nessun voucher viene "
-                "archiviato automaticamente: la pulizia richiede sempre una "
-                "revisione e una conferma esplicita."
+                "La minimizzazione privacy è una funzione futura separata. "
+                "La revoca di sicurezza dalla controller non modifica il codice "
+                "voucher né i metadati conservati localmente."
             ),
             wraplength=560,
             justify="left",
@@ -112,11 +111,15 @@ class RetentionReviewDialog(tk.Toplevel):
         self.title("Conservazione voucher")
         self.transient(parent or app)
         self.grab_set()
-        self.geometry("900x560")
-        self.minsize(760, 480)
 
         policy = load_retention_policy(app.database)
-        self.days = tk.StringVar(value=str(policy.unused_unprinted_days))
+        self.days = tk.StringVar(
+            value=(
+                str(policy.unused_unprinted_days)
+                if retention_days_configured(app.database)
+                else ""
+            )
+        )
         self.status = tk.StringVar()
 
         shell = ttk.Frame(self, padding=18)
@@ -130,10 +133,10 @@ class RetentionReviewDialog(tk.Toplevel):
         ttk.Label(
             shell,
             text=(
-                "Le protezioni per voucher utilizzati e stampati sono "
-                "obbligatorie e non possono essere disattivate. L'elenco "
-                "sottostante contiene soltanto voucher non più presenti sul "
-                "controller, mai usati, mai stampati e senza PDF generati."
+                "L'elenco è solo informativo: mostra voucher anziani non più "
+                "presenti sulla controller, mai osservati usati, mai stampati e "
+                "senza PDF generati. In questa release nessun dato viene "
+                "minimizzato o cancellato da questa schermata."
             ),
             wraplength=820,
             justify="left",
@@ -141,7 +144,7 @@ class RetentionReviewDialog(tk.Toplevel):
 
         policy_row = ttk.Frame(shell)
         policy_row.pack(fill="x", pady=(0, 12))
-        ttk.Label(policy_row, text="Età minima").pack(side="left")
+        ttk.Label(policy_row, text="Età minima scelta").pack(side="left")
         ttk.Spinbox(
             policy_row,
             from_=1,
@@ -175,27 +178,37 @@ class RetentionReviewDialog(tk.Toplevel):
         self.tree.column("recipient", width=260)
         self.tree.column("basis", width=150, anchor="center")
         self.tree.column("lastsync", width=170, anchor="center")
-        self.tree.pack(fill="both", expand=True)
+
+        footer = ttk.Frame(shell)
+        footer.pack(side="bottom", fill="x")
 
         ttk.Label(
-            shell,
+            footer,
             textvariable=self.status,
         ).pack(anchor="w", pady=(8, 0))
 
-        actions = ttk.Frame(shell)
+        actions = ttk.Frame(footer)
         actions.pack(fill="x", pady=(12, 0))
         ttk.Button(
             actions,
             text="Chiudi",
             command=self.destroy,
         ).pack(side="right")
-        ttk.Button(
+        ttk.Label(
             actions,
-            text="Archivia selezionati…",
-            command=self._archive_selected,
-        ).pack(side="right", padx=(0, 8))
+            text="Minimizzazione privacy non attiva in questa release",
+            style="Muted.TLabel",
+        ).pack(side="left")
 
+        self.tree.pack(fill="both", expand=True)
         self._refresh()
+        fit_toplevel_to_content(
+            self,
+            preferred_width=900,
+            preferred_height=560,
+            min_width=760,
+            min_height=480,
+        )
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -238,9 +251,14 @@ class RetentionReviewDialog(tk.Toplevel):
                     _display_time(candidate.last_synced_at),
                 ),
             )
-        self.status.set(
-            f"{len(candidates)} candidati. Nessuna archiviazione è automatica."
-        )
+        if not retention_days_configured(self.app.database):
+            self.status.set(
+                "Scegliere e salvare una soglia prima di calcolare i record da riesaminare."
+            )
+        else:
+            self.status.set(
+                f"{len(candidates)} record da riesaminare. Nessuna minimizzazione è attiva."
+            )
 
     def _save_policy(self) -> None:
         try:
@@ -259,80 +277,10 @@ class RetentionReviewDialog(tk.Toplevel):
             return
         self.days.set(str(policy.unused_unprinted_days))
         self._refresh()
-
-    def _archive_selected(self) -> None:
-        selected = [
-            int(iid)
-            for iid in self.tree.selection()
-            if iid.isdigit()
-        ]
-        if not selected:
-            messagebox.showinfo(
-                "Conservazione",
-                "Selezionare almeno un candidato da archiviare.",
-                parent=self,
-            )
-            return
-        if not messagebox.askyesno(
-            "Conferma archiviazione",
-            (
-                f"Archiviare {len(selected)} voucher selezionati?\n\n"
-                "Il record storico resterà disponibile, ma codice voucher, "
-                "destinatario, assegnazione e note verranno rimossi. "
-                "L'operazione non viene eseguita sui voucher che nel frattempo "
-                "non soddisfano più i criteri."
-            ),
-            parent=self,
-        ):
-            return
-
-        try:
-            result = archive_retention_candidates(
-                self.app.database,
-                voucher_ids=selected,
-                archived_at=self._now(),
-                windows_user=self.app._windows_operator_identity(),
-                history=self.app.history,
-                settings=self.app.settings,
-            )
-        except HistoryError:
-            messagebox.showerror(
-                "Conservazione non disponibile",
-                "La cronologia locale non è verificabile. Nessun voucher è "
-                "stato archiviato.",
-                parent=self,
-            )
-            return
-        except Exception as exc:
-            self.app.logger.warning(
-                "retention_archive_failed type=%s",
-                type(exc).__name__,
-            )
-            messagebox.showerror(
-                "Conservazione",
-                "Impossibile completare l'archiviazione selezionata. Nessun "
-                "voucher è stato minimizzato parzialmente.",
-                parent=self,
-            )
-            return
-        if self.app.active_controller_id is not None:
-            self.app.vouchers = load_local_vouchers(
-                self.app.database,
-                controller_id=self.app.active_controller_id,
-            )
-            self.app.checked_ids.clear()
-            self.app.populate()
-
-        self._refresh()
-        messagebox.showinfo(
-            "Conservazione",
-            (
-                f"Archiviati: {len(result.archived_ids)}. "
-                f"Non più idonei e quindi ignorati: {len(result.skipped_ids)}."
-            ),
-            parent=self,
+        self.app._finalize_voucher_operation_ui(
+            operation="retention_policy",
+            refresh_reports=False,
         )
-
 
 class RetentionMixin:
     """Compose retention onboarding and review into the Windows shell."""
@@ -340,16 +288,25 @@ class RetentionMixin:
     def show_retention_intro_if_needed(self) -> None:
         now = datetime.now(timezone.utc).isoformat()
         ensure_retention_policy(self.database, now=now)
-        if retention_intro_seen(self.database):
+
+        configured = retention_days_configured(self.database)
+        intro_seen = retention_intro_seen(self.database)
+        if configured and intro_seen:
             return
 
-        dialog = RetentionIntroDialog(self)
-        if dialog.result is None:
-            return
+        if not intro_seen:
+            dialog = RetentionIntroDialog(self)
+            if dialog.result is None:
+                return
+            mark_retention_intro_seen(self.database, now=now)
 
-        mark_retention_intro_seen(self.database, now=now)
-        if dialog.result == "review":
+        # Existing/upgraded installations may already have seen the old
+        # retention explanation while never having explicitly selected the
+        # newly mandatory threshold. Keep prompting the review dialog on
+        # startup until a real operator choice is persisted.
+        if not retention_days_configured(self.database):
             self.open_retention_review()
+            return
 
     def open_retention_review(self, *, parent=None) -> None:
         ensure_retention_policy(

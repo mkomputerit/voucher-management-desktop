@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -80,8 +81,11 @@ def test_voucher_upsert_preserves_local_fields(tmp_path):
             authorized_guest_count=0,
         )
         db.connection.execute(
-            "UPDATE vouchers SET assigned_to=?, notes=? WHERE id=?",
-            ("Mario Rossi", "Consegna reception", voucher_id),
+            """UPDATE vouchers
+               SET notes=?, origin='APPLICATION', is_nominal=1,
+                   print_state='NOT_PRINTED'
+               WHERE id=?""",
+            ("Consegna reception", voucher_id),
         )
         db.connection.commit()
 
@@ -101,8 +105,91 @@ def test_voucher_upsert_preserves_local_fields(tmp_path):
         assert same_id == voucher_id
         assert row["authorized_guest_count"] == 2
         assert row["expired"] == 1
-        assert row["assigned_to"] == "Mario Rossi"
         assert row["notes"] == "Consegna reception"
+        assert row["origin"] == "APPLICATION"
+        assert row["is_nominal"] == 1
+        assert row["print_state"] == "NOT_PRINTED"
+    finally:
+        db.close()
+
+
+def test_ever_used_is_monotonic_across_controller_counter_changes(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher_id = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="ever-used",
+            code="1234567890",
+            imported_at="t1",
+            last_synced_at="t1",
+            authorized_guest_count=2,
+        )
+        db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="ever-used",
+            code="1234567890",
+            imported_at="t1",
+            last_synced_at="t2",
+            authorized_guest_count=0,
+        )
+        row = db.connection.execute(
+            "SELECT authorized_guest_count, ever_used FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["authorized_guest_count"] == 2
+        assert row["ever_used"] == 1
+    finally:
+        db.close()
+
+
+def test_positive_controller_lifecycle_facts_are_monotonic(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher_id = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="positive-facts",
+            code="1234567890",
+            imported_at="t1",
+            last_synced_at="t1",
+            authorized_guest_count=1,
+            activated_at="2026-09-25T10:00:00+00:00",
+            expires_at="2026-09-25T11:00:00+00:00",
+            expired=True,
+        )
+        db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="positive-facts",
+            code="1234567890",
+            imported_at="t1",
+            last_synced_at="t2",
+            authorized_guest_count=0,
+            activated_at=None,
+            expires_at=None,
+            expired=False,
+        )
+
+        row = db.connection.execute(
+            """SELECT authorized_guest_count, ever_used, activated_at,
+                      expires_at, expired, expiry_observed
+               FROM vouchers WHERE id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert row["authorized_guest_count"] == 1
+        assert row["ever_used"] == 1
+        assert row["activated_at"] == "2026-09-25T10:00:00+00:00"
+        assert row["expires_at"] == "2026-09-25T11:00:00+00:00"
+        assert row["expired"] == 1
+        assert row["expiry_observed"] == 1
     finally:
         db.close()
 
@@ -177,6 +264,65 @@ def test_print_summary_counts_jobs_and_physical_copies(tmp_path):
         db.close()
 
 
+def test_print_summary_preserves_known_legacy_print_without_audit(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="legacy-printed",
+            code="LEGACY",
+            imported_at="t",
+            last_synced_at="t",
+        )
+        db.connection.execute(
+            """UPDATE vouchers
+               SET print_state='PRINTED',
+                   alignment_completed_at='2026-09-25T09:00:00Z'
+               WHERE id=?""",
+            (voucher,),
+        )
+        db.connection.commit()
+
+        summary = db.print_summary(voucher)
+
+        assert summary.print_jobs == 0
+        assert summary.known_printed_without_audit is True
+        assert summary.print_state == "PRINTED"
+        assert summary.last_printed_at == ""
+    finally:
+        db.close()
+
+
+def test_print_summary_exposes_unknown_state_without_guessing(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="external-unknown",
+            code="UNKNOWN",
+            imported_at="t",
+            last_synced_at="t",
+        )
+
+        summary = db.print_summary(voucher)
+
+        assert summary.print_jobs == 0
+        assert summary.known_printed_without_audit is False
+        assert summary.print_state == "UNKNOWN"
+    finally:
+        db.close()
+
+
 def test_get_or_create_controller_reuses_api_root_without_credentials(tmp_path):
     db = _db(tmp_path)
     try:
@@ -202,6 +348,138 @@ def test_get_or_create_controller_reuses_api_root_without_credentials(tmp_path):
         assert db.connection.execute("SELECT COUNT(*) FROM controllers").fetchone()[0] == 1
     finally:
         db.close()
+
+
+def test_controller_identity_is_scoped_by_unifi_site_uuid(tmp_path):
+    db = _db(tmp_path)
+    try:
+        first = db.get_or_create_controller(
+            name="Site A",
+            api_root="https://controller.example",
+            site_id="site-a",
+            observed_at="2026-10-02T07:00:00+00:00",
+        )
+        same = db.get_or_create_controller(
+            name="Site A renamed",
+            api_root="https://controller.example",
+            site_id="site-a",
+            observed_at="2026-10-02T07:05:00+00:00",
+        )
+        second = db.get_or_create_controller(
+            name="Site B",
+            api_root="https://controller.example",
+            site_id="site-b",
+            observed_at="2026-10-02T07:10:00+00:00",
+        )
+
+        assert same == first
+        assert second != first
+        rows = db.connection.execute(
+            "SELECT id, site_id, name FROM controllers ORDER BY id"
+        ).fetchall()
+        assert [(row["site_id"], row["name"]) for row in rows] == [
+            ("site-a", "Site A renamed"),
+            ("site-b", "Site B"),
+        ]
+    finally:
+        db.close()
+
+
+def test_first_verified_site_adopts_pre_v8_controller_identity(tmp_path):
+    db = _db(tmp_path)
+    try:
+        legacy = db.create_controller(
+            name="Legacy profile",
+            api_root="https://controller.example",
+            created_at="2026-10-01T07:00:00+00:00",
+        )
+        adopted = db.get_or_create_controller(
+            name="Reception",
+            api_root="https://controller.example",
+            site_id="site-uuid",
+            observed_at="2026-10-02T07:00:00+00:00",
+        )
+
+        assert adopted == legacy
+        row = db.connection.execute(
+            "SELECT site_id, name FROM controllers WHERE id=?",
+            (legacy,),
+        ).fetchone()
+        assert row["site_id"] == "site-uuid"
+        assert row["name"] == "Reception"
+    finally:
+        db.close()
+
+
+def test_legacy_controller_is_not_adopted_when_root_already_has_scoped_site(tmp_path):
+    db = _db(tmp_path)
+    try:
+        legacy = db.create_controller(
+            name="Legacy archive",
+            api_root="https://controller.example",
+            created_at="2026-10-01T07:00:00+00:00",
+        )
+        site_a = db.create_controller(
+            name="Site A",
+            api_root="https://controller.example",
+            site_id="site-a",
+            created_at="2026-10-01T08:00:00+00:00",
+        )
+
+        site_b = db.get_or_create_controller(
+            name="Site B",
+            api_root="https://controller.example",
+            site_id="site-b",
+            observed_at="2026-10-02T07:00:00+00:00",
+        )
+
+        assert site_b not in {legacy, site_a}
+        rows = db.connection.execute(
+            "SELECT id, site_id, name FROM controllers ORDER BY id"
+        ).fetchall()
+        assert [(row["site_id"], row["name"]) for row in rows] == [
+            ("", "Legacy archive"),
+            ("site-a", "Site A"),
+            ("site-b", "Site B"),
+        ]
+    finally:
+        db.close()
+
+
+def test_schema_seven_upgrade_adds_unifi_site_identity(tmp_path):
+    path = tmp_path / "schema-seven-site.db"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="Existing",
+        api_root="https://controller.example",
+        created_at="2026-10-01T07:00:00+00:00",
+    )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("DROP INDEX IF EXISTS idx_controllers_identity")
+    raw.execute("ALTER TABLE controllers DROP COLUMN site_id")
+    raw.execute("PRAGMA user_version = 7")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '7')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        row = migrated.connection.execute(
+            "SELECT site_id FROM controllers WHERE id=?",
+            (controller,),
+        ).fetchone()
+        assert row["site_id"] == ""
+        assert migrated.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0] == SCHEMA_VERSION
+    finally:
+        migrated.close()
 
 
 def test_controller_can_be_renamed_without_touching_connection_identity(tmp_path):
@@ -257,6 +535,9 @@ def test_record_print_audit_is_idempotent_and_sequences_reprints(tmp_path):
         summary = db.print_summary(voucher)
         assert summary.print_jobs == 1
         assert summary.physical_copies == 2
+        assert db.connection.execute(
+            "SELECT print_state FROM vouchers WHERE id=?", (voucher,)
+        ).fetchone()["print_state"] == "PRINTED"
 
         db.record_print_audit(
             audit_id="audit-2",
@@ -272,6 +553,138 @@ def test_record_print_audit_is_idempotent_and_sequences_reprints(tmp_path):
             (voucher,),
         ).fetchall()
         assert [tuple(row) for row in rows] == [(1, 0, 2), (2, 1, 1)]
+    finally:
+        db.close()
+
+
+def test_print_audit_uses_uuid_even_when_codes_are_ambiguous(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            site_id="site-a",
+            created_at="t",
+        )
+        first = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="uuid-first",
+            code="DUPLICATE",
+            imported_at="t",
+            last_synced_at="t",
+        )
+        second = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="uuid-second",
+            code="DUPLICATE",
+            imported_at="t",
+            last_synced_at="t",
+        )
+
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="uuid-print",
+            codes=["DUPLICATE"],
+            unifi_ids=["uuid-second"],
+            output_file="Voucher.pdf",
+            document_copies=1,
+            printed_at="2026-10-02T08:00:00+00:00",
+            windows_user="operator",
+        )
+
+        assert db.print_summary(first).print_jobs == 0
+        assert db.print_summary(second).print_jobs == 1
+        summaries = db.print_summaries_for_remote_ids(
+            controller_id=controller,
+            unifi_ids=["uuid-first", "uuid-second"],
+        )
+        assert summaries["uuid-first"].print_jobs == 0
+        assert summaries["uuid-second"].print_jobs == 1
+    finally:
+        db.close()
+
+
+def test_first_physical_print_from_unknown_state_is_countable_and_idempotent(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="unknown-before-print",
+            code="12345-67890",
+            imported_at="t",
+            last_synced_at="t",
+        )
+
+        kwargs = dict(
+            controller_id=controller,
+            audit_id="unknown-print-audit",
+            codes=["12345-67890"],
+            unifi_ids=["unknown-before-print"],
+            output_file="Voucher.pdf",
+            document_copies=1,
+            printed_at="2026-10-02T09:00:00+00:00",
+            windows_user="operator",
+        )
+        db.record_print_audit(**kwargs)
+        db.record_print_audit(**kwargs)
+
+        events = db.connection.execute(
+            """SELECT event_type, details_json
+               FROM voucher_events WHERE voucher_id=?""",
+            (voucher,),
+        ).fetchall()
+        assert len(events) == 1
+        assert events[0]["event_type"] == "PRINTED_FROM_UNKNOWN_STATE"
+        details = json.loads(events[0]["details_json"])
+        assert details["prior_print_state"] == "UNKNOWN"
+        assert details["print_job_uuid"] == "unknown-print-audit"
+        assert db.print_summary(voucher).print_state == "PRINTED"
+    finally:
+        db.close()
+
+
+def test_first_physical_print_from_positive_not_printed_state_adds_no_unknown_event(tmp_path):
+    db = _db(tmp_path)
+    try:
+        controller = db.create_controller(
+            name="A",
+            api_root="https://a.example",
+            created_at="t",
+        )
+        voucher = db.upsert_voucher(
+            controller_id=controller,
+            unifi_id="known-unprinted",
+            code="98765-43210",
+            imported_at="t",
+            last_synced_at="t",
+        )
+        db.connection.execute(
+            "UPDATE vouchers SET print_state='NOT_PRINTED' WHERE id=?",
+            (voucher,),
+        )
+        db.connection.commit()
+
+        db.record_print_audit(
+            controller_id=controller,
+            audit_id="known-print-audit",
+            codes=["98765-43210"],
+            unifi_ids=["known-unprinted"],
+            output_file="Voucher.pdf",
+            document_copies=1,
+            printed_at="2026-10-02T09:05:00+00:00",
+            windows_user="operator",
+        )
+
+        assert db.connection.execute(
+            """SELECT COUNT(*) FROM voucher_events
+               WHERE voucher_id=? AND event_type='PRINTED_FROM_UNKNOWN_STATE'""",
+            (voucher,),
+        ).fetchone()[0] == 0
     finally:
         db.close()
 
@@ -380,6 +793,15 @@ def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
     path = tmp_path / "schema-one.db"
     raw = sqlite3.connect(path)
     raw.executescript(SCHEMA_SQL)
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_usage_observed")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN nominality_redacted")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN usage_observed")
     raw.execute("DROP TABLE legacy_audit_events")
     raw.execute("DROP TABLE migration_runs")
     raw.execute("PRAGMA user_version = 1")
@@ -392,7 +814,7 @@ def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
     db = Database(path)
     try:
         db.initialize()
-        assert db.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         tables = {
             row[0]
             for row in db.connection.execute(
@@ -404,17 +826,557 @@ def test_schema_one_upgrades_to_legacy_evidence_schema(tmp_path):
             db.connection.execute(
                 "SELECT value FROM app_metadata WHERE key='schema_version'"
             ).fetchone()[0]
-            == "2"
+            == str(SCHEMA_VERSION)
         )
+        columns = {
+            row["name"]
+            for row in db.connection.execute("PRAGMA table_info(vouchers)")
+        }
+        assert {
+            "origin",
+            "is_nominal",
+            "nominality_redacted",
+            "ever_used",
+            "usage_observed",
+        } <= columns
         db.integrity_check()
     finally:
         db.close()
+
+
+def test_schema_two_upgrade_preserves_unknown_classification_for_existing_rows(tmp_path):
+    path = tmp_path / "schema-two.db"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    voucher_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="existing",
+        code="1234567890",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_usage_observed")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN nominality_redacted")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN usage_observed")
+    raw.execute("PRAGMA user_version = 2")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '2')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        row = migrated.connection.execute(
+            """SELECT origin, is_nominal, nominality_redacted,
+                      ever_used, usage_observed
+               FROM vouchers WHERE id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert row["origin"] == "UNKNOWN"
+        assert row["is_nominal"] is None
+        assert row["nominality_redacted"] == 0
+        assert row["ever_used"] == 0
+        assert row["usage_observed"] == 1
+        assert (
+            migrated.connection.execute("PRAGMA user_version").fetchone()[0]
+            == SCHEMA_VERSION
+        )
+    finally:
+        migrated.close()
+
+
+def test_schema_two_upgrade_recovers_use_from_previous_positive_observation(tmp_path):
+    path = tmp_path / "schema-two-previous-use.db"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="2026-09-01T08:00:00+00:00",
+    )
+    voucher_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="used-then-zero",
+        code="1234567890",
+        imported_at="2026-09-01T09:00:00+00:00",
+        authorized_guest_count=0,
+        last_synced_at="2026-09-02T09:00:00+00:00",
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            """INSERT INTO sync_runs(
+                   sync_uuid, controller_id, started_at, completed_at, status,
+                   vouchers_received, changes_detected
+               ) VALUES ('schema2-reset', ?, 't', 't', 'SUCCESS', 1, 1)""",
+            (controller,),
+        )
+        tx.execute(
+            """INSERT INTO voucher_sync_observations(
+                   voucher_id, observed_at, field_name,
+                   previous_value, new_value, sync_uuid
+               ) VALUES (?, 't', 'authorized_guest_count', '2', '0',
+                         'schema2-reset')""",
+            (voucher_id,),
+        )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_usage_observed")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN nominality_redacted")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN usage_observed")
+    raw.execute("PRAGMA user_version = 2")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '2')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        row = migrated.connection.execute(
+            "SELECT ever_used FROM vouchers WHERE id=?",
+            (voucher_id,),
+        ).fetchone()
+        assert row["ever_used"] == 1
+    finally:
+        migrated.close()
+
+
+
+def test_schema_nine_upgrade_repairs_synthetic_legacy_expiry(tmp_path):
+    path = tmp_path / "schema-nine-legacy-expiry.db"
+    db = Database(path)
+    db.initialize()
+    legacy_controller = db.create_controller(
+        name="Legacy",
+        api_root="legacy-backup://fixture",
+        created_at="t",
+    )
+    live_controller = db.create_controller(
+        name="Live",
+        api_root="https://controller.example",
+        created_at="t",
+    )
+    legacy_id = db.upsert_voucher(
+        controller_id=legacy_controller,
+        unifi_id="legacy-row",
+        code="1111122222",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    live_id = db.upsert_voucher(
+        controller_id=live_controller,
+        unifi_id="live-row",
+        code="3333344444",
+        imported_at="t",
+        last_synced_at="t",
+        expired=True,
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            """UPDATE vouchers
+               SET usage_observed=0, ever_used=0, activated_at=NULL,
+                   expires_at=NULL, expired=1
+               WHERE id=?""",
+            (legacy_id,),
+        )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("ALTER TABLE vouchers DROP COLUMN expiry_observed")
+    raw.execute("PRAGMA user_version = 9")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) "
+        "VALUES ('schema_version', '9')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        legacy = migrated.connection.execute(
+            "SELECT expired, expiry_observed FROM vouchers WHERE id=?",
+            (legacy_id,),
+        ).fetchone()
+        live = migrated.connection.execute(
+            "SELECT expired, expiry_observed FROM vouchers WHERE id=?",
+            (live_id,),
+        ).fetchone()
+        assert legacy["expired"] == 0
+        assert legacy["expiry_observed"] == 0
+        assert live["expired"] == 1
+        assert live["expiry_observed"] == 1
+        assert (
+            migrated.connection.execute("PRAGMA user_version").fetchone()[0]
+            == SCHEMA_VERSION
+        )
+    finally:
+        migrated.close()
+
+
+def test_schema_three_upgrade_adds_redaction_and_clears_false_legacy_origin(tmp_path):
+    path = tmp_path / "schema-three.db"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    voucher_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="legacy-provenance",
+        code="1234567890",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            "UPDATE vouchers SET origin='LEGACY_APPLICATION' WHERE id=?",
+            (voucher_id,),
+        )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("ALTER TABLE vouchers DROP COLUMN nominality_redacted")
+    raw.execute("PRAGMA user_version = 3")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '3')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        row = migrated.connection.execute(
+            """SELECT origin, nominality_redacted
+               FROM vouchers WHERE id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert row["origin"] == "UNKNOWN"
+        assert row["nominality_redacted"] == 0
+        assert migrated.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0] == SCHEMA_VERSION
+    finally:
+        migrated.close()
+
+
+def test_intermediate_schema_three_with_redaction_column_upgrades_idempotently(tmp_path):
+    path = tmp_path / "schema-three-intermediate.db"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="A",
+        api_root="https://a.example",
+        created_at="t",
+    )
+    voucher_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="legacy-provenance",
+        code="1234567890",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            """UPDATE vouchers
+               SET origin='LEGACY_APPLICATION', nominality_redacted=1
+               WHERE id=?""",
+            (voucher_id,),
+        )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("PRAGMA user_version = 3")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '3')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        row = migrated.connection.execute(
+            """SELECT origin, nominality_redacted
+               FROM vouchers WHERE id=?""",
+            (voucher_id,),
+        ).fetchone()
+        assert row["origin"] == "UNKNOWN"
+        assert row["nominality_redacted"] == 1
+        assert migrated.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0] == SCHEMA_VERSION
+    finally:
+        migrated.close()
+
+
+def test_schema_four_upgrade_restores_legacy_display_name_without_touching_live_unifi_name(tmp_path):
+    path = tmp_path / "schema-four-legacy-recipient.db"
+    db = Database(path)
+    db.initialize()
+    legacy_controller = db.create_controller(
+        name="Archivio backup precedente",
+        api_root="legacy-backup://fixture",
+        created_at="t",
+    )
+    live_controller = db.create_controller(
+        name="UniFi reale",
+        api_root="https://controller.example",
+        created_at="t",
+    )
+    legacy_id = db.upsert_voucher(
+        controller_id=legacy_controller,
+        unifi_id="legacy-backup-fixture-1",
+        code="12345-67890",
+        name="Ospite legacy",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    preserved_id = db.upsert_voucher(
+        controller_id=legacy_controller,
+        unifi_id="legacy-backup-fixture-2",
+        code="11111-22222",
+        name="Vecchio destinatario recuperato",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    live_id = db.upsert_voucher(
+        controller_id=live_controller,
+        unifi_id="real-uuid",
+        code="98765-43210",
+        name="Descrizione UniFi",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            "UPDATE vouchers SET assigned_to=? WHERE id=?",
+            ("Destinatario locale già corretto", preserved_id),
+        )
+        tx.execute(
+            "UPDATE vouchers SET assigned_to=? WHERE id=?",
+            ("Destinatario live", live_id),
+        )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("PRAGMA user_version = 4")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '4')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        legacy = migrated.connection.execute(
+            "SELECT name, assigned_to, origin, created_at FROM vouchers WHERE id=?",
+            (legacy_id,),
+        ).fetchone()
+        preserved = migrated.connection.execute(
+            "SELECT name, assigned_to, origin, created_at FROM vouchers WHERE id=?",
+            (preserved_id,),
+        ).fetchone()
+        live = migrated.connection.execute(
+            "SELECT name, assigned_to, origin FROM vouchers WHERE id=?",
+            (live_id,),
+        ).fetchone()
+
+        assert legacy["name"] == "Ospite legacy"
+        assert legacy["assigned_to"] == "Ospite legacy"
+        assert legacy["origin"] == "UNKNOWN"
+        assert legacy["created_at"] is None
+        assert preserved["name"] == "Destinatario locale già corretto"
+        assert preserved["assigned_to"] == "Destinatario locale già corretto"
+        assert preserved["origin"] == "UNKNOWN"
+        assert preserved["created_at"] is None
+        assert live["name"] == "Descrizione UniFi"
+        assert live["assigned_to"] == "Destinatario live"
+        assert live["origin"] == "CONTROLLER"
+        assert migrated.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0] == SCHEMA_VERSION
+    finally:
+        migrated.close()
+
+
+
+def test_schema_five_backfills_print_state_without_guessing_external_history(tmp_path):
+    path = tmp_path / "schema-five-print-state.db"
+    db = Database(path)
+    db.initialize()
+    controller = db.create_controller(
+        name="UniFi",
+        api_root="https://controller.example",
+        created_at="t",
+    )
+    application_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="application",
+        code="11111-11111",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    external_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="external",
+        code="22222-22222",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    printed_external_id = db.upsert_voucher(
+        controller_id=controller,
+        unifi_id="external-printed",
+        code="33333-33333",
+        imported_at="t",
+        last_synced_at="t",
+    )
+    with db.transaction() as tx:
+        tx.execute(
+            "UPDATE vouchers SET origin='APPLICATION', print_state='UNKNOWN' WHERE id=?",
+            (application_id,),
+        )
+        cursor = tx.execute(
+            """INSERT INTO print_jobs
+               (print_job_uuid, created_at, submitted_at, windows_user,
+                document_copies, status)
+               VALUES ('legacy-print-state', 't', 't', 'MIGRATION', 1, 'AUDITED')"""
+        )
+        tx.execute(
+            """INSERT INTO voucher_prints
+               (print_job_id, voucher_id, printed_at, windows_user,
+                physical_copies, print_sequence, is_reprint)
+               VALUES (?, ?, 't', 'MIGRATION', 1, 1, 0)""",
+            (cursor.lastrowid, printed_external_id),
+        )
+        tx.execute(
+            "UPDATE vouchers SET print_state='UNKNOWN' WHERE id IN (?, ?)",
+            (external_id, printed_external_id),
+        )
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("PRAGMA user_version = 5")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '5')"
+    )
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path)
+    try:
+        migrated.initialize()
+        states = {
+            row["unifi_id"]: row["print_state"]
+            for row in migrated.connection.execute(
+                "SELECT unifi_id, print_state FROM vouchers"
+            )
+        }
+        assert states == {
+            "application": "NOT_PRINTED",
+            "external": "UNKNOWN",
+            "external-printed": "PRINTED",
+        }
+        assert migrated.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0] == SCHEMA_VERSION
+    finally:
+        migrated.close()
+
+
+def test_failed_schema_two_upgrade_rolls_back_partial_ddl(tmp_path, monkeypatch):
+    path = tmp_path / "schema-two-failure.db"
+    db = Database(path)
+    db.initialize()
+    db.close()
+
+    raw = sqlite3.connect(path)
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_usage_observed")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN nominality_redacted")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN usage_observed")
+    raw.execute("PRAGMA user_version = 2")
+    raw.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('schema_version', '2')"
+    )
+    raw.commit()
+    raw.close()
+
+    monkeypatch.setattr(
+        database_module,
+        "MIGRATION_2_TO_3_SQL",
+        """
+ALTER TABLE vouchers ADD COLUMN reporting_partial_probe INTEGER;
+THIS IS NOT VALID SQL;
+""",
+    )
+
+    migrated = Database(path)
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            migrated.initialize()
+        assert migrated.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        columns = {
+            row["name"]
+            for row in migrated.connection.execute("PRAGMA table_info(vouchers)")
+        }
+        assert "reporting_partial_probe" not in columns
+        assert (
+            migrated.connection.execute(
+                "SELECT value FROM app_metadata WHERE key='schema_version'"
+            ).fetchone()[0]
+            == "2"
+        )
+    finally:
+        migrated.close()
 
 
 def test_failed_schema_one_upgrade_rolls_back_partial_ddl(tmp_path, monkeypatch):
     path = tmp_path / "schema-one-failure.db"
     raw = sqlite3.connect(path)
     raw.executescript(SCHEMA_SQL)
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_origin")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_nominal")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_ever_used")
+    raw.execute("DROP INDEX IF EXISTS idx_vouchers_usage_observed")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN nominality_redacted")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN is_nominal")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN origin")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN ever_used")
+    raw.execute("ALTER TABLE vouchers DROP COLUMN usage_observed")
     raw.execute("DROP TABLE legacy_audit_events")
     raw.execute("DROP TABLE migration_runs")
     raw.execute("PRAGMA user_version = 1")

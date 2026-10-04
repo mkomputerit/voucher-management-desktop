@@ -8,10 +8,7 @@ from pathlib import Path
 import pytest
 
 from voucher_management.report_policy import ReportPurpose
-from voucher_management.report_render import (
-    render_report_csv,
-    render_report_pdf,
-)
+from voucher_management.report_render import render_report_csv, render_report_pdf
 from voucher_management.reporting import (
     ReportDataset,
     ReportKind,
@@ -20,17 +17,18 @@ from voucher_management.reporting import (
 )
 
 
-def _dataset(*, code="") -> ReportDataset:
+def _dataset(*, code="", kind=ReportKind.FULL_HISTORY, purpose=ReportPurpose.AUDIT):
     row = ReportRow(
         voucher_id=1,
         controller_name="Sala & Test <Nord>",
         code=code,
         recipient="Mario & Lucia <ospiti>",
-        assigned_to="",
         created_at="2026-09-01T09:00:00+00:00",
         imported_at="2026-09-01T09:05:00+00:00",
         expires_at="2026-10-01T09:00:00+00:00",
         authorized_guest_count=2,
+        ever_used=True,
+        usage_observed=True,
         print_jobs=2,
         physical_copies=3,
         reprint_jobs=1,
@@ -42,10 +40,23 @@ def _dataset(*, code="") -> ReportDataset:
         present_on_controller=True,
         archived_at="",
         status="Utilizzato",
+        origin="APPLICATION",
+        is_nominal=True,
+        activated_at="2026-09-01T10:00:00+00:00",
+        duration_minutes=60,
+        authorized_guest_limit=5,
+        last_seen_at="2026-09-26T11:00:00+00:00",
+        last_synced_at="2026-09-26T11:30:00+00:00",
+        unifi_id="unifi-voucher-001",
+        unifi_name="Descrizione UniFi originale",
+        local_notes="Nota locale amministrativa",
     )
     totals = ReportTotals(
         vouchers=1,
+        generated_vouchers=1,
         used_vouchers=1,
+        never_used_vouchers=0,
+        usage_unknown_vouchers=0,
         total_controller_uses=2,
         expired_vouchers=0,
         printed_vouchers=1,
@@ -55,21 +66,27 @@ def _dataset(*, code="") -> ReportDataset:
         reprint_copies=2,
         printed_never_used=0,
         never_printed=0,
-        nominal_vouchers=0,
+        nominal_vouchers=1,
+        non_nominal_vouchers=0,
+        unclassified_vouchers=0,
+        unknown_origin_vouchers=0,
+        redacted_nominality_vouchers=0,
     )
     return ReportDataset(
-        kind=ReportKind.SUMMARY,
-        purpose=ReportPurpose.SUMMARY,
-        title="Riepilogo voucher",
+        kind=kind,
+        purpose=purpose,
+        title="Storico voucher",
         generated_at="2026-09-26T12:00:00+00:00",
         controller_label="Sala & Test <Nord>",
         rows=(row,),
         totals=totals,
         code_exposed=bool(code),
+        data_from="2026-09-26T11:30:00+00:00",
+        data_as_of="2026-09-26T11:30:00+00:00",
     )
 
 
-def test_csv_report_omits_voucher_column_when_policy_hides_code(tmp_path: Path):
+def test_detail_csv_hides_codes_but_keeps_sanitized_administrative_detail(tmp_path: Path):
     output = tmp_path / "report.csv"
 
     render_report_csv(_dataset(), output)
@@ -77,15 +94,76 @@ def test_csv_report_omits_voucher_column_when_policy_hides_code(tmp_path: Path):
     payload = output.read_text(encoding="utf-8-sig")
     assert "Voucher;" not in payload
     assert "12345-67890" not in payload
+    assert "Destinatario" in payload
+    assert "Destinatario locale" not in payload
+    assert "Descrizione UniFi" not in payload
     assert "Mario & Lucia <ospiti>" in payload
-    assert "Utilizzi controller osservati;2" in payload
+    assert "Descrizione UniFi originale" not in payload
+    assert "Note locali" in payload
+    assert "Nota locale amministrativa" in payload
+    assert "ID UniFi" in payload
+    assert "unifi-voucher-001" in payload
+    assert "Guest autorizzati (conteggio cumulativo osservato);2" in payload
+    assert "Dato uso;Utilizzato;Guest autorizzati cumulativi" in payload
+    assert "Dati controller aggiornati fino a;" in payload
+    assert "26/09/2026" in payload
+
+
+def test_owner_used_report_excludes_technical_audit_columns(tmp_path: Path):
+    output = tmp_path / "used.csv"
+    dataset = _dataset(
+        kind=ReportKind.USED,
+        purpose=ReportPurpose.SUMMARY,
+    )
+
+    render_report_csv(dataset, output)
+
+    payload = output.read_text(encoding="utf-8-sig")
+    assert "Destinatario;Creazione;Prima attivazione" in payload
+    assert "Guest autorizzati cumulativi" in payload
+    assert "ID UniFi" not in payload
+    assert "unifi-voucher-001" not in payload
+    assert "Note locali" not in payload
+    assert "Ultima sincronizzazione locale" not in payload
+
+
+def test_full_audit_distinguishes_controller_observation_from_local_sync(tmp_path: Path):
+    output = tmp_path / "audit-freshness.csv"
+
+    render_report_csv(_dataset(), output)
+
+    payload = output.read_text(encoding="utf-8-sig")
+    assert "Ultima osservazione controller" in payload
+    assert "Ultima sincronizzazione locale" in payload
+    assert "26/09/2026 11:00" in payload
+    assert "26/09/2026 11:30" in payload
+
+
+def test_summary_csv_is_aggregate_only_and_excludes_personal_detail(tmp_path: Path):
+    output = tmp_path / "summary.csv"
+    dataset = _dataset(kind=ReportKind.SUMMARY, purpose=ReportPurpose.SUMMARY)
+
+    render_report_csv(dataset, output)
+
+    payload = output.read_text(encoding="utf-8-sig")
+    assert "Mario & Lucia" not in payload
+    assert "Descrizione UniFi originale" not in payload
+    assert "Nota locale amministrativa" not in payload
+    assert r"PC\alice" not in payload
+    assert "Destinatario" not in payload
+    assert "Creazione Voucher Management confermata;1" in payload
 
 
 def test_renderer_rejects_clear_code_for_summary_purpose(tmp_path: Path):
     output = tmp_path / "invalid.csv"
+    dataset = _dataset(
+        code="12345-67890",
+        kind=ReportKind.SUMMARY,
+        purpose=ReportPurpose.SUMMARY,
+    )
 
     with pytest.raises(ValueError, match="code policy"):
-        render_report_csv(_dataset(code="12345-67890"), output)
+        render_report_csv(dataset, output)
 
     assert not output.exists()
 
@@ -120,16 +198,16 @@ def test_pdf_report_is_atomic_valid_pdf_and_escapes_operator_text(tmp_path: Path
 
 def test_empty_pdf_report_is_still_printable(tmp_path: Path):
     base = _dataset()
-    empty = ReportDataset(
+    empty = replace(
+        base,
         kind=ReportKind.EXPIRED,
-        purpose=ReportPurpose.SUMMARY,
-        title="Voucher scaduti",
-        generated_at=base.generated_at,
-        controller_label=base.controller_label,
         rows=(),
         totals=ReportTotals(
             vouchers=0,
+            generated_vouchers=0,
             used_vouchers=0,
+            never_used_vouchers=0,
+            usage_unknown_vouchers=0,
             total_controller_uses=0,
             expired_vouchers=0,
             printed_vouchers=0,
@@ -140,8 +218,9 @@ def test_empty_pdf_report_is_still_printable(tmp_path: Path):
             printed_never_used=0,
             never_printed=0,
             nominal_vouchers=0,
+            non_nominal_vouchers=0,
+            unclassified_vouchers=0,
         ),
-        code_exposed=False,
     )
     output = tmp_path / "empty.pdf"
 
@@ -155,8 +234,9 @@ def test_csv_neutralizes_formula_like_operator_text(tmp_path: Path):
     dataset = _dataset()
     dangerous_row = replace(
         dataset.rows[0],
-        controller_name="=HYPERLINK(\"https://example.invalid\")",
+        controller_name='=HYPERLINK("https://example.invalid")',
         recipient="+SUM(1,1)",
+        preparation_delete_reason="=DELETE_REASON",
         print_operators=("@operator",),
     )
     dangerous = replace(
@@ -170,5 +250,39 @@ def test_csv_neutralizes_formula_like_operator_text(tmp_path: Path):
     payload = output.read_text(encoding="utf-8-sig")
     assert "'=HYPERLINK" in payload
     assert "'+SUM" in payload
+    assert "'=DELETE_REASON" in payload
     assert "'@operator" in payload
     assert "'-controller" in payload
+
+
+
+def test_summary_csv_includes_security_revocation_total(tmp_path: Path):
+    output = tmp_path / "summary-revoked.csv"
+    base = _dataset(kind=ReportKind.SUMMARY, purpose=ReportPurpose.SUMMARY)
+    dataset = replace(
+        base,
+        totals=replace(base.totals, security_revoked_vouchers=3),
+    )
+
+    render_report_csv(dataset, output)
+
+    payload = output.read_text(encoding="utf-8-sig")
+    assert "Revocati per sicurezza;3" in payload
+
+
+
+def test_pdf_report_handles_maximum_local_note_length(tmp_path: Path):
+    output = tmp_path / "report-long-note.pdf"
+    base = _dataset()
+    long_note = ("Nota amministrativa " * 55)[:1000]
+    row = replace(base.rows[0], local_notes=long_note)
+    dataset = replace(base, rows=(row,))
+
+    render_report_pdf(
+        dataset,
+        output,
+        installation_name="Test export note lunghe",
+    )
+
+    assert output.read_bytes().startswith(b"%PDF-")
+    assert output.stat().st_size > 1000

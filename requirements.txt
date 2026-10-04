@@ -6,4 +6,4 @@ pypdfium2==4.30.0
 pywin32==311
 sv-ttk==2.6.1
 darkdetect==0.8.0
-cryptography==50.0.1
+cryptography==50.0.2

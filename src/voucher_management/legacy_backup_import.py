@@ -19,7 +19,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -28,7 +27,7 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 
-from .backup import BackupError, BackupService
+from .backup import BackupService
 from .database import Database
 from .identity import LEGACY_BACKUP_API_ROOT_PREFIX
 from .legacy_migration import (
@@ -43,7 +42,6 @@ from .legacy_migration import (
     materialize_resolved_legacy_events,
 )
 from .security.history_key import HistoryKeyStore
-from .settings import SettingsStore
 
 
 _CODE_PATTERN = re.compile(r"(?<!\d)(\d{5})\s*-?\s*(\d{5})(?!\d)")
@@ -97,7 +95,7 @@ class _LegacyBackupMaterial:
 class _RecoveredMetadata:
     recipient: str = ""
     duration_minutes: int | None = None
-    created_at: str | None = None
+    generated_at: str | None = None
 
 
 def _file_sha256(path: Path) -> str:
@@ -152,7 +150,7 @@ def _extract_pdf_codes(payload: bytes) -> set[str]:
             textpage = None
             try:
                 textpage = page.get_textpage()
-                text = textpage.get_text_range()
+                text = textpage.get_text_bounded()
             except Exception as exc:
                 raise LegacyMigrationError(
                     "Impossibile leggere il testo di un PDF del backup"
@@ -397,7 +395,7 @@ def _metadata_by_code(
         payload = item.row.payload
         current = result.get(code)
         stamp = item.row.timestamp
-        if current is not None and current.created_at and current.created_at <= stamp:
+        if current is not None and current.generated_at and current.generated_at <= stamp:
             continue
         duration = payload.get("duration_minutes")
         result[code] = _RecoveredMetadata(
@@ -407,7 +405,7 @@ def _metadata_by_code(
                 if type(duration) is int and duration >= 0
                 else None
             ),
-            created_at=stamp,
+            generated_at=stamp,
         )
     return result
 
@@ -492,7 +490,7 @@ def _ensure_import_candidates(
 
     for canonical in resolved_pdf_codes:
         rows = database.connection.execute(
-            """SELECT id, controller_id, unifi_id, code, archived_at
+            """SELECT id, controller_id, unifi_id, code, name, archived_at
                FROM vouchers
                WHERE REPLACE(code, '-', '')=?
                ORDER BY id""",
@@ -541,10 +539,14 @@ def _ensure_import_candidates(
             if selected["archived_at"] is not None and retention_event is not None:
                 minimized_ids.add(selected_id)
                 continue
-            if selected["archived_at"] is not None and retention_event is None:
-                # Repair the early 5.1 import bug where archived_at was used as
-                # an import marker rather than a true retention marker.
+            repair_archived = (
+                selected["archived_at"] is not None
+                and retention_event is None
+            )
+            if repair_archived:
                 with database.transaction() as db:
+                    # Repair the early 5.1 import bug where archived_at was
+                    # used as an import marker rather than retention.
                     db.execute(
                         "UPDATE vouchers SET archived_at=NULL WHERE id=?",
                         (selected_id,),
@@ -606,18 +608,18 @@ def _ensure_import_candidates(
                 if existing is None:
                     cursor = db.execute(
                         """INSERT INTO vouchers
-                           (controller_id, unifi_id, code, name, created_at,
-                            imported_at, duration_minutes,
-                            authorized_guest_count, expired,
-                            present_on_controller, last_seen_at,
-                            last_synced_at, archived_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, NULL, ?, NULL)""",
+                           (controller_id, unifi_id, code, name,
+                            created_at, imported_at, duration_minutes,
+                            authorized_guest_count, ever_used, usage_observed,
+                            expired, expiry_observed, present_on_controller,
+                            last_seen_at, last_synced_at, archived_at, origin)
+                           VALUES (?, ?, ?, ?, NULL, ?, ?, 0, 0, 0, 0, 0, 0,
+                                   NULL, ?, NULL, 'UNKNOWN')""",
                         (
                             archive_controller_id,
                             unifi_id,
                             display_code,
                             meta.recipient,
-                            meta.created_at,
                             imported_at,
                             meta.duration_minutes,
                             imported_at,
@@ -641,10 +643,15 @@ def _ensure_import_candidates(
                         continue
                     db.execute(
                         """UPDATE vouchers
-                           SET code=?, name=CASE
-                                   WHEN TRIM(name)='' THEN ? ELSE name END,
+                           SET code=?,
+                               name=CASE
+                                   WHEN TRIM(name)='' THEN ?
+                                   ELSE name
+                               END,
+                               origin='UNKNOWN',
                                duration_minutes=COALESCE(duration_minutes, ?),
-                               expired=1, present_on_controller=0,
+                               expired=0, expiry_observed=0,
+                               present_on_controller=0,
                                archived_at=NULL
                            WHERE id=?""",
                         (

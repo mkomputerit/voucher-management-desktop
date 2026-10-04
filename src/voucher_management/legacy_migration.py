@@ -112,25 +112,60 @@ class LegacyMigrationPlan:
         return not self.ambiguous and not self.unresolved
 
 
+def _canonical_code(value: str) -> str:
+    return str(value or "").strip().replace("-", "")
+
+
 def legacy_candidates_from_database(
     database: "Database",
+    *,
+    preferred_controller_id: int | None = None,
 ) -> tuple[LegacyVoucherCandidate, ...]:
-    """Snapshot independently known clear-code voucher identities from SQLite."""
+    """Snapshot independently known clear-code voucher identities from SQLite.
+
+    After a real controller has been identified, a legacy-backup placeholder
+    carrying the same clear code is provisional rather than a competing UniFi
+    identity.  It is therefore shadowed by the real controller candidate.
+    Other real-controller collisions remain visible and deliberately ambiguous.
+    """
 
     rows = database.connection.execute(
-        """SELECT controller_id, unifi_id, code
-           FROM vouchers
-           WHERE TRIM(code) <> ''
-           ORDER BY controller_id, unifi_id"""
+        """SELECT v.controller_id, v.unifi_id, v.code, c.api_root
+           FROM vouchers AS v
+           JOIN controllers AS c ON c.id=v.controller_id
+           WHERE TRIM(v.code) <> ''
+           ORDER BY v.controller_id, v.unifi_id"""
     ).fetchall()
-    return tuple(
-        LegacyVoucherCandidate(
-            controller_id=int(row["controller_id"]),
-            unifi_id=str(row["unifi_id"]),
-            code=str(row["code"]),
+
+    preferred_codes: set[str] = set()
+    if preferred_controller_id is not None:
+        preferred_codes = {
+            _canonical_code(row["code"])
+            for row in rows
+            if int(row["controller_id"]) == int(preferred_controller_id)
+        }
+
+    candidates: list[LegacyVoucherCandidate] = []
+    for row in rows:
+        code = str(row["code"])
+        is_placeholder = (
+            str(row["api_root"] or "").startswith("legacy-backup://")
+            and str(row["unifi_id"] or "").startswith("legacy-backup-")
         )
-        for row in rows
-    )
+        if (
+            preferred_codes
+            and is_placeholder
+            and _canonical_code(code) in preferred_codes
+        ):
+            continue
+        candidates.append(
+            LegacyVoucherCandidate(
+                controller_id=int(row["controller_id"]),
+                unifi_id=str(row["unifi_id"]),
+                code=code,
+            )
+        )
+    return tuple(candidates)
 
 
 _HEX = frozenset("0123456789abcdef")
@@ -193,6 +228,22 @@ def _validated_history_rows(
                     raise LegacyMigrationError(
                         f"Record legacy non valido alla riga {line_number}"
                     )
+
+                stable_ref = str(payload.get("voucher_ref", "") or "").lower()
+                if stable_ref:
+                    if (
+                        len(stable_ref) != 64
+                        or any(ch not in _HEX for ch in stable_ref)
+                    ):
+                        raise LegacyMigrationError(
+                            f"Identità voucher moderna non valida alla riga "
+                            f"{line_number}"
+                        )
+                    # Modern 5.x rows already carry the stable Site UUID +
+                    # voucher UUID HMAC and are audited through the current
+                    # SQLite print bridge. They must never be reinterpreted as
+                    # legacy code-HMAC evidence.
+                    continue
 
                 event = str(payload.get("event", "generate") or "generate")
                 if event not in {"generate", "print"}:
@@ -317,6 +368,106 @@ def build_legacy_migration_plan(
     )
 
 
+def legacy_migration_plan_needs_reconciliation(
+    database: "Database",
+    plan: LegacyMigrationPlan,
+) -> bool:
+    """Return whether a verified plan would add or improve durable evidence.
+
+    Already-resolved/materialized evidence is monotonic and remains valid even
+    if a later candidate snapshot can no longer reproduce the old association.
+    Unresolved/ambiguous evidence is reconsidered whenever new authoritative
+    UniFi identities make a unique resolution possible.
+    """
+
+    desired: list[tuple[LegacyAuditRow, str, int | None]] = []
+    for item in plan.resolved:
+        row = database.connection.execute(
+            """SELECT id FROM vouchers
+               WHERE controller_id=? AND unifi_id=?""",
+            (item.candidate.controller_id, item.candidate.unifi_id),
+        ).fetchone()
+        if row is None:
+            return True
+        desired.append((item.row, "RESOLVED", int(row["id"])))
+    desired.extend(
+        (item.row, "AMBIGUOUS", None)
+        for item in plan.ambiguous
+    )
+    desired.extend(
+        (item.row, "UNRESOLVED", None)
+        for item in plan.unresolved
+    )
+
+    for row, wanted_status, wanted_voucher_id in desired:
+        existing = database.connection.execute(
+            """SELECT resolution_status, voucher_id, materialized_at
+               FROM legacy_audit_events
+               WHERE legacy_event_key=?""",
+            (row.event_key,),
+        ).fetchone()
+        if existing is None:
+            return True
+
+        existing_status = str(existing["resolution_status"])
+        existing_voucher_id = (
+            None
+            if existing["voucher_id"] is None
+            else int(existing["voucher_id"])
+        )
+
+        if existing_status == "RESOLVED":
+            if existing["materialized_at"] is None:
+                return True
+            existing_identity = database.connection.execute(
+                """SELECT v.unifi_id, c.api_root
+                   FROM vouchers AS v
+                   JOIN controllers AS c ON c.id=v.controller_id
+                   WHERE v.id=?""",
+                (int(existing_voucher_id),),
+            ).fetchone()
+            existing_is_placeholder = bool(
+                existing_identity is not None
+                and str(existing_identity["api_root"] or "").startswith(
+                    "legacy-backup://"
+                )
+                and str(existing_identity["unifi_id"] or "").startswith(
+                    "legacy-backup-"
+                )
+            )
+            if (
+                wanted_status == "RESOLVED"
+                and existing_voucher_id != wanted_voucher_id
+            ):
+                if _legacy_placeholder_can_move(
+                    database.connection,
+                    old_voucher_id=int(existing_voucher_id),
+                    new_voucher_id=int(wanted_voucher_id),
+                ):
+                    return True
+                raise LegacyMigrationError(
+                    "Una risoluzione legacy positiva esistente confligge con "
+                    "una diversa identità voucher non provvisoria"
+                )
+            if wanted_status == "AMBIGUOUS" and existing_is_placeholder:
+                raise LegacyMigrationError(
+                    "Il placeholder legacy corrisponde ora a più identità "
+                    "voucher live: la riconciliazione automatica è bloccata"
+                )
+            # Positive real-voucher identity is monotonic. If the current
+            # candidate set merely lost information, never regress it.
+            continue
+
+        if wanted_status == "RESOLVED":
+            return True
+        if existing_status != wanted_status:
+            return True
+        if existing_voucher_id != wanted_voucher_id:
+            return True
+
+    return False
+
+
 @dataclass(frozen=True)
 class LegacyMigrationApplyResult:
     """Result of one atomic evidence-persistence transaction."""
@@ -329,8 +480,255 @@ class LegacyMigrationApplyResult:
     already_applied: bool = False
 
 
-def _canonical_code(value: str) -> str:
-    return str(value or "").strip().replace("-", "")
+def _legacy_placeholder_can_move(
+    db,
+    *,
+    old_voucher_id: int,
+    new_voucher_id: int,
+) -> bool:
+    """Return whether one synthetic import identity may converge to a live UUID."""
+
+    if int(old_voucher_id) == int(new_voucher_id):
+        return False
+    rows = db.execute(
+        """SELECT v.id, v.unifi_id, v.code, v.archived_at, c.api_root
+           FROM vouchers AS v
+           JOIN controllers AS c ON c.id=v.controller_id
+           WHERE v.id IN (?, ?)
+           ORDER BY v.id""",
+        (int(old_voucher_id), int(new_voucher_id)),
+    ).fetchall()
+    by_id = {int(row["id"]): row for row in rows}
+    old = by_id.get(int(old_voucher_id))
+    new = by_id.get(int(new_voucher_id))
+    if old is None or new is None:
+        return False
+    if not (
+        str(old["api_root"] or "").startswith("legacy-backup://")
+        and str(old["unifi_id"] or "").startswith("legacy-backup-")
+    ):
+        return False
+    if str(new["api_root"] or "").startswith("legacy-backup://"):
+        return False
+    if _canonical_code(old["code"]) != _canonical_code(new["code"]):
+        return False
+    retention = db.execute(
+        """SELECT 1 FROM voucher_events
+           WHERE voucher_id=? AND event_type='RETENTION_ARCHIVED'
+           LIMIT 1""",
+        (int(old_voucher_id),),
+    ).fetchone()
+    if retention is not None:
+        return False
+    observed = db.execute(
+        """SELECT 1 FROM voucher_sync_observations
+           WHERE voucher_id=? LIMIT 1""",
+        (int(old_voucher_id),),
+    ).fetchone()
+    if observed is not None:
+        return False
+    operator_activity = db.execute(
+        """SELECT 1 FROM voucher_events
+           WHERE voucher_id=? AND source<>'MIGRATION'
+           LIMIT 1""",
+        (int(old_voucher_id),),
+    ).fetchone()
+    return operator_activity is None
+
+
+def _renumber_prints_for_voucher(db, voucher_id: int) -> None:
+    rows = db.execute(
+        """SELECT vp.id, vp.print_sequence, vp.printed_at, pj.print_job_uuid
+           FROM voucher_prints AS vp
+           JOIN print_jobs AS pj ON pj.id=vp.print_job_id
+           WHERE vp.voucher_id=?
+           ORDER BY vp.printed_at, pj.print_job_uuid, vp.id""",
+        (int(voucher_id),),
+    ).fetchall()
+    if not rows:
+        return
+    max_sequence = max(int(row["print_sequence"]) for row in rows)
+    offset = max_sequence + len(rows) + 1
+    db.execute(
+        """UPDATE voucher_prints
+           SET print_sequence=print_sequence+?
+           WHERE voucher_id=?""",
+        (offset, int(voucher_id)),
+    )
+    for sequence, row in enumerate(rows, start=1):
+        db.execute(
+            """UPDATE voucher_prints
+               SET print_sequence=?, is_reprint=?
+               WHERE id=?""",
+            (sequence, int(sequence > 1), int(row["id"])),
+        )
+
+
+def _merge_legacy_placeholder_into_live(
+    db,
+    *,
+    old_voucher_id: int,
+    new_voucher_id: int,
+    merged_at: str,
+) -> None:
+    """Move provisional legacy evidence to the now-known live UniFi identity.
+
+    This is allowed only for a legacy-backup placeholder with the same clear
+    code as the live voucher.  Any non-migration activity on the placeholder
+    blocks the merge so operator-owned facts can never be silently rewritten.
+    """
+
+    if not _legacy_placeholder_can_move(
+        db,
+        old_voucher_id=old_voucher_id,
+        new_voucher_id=new_voucher_id,
+    ):
+        raise LegacyMigrationError(
+            "Una risoluzione legacy esistente punta a un'identità diversa e "
+            "non può essere ricondotta automaticamente al voucher live"
+        )
+
+    old = db.execute(
+        """SELECT id, is_nominal, notes, print_state,
+                  alignment_completed_at, nominality_redacted
+           FROM vouchers WHERE id=?""",
+        (int(old_voucher_id),),
+    ).fetchone()
+    if old is None:
+        raise LegacyMigrationError("Placeholder legacy non più disponibile")
+
+    foreign_observations = int(
+        db.execute(
+            """SELECT COUNT(*) FROM voucher_sync_observations
+               WHERE voucher_id=?""",
+            (int(old_voucher_id),),
+        ).fetchone()[0]
+    )
+    non_migration_events = int(
+        db.execute(
+            """SELECT COUNT(*) FROM voucher_events
+               WHERE voucher_id=? AND source<>'MIGRATION'""",
+            (int(old_voucher_id),),
+        ).fetchone()[0]
+    )
+    if foreign_observations or non_migration_events:
+        raise LegacyMigrationError(
+            "Il placeholder legacy contiene attività non migratoria e richiede "
+            "una revisione tecnica prima della riconciliazione"
+        )
+
+    # Avoid UNIQUE(voucher_id, print_sequence) collisions while the old prints
+    # are moved.  Final chronological numbering is rebuilt immediately after.
+    old_print_count = int(
+        db.execute(
+            "SELECT COUNT(*) FROM voucher_prints WHERE voucher_id=?",
+            (int(old_voucher_id),),
+        ).fetchone()[0]
+    )
+    if old_print_count:
+        max_sequence = int(
+            db.execute(
+                """SELECT COALESCE(MAX(print_sequence), 0)
+                   FROM voucher_prints
+                   WHERE voucher_id IN (?, ?)""",
+                (int(old_voucher_id), int(new_voucher_id)),
+            ).fetchone()[0]
+        )
+        db.execute(
+            """UPDATE voucher_prints
+               SET print_sequence=print_sequence+?
+               WHERE voucher_id=?""",
+            (
+                max_sequence + old_print_count + 1,
+                int(old_voucher_id),
+            ),
+        )
+        db.execute(
+            """UPDATE voucher_prints SET voucher_id=?
+               WHERE voucher_id=?""",
+            (int(new_voucher_id), int(old_voucher_id)),
+        )
+        _renumber_prints_for_voucher(db, int(new_voucher_id))
+
+    db.execute(
+        """UPDATE voucher_events SET voucher_id=?
+           WHERE voucher_id=? AND source='MIGRATION'""",
+        (int(new_voucher_id), int(old_voucher_id)),
+    )
+    db.execute(
+        """UPDATE legacy_audit_events SET voucher_id=?
+           WHERE voucher_id=? AND resolution_status='RESOLVED'""",
+        (int(new_voucher_id), int(old_voucher_id)),
+    )
+
+    db.execute(
+        """UPDATE vouchers
+           SET print_state=CASE
+                   WHEN print_state='PRINTED'
+                        OR ?='PRINTED'
+                        OR EXISTS (
+                            SELECT 1 FROM voucher_prints
+                            WHERE voucher_id=vouchers.id
+                        )
+                   THEN 'PRINTED'
+                   ELSE print_state
+               END,
+               is_nominal=COALESCE(is_nominal, ?),
+               notes=CASE
+                   WHEN TRIM(notes)='' THEN ?
+                   ELSE notes
+               END,
+               alignment_completed_at=CASE
+                   WHEN alignment_completed_at IS NULL
+                        AND ? IS NOT NULL
+                   THEN ?
+                   ELSE alignment_completed_at
+               END,
+               nominality_redacted=CASE
+                   WHEN is_nominal IS NULL AND nominality_redacted=0
+                   THEN ?
+                   ELSE nominality_redacted
+               END
+           WHERE id=?""",
+        (
+            str(old["print_state"] or "UNKNOWN"),
+            old["is_nominal"],
+            str(old["notes"] or ""),
+            old["is_nominal"],
+            old["alignment_completed_at"],
+            int(old["nominality_redacted"] or 0),
+            int(new_voucher_id),
+        ),
+    )
+
+    db.execute(
+        "DELETE FROM vouchers WHERE id=?",
+        (int(old_voucher_id),),
+    )
+    merge_key = hashlib.sha256(
+        f"{old_voucher_id}:{new_voucher_id}".encode("ascii")
+    ).hexdigest()
+    db.execute(
+        """INSERT OR IGNORE INTO voucher_events(
+               event_uuid, voucher_id, event_type, occurred_at,
+               source, windows_user, details_json
+           ) VALUES (?, ?, 'LEGACY_PLACEHOLDER_MERGED', ?, 'MIGRATION',
+                     NULL, ?)""",
+        (
+            f"legacy-placeholder-merge-{merge_key}",
+            int(new_voucher_id),
+            str(merged_at),
+            json.dumps(
+                {
+                    "old_placeholder_id": int(old_voucher_id),
+                    "reason": "live_unifi_identity_confirmed",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        ),
+    )
 
 
 def apply_legacy_migration_plan(
@@ -515,9 +913,16 @@ def apply_legacy_migration_plan(
             previous_status = existing["resolution_status"]
             previous_voucher = existing["voucher_id"]
             if previous_status == "RESOLVED":
-                if status != "RESOLVED" or previous_voucher != voucher_id:
+                if status != "RESOLVED":
                     raise LegacyMigrationError(
                         "Una risoluzione legacy esistente non può regredire"
+                    )
+                if previous_voucher != voucher_id:
+                    _merge_legacy_placeholder_into_live(
+                        db,
+                        old_voucher_id=int(previous_voucher),
+                        new_voucher_id=int(voucher_id),
+                        merged_at=applied_at,
                     )
                 db.execute(
                     """UPDATE legacy_audit_events
@@ -797,6 +1202,10 @@ def materialize_resolved_legacy_events(
                         ),
                     )
 
+                db.execute(
+                    "UPDATE vouchers SET print_state='PRINTED' WHERE id=?",
+                    (voucher_id,),
+                )
                 affected_vouchers.add(voucher_id)
                 print_rows += 1
 

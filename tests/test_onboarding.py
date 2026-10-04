@@ -8,7 +8,6 @@ import pytest
 
 from voucher_management.database import Database
 from voucher_management.onboarding import (
-    DEFAULT_VOUCHER_RETENTION_DAYS,
     OnboardingDraft,
     OnboardingState,
     begin_onboarding,
@@ -17,11 +16,15 @@ from voucher_management.onboarding import (
     legacy_installation_has_evidence,
     onboarding_state,
 )
+import voucher_management.modern_app as modern_app
+from voucher_management.modern_app import MigrationRequiredDialog, ModernVoucherApp
 from voucher_management.onboarding_ui import (
+    FirstRunWizard,
     schedule_first_run_onboarding,
     startup_onboarding_state,
 )
-from voucher_management.retention import retention_intro_seen
+from voucher_management.operational_alerts import unprinted_warning_days
+from voucher_management.security_revocation import security_revoke_days
 from voucher_management.settings import DEFAULT_SETTINGS, SettingsStore
 
 
@@ -45,7 +48,14 @@ def _draft():
         pdf_subtitle="Voucher temporaneo",
         pdf_contact="Reception",
         pdf_notes="Conservare il voucher",
+        unprinted_warning_days=14,
+        security_revoke_days=30,
     )
+
+
+def test_privacy_retention_startup_gate_is_disabled():
+    fake = object()
+    assert ModernVoucherApp._retention_intro_allowed_on_startup(fake) is False
 
 
 def test_fresh_database_requires_onboarding(tmp_path):
@@ -106,7 +116,7 @@ def test_existing_operational_database_is_not_forced_through_new_install(tmp_pat
         database.close()
 
 
-def test_complete_onboarding_persists_profile_retention_and_nonsecret_settings(
+def test_complete_onboarding_persists_profile_thresholds_and_nonsecret_settings(
     tmp_path,
 ):
     database = _database(tmp_path)
@@ -126,11 +136,9 @@ def test_complete_onboarding_persists_profile_retention_and_nonsecret_settings(
         assert profile["pdf_title"] == "Accesso Wi-Fi"
         assert profile["pdf_contact"] == "Reception"
 
-        retention = database.retention_policy()
-        assert retention["unused_unprinted_days"] == DEFAULT_VOUCHER_RETENTION_DAYS
-        assert retention["protect_used"] == 1
-        assert retention["protect_printed"] == 1
-        assert retention_intro_seen(database) is True
+        assert unprinted_warning_days(database) == 14
+        assert security_revoke_days(database) == 30
+        assert database.retention_policy() is None
 
         assert settings["structure_name"] == "Sala Assemblee"
         assert settings["wifi_title"] == "Wi-Fi ospiti"
@@ -151,7 +159,8 @@ def test_onboarding_completion_is_idempotent_and_updates_profile(tmp_path):
             **{
                 **_draft().__dict__,
                 "installation_name": "Postazione aggiornata",
-                "unused_unprinted_days": 365,
+                "unprinted_warning_days": 21,
+                "security_revoke_days": 45,
             }
         )
         complete_onboarding(
@@ -167,7 +176,8 @@ def test_onboarding_completion_is_idempotent_and_updates_profile(tmp_path):
         assert database.installation_profile()["installation_name"] == (
             "Postazione aggiornata"
         )
-        assert database.retention_policy()["unused_unprinted_days"] == 365
+        assert unprinted_warning_days(database) == 21
+        assert security_revoke_days(database) == 45
     finally:
         database.close()
 
@@ -196,6 +206,8 @@ def test_sqlite_failure_never_writes_completion_marker(tmp_path, monkeypatch):
             )
 
         assert database.installation_profile() is None
+        assert unprinted_warning_days(database) is None
+        assert security_revoke_days(database) is None
         assert database.retention_policy() is None
         assert onboarding_state(database) is OnboardingState.REQUIRED
 
@@ -219,18 +231,19 @@ def test_onboarding_draft_has_no_credential_fields():
     )
 
 
+@pytest.mark.parametrize("field", ["unprinted_warning_days", "security_revoke_days"])
 @pytest.mark.parametrize("days", [0, -1, 3651])
-def test_onboarding_rejects_unsafe_retention(days, tmp_path):
+def test_onboarding_rejects_unsafe_thresholds(field, days, tmp_path):
     database = _database(tmp_path)
     store = SettingsStore(tmp_path / "settings.json")
     try:
         draft = OnboardingDraft(
             **{
                 **_draft().__dict__,
-                "unused_unprinted_days": days,
+                field: days,
             }
         )
-        with pytest.raises(ValueError, match="retention"):
+        with pytest.raises(ValueError, match="soglia"):
             complete_onboarding(
                 database,
                 store,
@@ -239,6 +252,8 @@ def test_onboarding_rejects_unsafe_retention(days, tmp_path):
             )
 
         assert database.installation_profile() is None
+        assert unprinted_warning_days(database) is None
+        assert security_revoke_days(database) is None
     finally:
         database.close()
 
@@ -338,6 +353,27 @@ def test_legacy_evidence_helper_fails_closed_on_managed_files(tmp_path):
     (paths.logos / "logo.png").write_bytes(b"synthetic")
 
     assert legacy_installation_has_evidence(paths, dict(DEFAULT_SETTINGS)) is True
+
+
+def test_first_run_restore_delegates_to_reviewed_restore_workflow():
+    calls = []
+    wizard = type(
+        "WizardStub",
+        (),
+        {
+            "app": type(
+                "AppStub",
+                (),
+                {
+                    "restore_backup": lambda self, **kwargs: calls.append(kwargs),
+                },
+            )(),
+        },
+    )()
+
+    FirstRunWizard._restore_existing_backup(wizard)
+
+    assert calls == [{"parent": wizard}]
 
 
 def test_scheduler_runs_wizard_only_for_required_first_run(tmp_path):
@@ -498,3 +534,75 @@ def test_scheduler_does_not_force_existing_installation(tmp_path):
         assert scheduled == []
     finally:
         database.close()
+
+
+
+def test_onboarding_requires_both_explicit_threshold_values(tmp_path):
+    database = _database(tmp_path)
+    store = SettingsStore(tmp_path / "settings.json")
+    try:
+        draft = OnboardingDraft(
+            installation_name="Postazione reception",
+            structure_name="Sala Assemblee",
+            wifi_title="Wi-Fi ospiti",
+        )
+        with pytest.raises(ValueError):
+            complete_onboarding(
+                database,
+                store,
+                draft,
+                observed_at=NOW,
+            )
+        assert database.installation_profile() is None
+    finally:
+        database.close()
+
+
+
+def test_shared_fresh_start_launches_first_run_wizard(monkeypatch):
+    events = []
+
+    class App:
+        database = object()
+        logger = type("Logger", (), {"error": lambda *args, **kwargs: None})()
+
+        def after_idle(self, callback):
+            events.append(("scheduled", callback))
+
+    dialog = type(
+        "Dialog",
+        (),
+        {
+            "app": App(),
+            "grab_release": lambda self: events.append(("grab_release",)),
+            "destroy": lambda self: events.append(("destroy",)),
+        },
+    )()
+
+    monkeypatch.setattr(
+        modern_app,
+        "choose_shared_fresh_start",
+        lambda database: events.append(("fresh", database)),
+    )
+    launched = []
+    monkeypatch.setattr(
+        modern_app,
+        "FirstRunWizard",
+        lambda app: launched.append(app),
+    )
+    monkeypatch.setattr(
+        modern_app.messagebox,
+        "askyesno",
+        lambda *args, **kwargs: True,
+    )
+
+    MigrationRequiredDialog._start_fresh_installation(dialog)
+
+    assert events[0][0] == "fresh"
+    assert events[1] == ("grab_release",)
+    assert events[2] == ("destroy",)
+    assert events[3][0] == "scheduled"
+    assert launched == []
+
+    events[3][1]()
+    assert launched == [dialog.app]

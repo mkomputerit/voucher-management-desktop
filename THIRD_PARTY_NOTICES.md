@@ -16,7 +16,7 @@ source of truth and must accompany the public Windows artifact where required.
 | pywin32 | 311 | Windows printer APIs | mixed licensing; packaged license files are authoritative |
 | sv-ttk | 2.6.1 | ttk light/dark theme | MIT |
 | darkdetect | 0.8.0 | Windows theme detection | BSD-3-Clause |
-| cryptography | 50.0.1 | Scrypt KDF and AES-GCM backup encryption | Apache-2.0 or BSD-3-Clause |
+| cryptography | 50.0.2 | Scrypt KDF and AES-GCM backup encryption | Apache-2.0 or BSD-3-Clause |
 | cffi | 2.1.1 | cryptography runtime dependency | MIT |
 | pycparser | 3.0 | cffi runtime dependency | BSD-3-Clause |
 
@@ -47,7 +47,7 @@ the applicable packaged notices.
 
 | Component | Pinned version | Purpose | License |
 | --- | ---: | --- | --- |
-| pytest | 8.4.2 | automated tests | MIT |
+| pytest | 9.0.3 | automated tests | MIT |
 | PyInstaller | 6.22.3 | Windows packaging | GPL-2.0-or-later with the PyInstaller bootloader exception |
 
 The PyInstaller exception permits applications packaged with the bootloader to

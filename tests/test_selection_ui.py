@@ -158,6 +158,7 @@ def test_home_click_toggles_one_voucher_without_dropping_hidden_selection():
         home_print_action_var=FakeVar(),
         bell=lambda: None,
         _is_expired=VoucherApp._is_expired,
+        _voucher_alignment_ready=lambda voucher: True,
     )
     fake._sync_selection_ui = (
         lambda iids=None: ModernVoucherApp._sync_home_selection_ui(fake)
@@ -195,7 +196,10 @@ def test_programmatic_home_highlight_is_one_way_and_does_not_call_click_handler(
 
 @pytest.mark.parametrize("workspace", ["home", "voucher"])
 @pytest.mark.parametrize("status", ["VALID_MULTI", "EXPIRED"])
-def test_space_uses_print_selection_and_preserves_hidden_vouchers(workspace, status):
+def test_space_uses_workspace_selection_and_preserves_home_print_safety(
+    workspace,
+    status,
+):
     tree = HomeTree()
     visible = SimpleNamespace(id="visible", status=status)
     calls = []
@@ -205,19 +209,22 @@ def test_space_uses_print_selection_and_preserves_hidden_vouchers(workspace, sta
         by_iid={"home-1": visible},
         checked_ids={"hidden"},
         _is_expired=VoucherApp._is_expired,
+        _voucher_alignment_ready=lambda voucher: True,
         bell=lambda: calls.append("bell"),
         _sync_selection_ui=lambda: calls.append("sync"),
     )
     event = SimpleNamespace(widget=tree)
     assert ModernVoucherApp._on_voucher_selection_key(fake, event) == "break"
-    if status == "EXPIRED":
+
+    if workspace == "home" and status == "EXPIRED":
         assert fake.checked_ids == {"hidden"}
         assert calls == ["bell"]
-    else:
-        assert fake.checked_ids == {"hidden", "visible"}
-        assert calls == ["sync"]
-        ModernVoucherApp._on_voucher_selection_key(fake, event)
-        assert fake.checked_ids == {"hidden"}
+        return
+
+    assert fake.checked_ids == {"hidden", "visible"}
+    assert calls == ["sync"]
+    ModernVoucherApp._on_voucher_selection_key(fake, event)
+    assert fake.checked_ids == {"hidden"}
 
 
 def test_native_keyboard_navigation_cannot_change_print_highlighting():
@@ -245,6 +252,7 @@ def test_native_keyboard_navigation_cannot_change_print_highlighting():
             },
             checked_ids={"first", "hidden"},
             _is_expired=VoucherApp._is_expired,
+            _voucher_alignment_ready=lambda voucher: True,
             bell=lambda: None,
         )
         fake._sync_selection_ui = lambda: tree.selection_set(
@@ -267,3 +275,233 @@ def test_native_keyboard_navigation_cannot_change_print_highlighting():
         assert fake.checked_ids == {"first", "second", "hidden"}
     finally:
         root.destroy()
+
+
+
+def test_workspace_print_state_keeps_unknown_out_of_to_print():
+    voucher = SimpleNamespace(id="unknown")
+    fake = SimpleNamespace(
+        _workspace_print_state_by_unifi_id={
+            "unknown": (True, "UNKNOWN"),
+            "printable": (True, "NOT_PRINTED"),
+        }
+    )
+
+    assert ModernVoucherApp._workspace_print_state(
+        fake,
+        voucher,
+        None,
+    ) == "NON DETERMINABILE"
+    assert ModernVoucherApp._workspace_print_state(
+        fake,
+        SimpleNamespace(id="printable"),
+        None,
+    ) == "DA STAMPARE"
+
+
+def test_home_metrics_exclude_unknown_print_and_count_first_multiuse_use():
+    fake = SimpleNamespace(
+        controller_snapshot_live=True,
+        vouchers=[
+            SimpleNamespace(
+                id="unknown",
+                status="VALID_MULTI",
+                used=0,
+                code_formatted="11111-11111",
+                recipient="Unknown print",
+                create_time=40,
+                end_time=0,
+            ),
+            SimpleNamespace(
+                id="printable",
+                status="VALID_MULTI",
+                used=0,
+                code_formatted="22222-22222",
+                recipient="Printable",
+                create_time=30,
+                end_time=0,
+            ),
+            SimpleNamespace(
+                id="multi-used",
+                status="USED_MULTIPLE",
+                used=1,
+                code_formatted="33333-33333",
+                recipient="Multiuse",
+                create_time=20,
+                end_time=0,
+            ),
+            SimpleNamespace(
+                id="expired",
+                status="EXPIRED",
+                used=0,
+                code_formatted="44444-44444",
+                recipient="Expired",
+                create_time=10,
+                end_time=0,
+            ),
+        ],
+        home_to_print_var=FakeVar(),
+        home_active_var=FakeVar(),
+        home_used_var=FakeVar(),
+        home_expired_var=FakeVar(),
+        home_unprinted_alert_var=FakeVar(),
+        home_security_alert_var=FakeVar(),
+        _is_expired=lambda voucher: voucher.status == "EXPIRED",
+        _workspace_print_state=lambda voucher, _stat: {
+            "unknown": "NON DETERMINABILE",
+            "printable": "DA STAMPARE",
+            "multi-used": "STAMPATO",
+            "expired": "SCADUTO",
+        }[voucher.id],
+        _refresh_home_activity=lambda: None,
+        _refresh_home_threshold_alerts=lambda: None,
+        _refresh_controller_workspace_status=lambda: None,
+    )
+
+    ModernVoucherApp._update_operator_summary(fake, {})
+
+    assert fake.home_to_print_var.value == "1"
+    assert fake.home_active_var.value == "3"
+    assert fake.home_used_var.value == "1"
+    assert fake.home_expired_var.value == "1"
+
+
+def test_unaligned_voucher_cannot_enter_print_selection_from_home():
+    visible = SimpleNamespace(id="visible", status="VALID_MULTI")
+    tree = HomeTree()
+    calls = []
+    fake = SimpleNamespace(
+        home_recent_tree=tree,
+        _home_voucher_by_iid={"home-1": visible},
+        checked_ids={"hidden"},
+        home_print_action_var=FakeVar(),
+        bell=lambda: calls.append("bell"),
+        _is_expired=VoucherApp._is_expired,
+        _voucher_alignment_ready=lambda voucher: False,
+    )
+    fake._sync_selection_ui = lambda iids=None: calls.append("sync")
+
+    result = ModernVoucherApp._on_home_recent_click(
+        fake,
+        SimpleNamespace(x=4, y=8),
+    )
+
+    assert result == "break"
+    assert fake.checked_ids == {"hidden"}
+    assert calls == ["bell"]
+
+
+
+def test_unaligned_active_voucher_remains_selectable_in_voucher_table():
+    voucher = SimpleNamespace(id="visible", status="VALID_MULTI")
+    tree = HomeTree()
+    calls = []
+    fake = SimpleNamespace(
+        tree=tree,
+        home_recent_tree=HomeTree(),
+        by_iid={"home-1": voucher},
+        checked_ids=set(),
+        bell=lambda: calls.append("bell"),
+        _is_expired=VoucherApp._is_expired,
+        _voucher_alignment_ready=lambda current: False,
+        _sync_selection_ui=lambda iids=None: calls.append(("sync", iids)),
+    )
+
+    result = ModernVoucherApp.on_tree_click(
+        fake,
+        SimpleNamespace(x=4, y=8),
+    )
+
+    assert result == "break"
+    assert fake.checked_ids == {"visible"}
+    assert calls == [("sync", ("home-1",))]
+
+
+def test_unaligned_active_voucher_space_selection_is_allowed_in_voucher_table():
+    voucher = SimpleNamespace(id="visible", status="VALID_MULTI")
+    tree = HomeTree()
+    calls = []
+    fake = SimpleNamespace(
+        tree=tree,
+        home_recent_tree=HomeTree(),
+        by_iid={"home-1": voucher},
+        checked_ids=set(),
+        bell=lambda: calls.append("bell"),
+        _is_expired=VoucherApp._is_expired,
+        _voucher_alignment_ready=lambda current: False,
+        _sync_selection_ui=lambda: calls.append("sync"),
+    )
+
+    result = ModernVoucherApp._on_voucher_selection_key(
+        fake,
+        SimpleNamespace(widget=tree),
+    )
+
+    assert result == "break"
+    assert fake.checked_ids == {"visible"}
+    assert calls == ["sync"]
+
+
+
+def test_dynamic_voucher_menu_reflects_action_availability():
+    configured = {}
+
+    class Menu:
+        def entryconfigure(self, index, **kwargs):
+            configured[index] = kwargs["state"]
+
+    fake = SimpleNamespace(
+        voucher_actions_menu=Menu(),
+        voucher_action_states=lambda: {
+            "align": True,
+            "nominality": False,
+            "notes": True,
+        },
+    )
+
+    ModernVoucherApp._refresh_voucher_actions_menu(fake)
+
+    assert configured == {
+        0: "normal",
+        2: "disabled",
+        3: "normal",
+    }
+
+
+
+def test_expired_row_can_be_selected_in_voucher_workspace_for_local_actions():
+    voucher = SimpleNamespace(id="expired", status="EXPIRED")
+    tree = HomeTree()
+    calls = []
+    fake = SimpleNamespace(
+        tree=tree,
+        home_recent_tree=HomeTree(),
+        by_iid={"home-1": voucher},
+        checked_ids=set(),
+        _is_expired=VoucherApp._is_expired,
+        bell=lambda: calls.append("bell"),
+        _sync_selection_ui=lambda iids=None: calls.append(("sync", iids)),
+    )
+
+    result = ModernVoucherApp.on_tree_click(
+        fake,
+        SimpleNamespace(x=4, y=8),
+    )
+
+    assert result == "break"
+    assert fake.checked_ids == {"expired"}
+    assert calls == [("sync", ("home-1",))]
+
+
+def test_expired_workspace_selection_is_still_excluded_from_printable_selected():
+    expired = SimpleNamespace(id="expired", status="EXPIRED")
+    active = SimpleNamespace(id="active", status="VALID_MULTI")
+    fake = SimpleNamespace(
+        vouchers=(expired, active),
+        checked_ids={"expired", "active"},
+        _is_expired=VoucherApp._is_expired,
+    )
+
+    selected = VoucherApp.selected(fake)
+
+    assert selected == [active]

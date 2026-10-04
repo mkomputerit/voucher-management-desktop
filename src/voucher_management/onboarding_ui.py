@@ -17,12 +17,10 @@ from .identity import (
 from .logo_validation import LogoValidationError, validate_logo_image
 from .shared_data_migration import source_has_migratable_data
 from .onboarding import (
-    DEFAULT_VOUCHER_RETENTION_DAYS,
     ONBOARDING_IN_PROGRESS_KEY,
     OnboardingDraft,
     OnboardingState,
     begin_onboarding,
-    choose_shared_fresh_start,
     complete_onboarding,
     legacy_installation_has_evidence,
     onboarding_state,
@@ -176,9 +174,8 @@ class FirstRunWizard(tk.Toplevel):
             value="Connessione non ancora verificata"
         )
 
-        self.retention_days_var = tk.StringVar(
-            value=str(DEFAULT_VOUCHER_RETENTION_DAYS)
-        )
+        self.unprinted_warning_days_var = tk.StringVar(value="")
+        self.security_revoke_days_var = tk.StringVar(value="")
 
         self.backup_directory_var = tk.StringVar(value=default_backup_directory(app))
         self.backup_on_close_var = tk.BooleanVar(value=bool(settings.get("backup_on_close", True)))
@@ -281,17 +278,17 @@ class FirstRunWizard(tk.Toplevel):
             self.body,
             text=(
                 "La procedura imposta l'identità della postazione e dei voucher, "
-                "verifica il controller UniFi e applica la retention conservativa "
-                "dello storico locale e la cartella dei backup."
+                "verifica il controller UniFi, configura le soglie operative "
+                "obbligatorie e la cartella dei backup."
             ),
             wraplength=650,
         ).pack(anchor="w", pady=(18, 8))
         ttk.Label(
             self.body,
             text=(
-                "I voucher utilizzati o fisicamente stampati restano protetti. "
-                "La retention riguarda solo futuri candidati mai usati e mai "
-                "stampati e non esegue cancellazioni automatiche."
+                "Le soglie servono a evidenziare voucher creati ma non stampati "
+                "e voucher stampati ma mai utilizzati. Non eseguono cancellazioni "
+                "automatiche e la minimizzazione privacy non è attiva in questa release."
             ),
             style="Muted.TLabel",
             wraplength=650,
@@ -415,39 +412,63 @@ class FirstRunWizard(tk.Toplevel):
         grid.columnconfigure(1, weight=1)
 
     def _render_retention(self) -> None:
-        self.header_var.set("Conservazione dello storico")
+        self.header_var.set("Soglie operative e di sicurezza")
         self.subtitle_var.set(
-            "I valori raccomandati sono già adatti alla maggior parte delle "
-            "installazioni. La pulizia resta sempre sottoposta a revisione."
+            "Entrambe le soglie devono essere scelte esplicitamente. "
+            "Nessun valore viene precompilato."
         )
         ttk.Label(
             self.body,
             text=(
-                "Voucher utilizzati: sempre protetti\n"
-                "Voucher fisicamente stampati: sempre protetti\n"
-                "Mai usati e mai stampati: candidati solo dopo il periodo indicato"
+                "1. Creato ma mai stampato: avviso operativo calcolato dalla "
+                "data di creazione UniFi.\n"
+                "2. Stampato ma mai utilizzato: revisione di sicurezza calcolata "
+                "dall'ultima stampa; una ristampa fa ripartire il conteggio. "
+                "Se una stampa storica è certa ma la data non è determinabile, "
+                "il voucher viene proposto subito per la revisione."
             ),
             wraplength=650,
+            justify="left",
         ).pack(anchor="w", pady=(18, 16))
 
-        row = ttk.Frame(self.body)
-        row.pack(anchor="w")
-        ttk.Label(row, text="Età minima candidati").pack(side="left")
+        unprinted_row = ttk.Frame(self.body)
+        unprinted_row.pack(anchor="w", pady=(0, 10))
+        ttk.Label(
+            unprinted_row,
+            text="Avvisa se creato ma non stampato dopo",
+        ).pack(side="left")
         ttk.Spinbox(
-            row,
+            unprinted_row,
             from_=1,
             to=3650,
-            increment=30,
-            textvariable=self.retention_days_var,
+            increment=1,
+            textvariable=self.unprinted_warning_days_var,
             width=8,
         ).pack(side="left", padx=(12, 6))
-        ttk.Label(row, text="giorni").pack(side="left")
+        ttk.Label(unprinted_row, text="giorni").pack(side="left")
+
+        security_row = ttk.Frame(self.body)
+        security_row.pack(anchor="w")
+        ttk.Label(
+            security_row,
+            text="Rivedi se stampato ma non usato dopo",
+        ).pack(side="left")
+        ttk.Spinbox(
+            security_row,
+            from_=1,
+            to=3650,
+            increment=1,
+            textvariable=self.security_revoke_days_var,
+            width=8,
+        ).pack(side="left", padx=(12, 6))
+        ttk.Label(security_row, text="giorni").pack(side="left")
 
         ttk.Label(
             self.body,
             text=(
-                "Nessun voucher viene eliminato automaticamente dal wizard. "
-                "La futura pulizia mostrerà sempre i candidati prima di agire."
+                "Le soglie producono avvisi e candidati da riesaminare: nessuna "
+                "cancellazione è automatica. La minimizzazione privacy dello "
+                "storico locale non fa parte di questa release."
             ),
             style="Muted.TLabel",
             wraplength=650,
@@ -467,6 +488,41 @@ class FirstRunWizard(tk.Toplevel):
             "disattivandola esplicitamente viene creato un ZIP leggibile. "
             "In chiusura potrai anche uscire senza creare una copia."
         ), wraplength=650).pack(anchor="w", pady=8)
+
+        ttk.Separator(self.body).pack(fill="x", pady=(18, 14))
+        ttk.Label(
+            self.body,
+            text="Hai già un backup di Voucher Management?",
+            style="SectionTitle.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            self.body,
+            text=(
+                "Puoi ripristinarlo ora. Il backup viene validato prima di "
+                "sostituire i dati locali e il programma si chiude al termine "
+                "del ripristino. Al riavvio userai i dati recuperati."
+            ),
+            style="Muted.TLabel",
+            wraplength=650,
+        ).pack(anchor="w", pady=(4, 8))
+        ttk.Button(
+            self.body,
+            text="Ripristina backup esistente…",
+            command=self._restore_existing_backup,
+        ).pack(anchor="w")
+
+    def _restore_existing_backup(self) -> None:
+        """Delegate first-run restore to the reviewed maintenance workflow."""
+
+        restore = getattr(self.app, "restore_backup", None)
+        if not callable(restore):
+            messagebox.showerror(
+                "Ripristina backup",
+                "La funzione di ripristino non è disponibile.",
+                parent=self,
+            )
+            return
+        restore(parent=self)
 
     def _choose_backup_directory(self) -> None:
         selected = filedialog.askdirectory(parent=self, title="Cartella predefinita backup",
@@ -502,8 +558,12 @@ class FirstRunWizard(tk.Toplevel):
                 str(info.get("applicationVersion") or "—"),
             ),
             (
-                "Retention",
-                f"{self.retention_days_var.get().strip()} giorni",
+                "Creato ma non stampato",
+                f"{self.unprinted_warning_days_var.get().strip()} giorni",
+            ),
+            (
+                "Stampato ma non utilizzato",
+                f"{self.security_revoke_days_var.get().strip()} giorni",
             ),
             (
                 "Logo",
@@ -578,16 +638,19 @@ class FirstRunWizard(tk.Toplevel):
             return False
         return True
 
-    def _validated_retention(self) -> int | None:
+    def _validated_thresholds(self) -> tuple[int, int] | None:
         try:
-            value = int(self.retention_days_var.get())
-            if not 1 <= value <= 3650:
+            unprinted_days = int(self.unprinted_warning_days_var.get())
+            security_days = int(self.security_revoke_days_var.get())
+            if not 1 <= unprinted_days <= 3650:
                 raise ValueError
-            return value
+            if not 1 <= security_days <= 3650:
+                raise ValueError
+            return unprinted_days, security_days
         except (TypeError, ValueError, tk.TclError):
             messagebox.showerror(
                 "Prima configurazione",
-                "La retention deve essere compresa tra 1 e 3650 giorni.",
+                "Scegliere esplicitamente entrambe le soglie tra 1 e 3650 giorni.",
                 parent=self,
             )
             return None
@@ -600,7 +663,7 @@ class FirstRunWizard(tk.Toplevel):
                 self._verify_controller()
                 return
         if self.page == self.PAGE_RETENTION:
-            if self._validated_retention() is None:
+            if self._validated_thresholds() is None:
                 return
         if self.page == self.PAGE_BACKUP and self._validated_backup_directory() is None:
             return
@@ -666,13 +729,25 @@ class FirstRunWizard(tk.Toplevel):
             if saved_pin and saved_normalized == normalized
             else None
         )
-        self._start_probe(normalized, key, trusted_pin)
+        preferred_site_id = (
+            str(settings.get("controller_site_id", "") or "").strip()
+            if saved_normalized == normalized
+            else ""
+        )
+        self._start_probe(
+            normalized,
+            key,
+            trusted_pin,
+            preferred_site_id=preferred_site_id or None,
+        )
 
     def _start_probe(
         self,
         api_root: str,
         api_key: str,
         trusted_pin: str | None,
+        *,
+        preferred_site_id: str | None = None,
     ) -> None:
         self.controller_status_var.set("Verifica in corso…")
 
@@ -681,6 +756,7 @@ class FirstRunWizard(tk.Toplevel):
                 api_root,
                 api_key,
                 trusted_cert_sha256=trusted_pin,
+                preferred_site_id=preferred_site_id,
             )
 
         def completed(result: ControllerProbeResult) -> None:
@@ -794,11 +870,12 @@ class FirstRunWizard(tk.Toplevel):
             self.page = self.PAGE_IDENTITY
             self._render_page()
             return
-        retention = self._validated_retention()
-        if retention is None:
+        thresholds = self._validated_thresholds()
+        if thresholds is None:
             self.page = self.PAGE_RETENTION
             self._render_page()
             return
+        unprinted_days, security_days = thresholds
         if not self._controller_is_current() or self._controller_result is None:
             self.page = self.PAGE_CONTROLLER
             self._render_page()
@@ -846,7 +923,8 @@ class FirstRunWizard(tk.Toplevel):
                 pdf_subtitle=self.structure_name_var.get(),
                 pdf_contact="",
                 pdf_notes="",
-                unused_unprinted_days=retention,
+                unprinted_warning_days=unprinted_days,
+                security_revoke_days=security_days,
                 backup_directory=backup_directory,
                 backup_on_close=bool(self.backup_on_close_var.get()),
             )

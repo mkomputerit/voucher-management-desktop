@@ -129,10 +129,13 @@ per-user application-data root:
 ```text
 VoucherManagement/
   config/settings.json
+  data/voucher_management.db
   data/history.jsonl
   data/history_secret.key
-  data/pending_print_audit.json  # only while a physical print awaits resolution/audit
-  data/pending_create_guard       # fixed marker while a create outcome is uncertain
+  data/pending_print_audit.json      # only while a physical print awaits resolution/audit
+  data/pending_create_guard          # anti-repeat barrier for an uncertain create
+  data/pending_create_intent.json    # privacy-safe pre-POST recovery intent
+  data/pending_create_reporting.json # confirmed create awaiting local classification
   logs/
   Loghi/
   Print/
@@ -149,6 +152,10 @@ Legacy DPAPI material is supported only as a one-time migration source.
 
 Voucher codes are never stored in clear text in history.jsonl. HistoryService
 uses HMAC-SHA-256 identifiers derived from the local portable history key.
+Modern voucher-generation/print rows additionally carry an HMAC correlation
+identifier derived from the verified UniFi Site UUID plus voucher UUID. This
+prevents a future reused voucher code from being treated as the same modern
+voucher while retaining code-HMAC compatibility for older history rows.
 
 Generation and physical-print events are distinct:
 
@@ -164,6 +171,16 @@ Windows submission returns successfully it is durably promoted to `submitted`
 before the corresponding history rows are appended. The descriptor stores HMAC
 voucher identifiers and print metadata, never clear voucher codes. It is removed
 only after the complete print event has been read back and verified.
+
+Before physical submission, SQLite print facts are re-read. A voucher with
+`print_state=UNKNOWN` is not silently treated as never printed: the operator
+must explicitly acknowledge that it may already have been printed or delivered
+outside Voucher Management. PDF generation alone does not trigger this prompt.
+If physical submission is subsequently audited, the voucher becomes positively
+`PRINTED` and an idempotent privacy-safe `PRINTED_FROM_UNKNOWN_STATE` event
+records that this first verified print began from indeterminate prior history.
+This gives field operation a measurable local signal without external
+telemetry.
 
 If the history write or verification fails, the preview exposes a **REGISTRA
 STAMPA** recovery action. That action never resubmits the document to Windows:
@@ -243,12 +260,36 @@ behind after voucher data has already been written. On startup,
 files under `Print/YYYY/MM` when they are older than 24 hours. Backup creation
 also excludes those renderer scratch files.
 
-## Deletion policy
+## Deletion and revocation policy
 
-Voucher Management is not a revocation console. A voucher may be deleted by the
-application only before the first physical print recorded by the application.
-After printing, lifecycle administration belongs to the controller
-administrator.
+Ordinary deletion is deliberately narrow: it is a preparation-error correction,
+not a general revocation command. A voucher must be positively unused and
+positively not printed, with complete local alignment, before the application
+offers ordinary deletion. The operator must supply a reason and every selected
+voucher is re-read from UniFi immediately before the destructive operation.
+
+One controlled exception exists for an unusable controller-created voucher
+whose UniFi description is empty: if usage has been positively observed as zero,
+no verified print exists, alignment is incomplete and print state remains
+unknown, the operator may remove it with a mandatory reason rather than invent
+recipient or print history.
+
+Printed vouchers are handled by the separate security-revocation workflow.
+Printed vouchers left without positive-use evidence beyond the configured
+threshold are proposed for review, never revoked automatically. A positive
+legacy PRINTED fact with no determinable print date is proposed immediately:
+without a date the application cannot calculate how long the materialized
+credential may have been circulating. Each candidate is read directly by UUID
+immediately before DELETE. The local voucher code, recipient/description,
+nominality, notes and complete audit are preserved after revocation.
+
+A list omission is never sufficient by itself to prove that a voucher has been
+deleted. The first omission is recorded only as an internal suspicion; after a
+later complete omission Voucher Management performs a direct UUID read. Only a
+definitive voucher-not-found result is accepted as external deletion evidence.
+A confirmed DELETE response, on the other hand, is itself positive mutation
+evidence and is persisted immediately without waiting for read-after-write list
+consistency.
 
 ## Backup
 
@@ -276,41 +317,74 @@ Legacy unencrypted format-1 and format-2 ZIP backups remain readable.
 
 ## Network adapter
 
-The 4.2 adapter uses the documented UniFi Network integration API with an
+The 5.1 adapter uses the documented UniFi Network integration API with an
 X-API-Key header.
 
 Connection flow:
 
-1. validate the supplied API root and API key with GET /info;
+1. validate the supplied API root and session-only API key with GET /info;
 2. enumerate sites through GET /sites;
-3. automatically select the site only when the choice is unambiguous;
-4. paginate the official hotspot voucher list;
-5. map official fields into the controller-independent ApiVoucher model.
+3. on first association select automatically only when discovery is unambiguous;
+4. persist the verified Site UUID as non-secret controller identity;
+5. on later connections require that exact Site UUID when the same API root
+   exposes multiple Sites;
+6. paginate the official hotspot voucher list with strict count/offset/total
+   consistency checks and duplicate-UUID detection;
+7. map official fields into the controller-independent ApiVoucher model.
+
+The durable controller identity is therefore API root plus Site UUID. A legacy
+profile with no Site UUID may adopt the first uniquely verified Site in place,
+preserving its local history; a different non-empty Site UUID at the same URL is
+never silently merged into that archive.
 
 The API key exists only in the connected client instance. TLS certificate
 verification is enabled by default. Local/self-signed compatibility uses
 explicit SHA-256 certificate pinning before any authenticated request. It is an
-explicit per-client setting and does not modify process-wide SSL defaults.
+explicit per-client setting and does not modify process-wide SSL defaults. A
+backup restore clears the saved live API root, Site UUID and certificate pin so
+restored state never pre-authorizes a controller target.
 
 Voucher creation uses only documented request fields. Internal quota=0 means
 "authorizedGuestLimit omitted" and is never transmitted as zero. Because create
-is non-idempotent, a fixed-content durable marker is written before the POST.
-Transport failures, ambiguous server errors and malformed successful responses
-are classified as an uncertain mutation and are never replayed automatically.
-The application may perform a safe GET reconciliation, but further creation
-remains blocked until an operator-triggered refresh succeeds. Deletion uses one
-documented UUID DELETE request per voucher rather than bulk filters.
+is non-idempotent, an anti-repeat guard and a privacy-safe recovery intent are
+written before the POST. The recovery intent contains no voucher code, recipient
+plaintext, API key or controller URL. Transport failures, ambiguous server
+errors and malformed successful responses are classified as an uncertain
+mutation and are never replayed automatically. After a later authoritative
+snapshot, compatible new vouchers are only proposed to the operator: even an
+exact candidate set is never associated automatically.
+
+DELETE requests use one documented UUID endpoint per voucher. Transport/server
+ambiguity is typed as an uncertain mutation and is not blindly replayed.
+Confirmed DELETE responses are persisted immediately; uncertain results remain
+pending until later positive presence or direct UUID absence resolves them.
+
+Retryable read transport loss during an established session enters a finite
+automatic reconnect state. Home becomes non-live and the status indicator is
+orange while retries are scheduled; after the retry budget is exhausted the
+state becomes red and further reconnection requires an explicit operator action.
 
 ## Packaging
 
-The Windows build is PyInstaller onedir. The public executable name is
-VoucherManagement.exe. Release builds are intended to be generated by GitHub
-Actions and later submitted to SignPath Foundation using origin verification.
+The application payload is a PyInstaller onedir build whose executable is
+`VoucherManagement.exe`. Managed deployment additionally produces a
+self-contained elevated `VoucherManagement-Setup-<version>.exe` bootstrapper.
+The bootstrapper embeds the verified onedir payload and invokes the reviewed
+shared-install PowerShell path from a protected Program Files staging area.
+Windows CI tests the portable payload, shared ACLs, Setup compilation, Setup
+icon/metadata and an actual silent install/uninstall cycle before artifacts are
+retained. Public release artifacts remain unsigned unless the code-signing
+policy is explicitly updated.
 
 
 ## Current site-selection boundary
 
-The public 4.2 release line automatically selects a UniFi site only when site
-discovery is unambiguous. Controllers exposing multiple sites are intentionally
-rejected rather than guessed. Interactive multi-site selection is planned for a
-later release.
+A previously unknown controller still requires unambiguous Site discovery; the
+application does not ask an operator to guess between arbitrary Sites. Once a
+Site has been verified, its UUID is stored with the controller identity and
+future sessions reconnect only to that Site. If that stored Site UUID is no
+longer returned by the same API root, connection fails closed rather than
+silently switching the archive to another Site.
+
+Interactive first-association selection among multiple unknown Sites remains
+outside the current release scope.

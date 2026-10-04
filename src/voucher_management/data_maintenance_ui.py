@@ -28,6 +28,7 @@ from .legacy_migration import (
     build_legacy_migration_plan,
     execute_legacy_migration,
     legacy_candidates_from_database,
+    legacy_migration_plan_needs_reconciliation,
 )
 from .shared_data_migration import (
     SharedDataMigrationError,
@@ -407,7 +408,11 @@ class DataMaintenanceMixin:
                             parent=parent,
                         )
                         return
-                self.populate()
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="pending_print_recovery",
+                )
+                if not refreshed:
+                    return
                 messagebox.showinfo(
                     "Registrazione stampa",
                     "La stampa pendente è stata registrata correttamente "
@@ -603,7 +608,11 @@ class DataMaintenanceMixin:
             def applied(added) -> None:
                 self.settings = self.settings_store.load()
                 self._history_error_shown = False
-                self.populate()
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="history_exchange_import",
+                )
+                if not refreshed:
+                    return
                 messagebox.showinfo(
                     "Importa cronologia",
                     "Merge completato.\n\n"
@@ -762,14 +771,9 @@ class DataMaintenanceMixin:
                     import_db.close()
 
             def completed(result) -> None:
-                self.populate()
-                refresh_report = getattr(
-                    self,
-                    "_refresh_report_summary",
-                    None,
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="legacy_backup_import",
                 )
-                if refresh_report is not None:
-                    refresh_report()
                 refresh_backup = getattr(
                     self,
                     "_refresh_backup_summary",
@@ -784,6 +788,8 @@ class DataMaintenanceMixin:
                 )
                 if refresh_legacy is not None:
                     refresh_legacy()
+                if not refreshed:
+                    return
 
                 messagebox.showinfo(
                     "Importazione completata",
@@ -863,7 +869,126 @@ class DataMaintenanceMixin:
             busy_scope=self._dialog_busy_scope(parent),
         )
 
-    def migrate_legacy_history(self, *, parent=None) -> None:
+    def offer_legacy_reconciliation_after_sync(self) -> None:
+        """Analyse legacy HMAC evidence after the first authoritative sync.
+
+        The analysis is automatic once per application session.  No migration
+        write is automatic: when useful evidence remains, the existing guided
+        workflow still requires operator confirmation and a verified encrypted
+        pre-migration backup.
+        """
+
+        if getattr(
+            self,
+            "_legacy_reconciliation_checked_this_session",
+            False,
+        ):
+            return
+        self._legacy_reconciliation_checked_this_session = True
+
+        history_path = Path(self.paths.history)
+        try:
+            if not history_path.is_file() or history_path.stat().st_size == 0:
+                return
+            fingerprint, history_key = (
+                self.history.verified_identity_material()
+            )
+            candidates = legacy_candidates_from_database(
+                self.database,
+                preferred_controller_id=getattr(
+                    self,
+                    "active_controller_id",
+                    None,
+                ),
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "legacy_reconciliation_preflight_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showwarning(
+                "Storico precedente da verificare",
+                "È presente uno storico locale, ma non può essere verificato "
+                "automaticamente. Aprire Manutenzione e usare la procedura "
+                "'Migrazione storico 4.x' dopo aver verificato il backup/chiave.",
+                parent=self,
+            )
+            return
+
+        def planned(plan) -> None:
+            try:
+                needs_work = legacy_migration_plan_needs_reconciliation(
+                    self.database,
+                    plan,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "legacy_reconciliation_compare_failed type=%s",
+                    type(exc).__name__,
+                )
+                messagebox.showwarning(
+                    "Storico precedente da verificare",
+                    "Lo storico precedente è stato letto, ma il confronto con "
+                    "l'archivio locale non è conclusivo. Usare Manutenzione per "
+                    "la verifica guidata.",
+                    parent=self,
+                )
+                return
+
+            if not needs_work:
+                self.logger.info(
+                    "legacy_reconciliation_no_pending_work rows=%s",
+                    plan.total_rows,
+                )
+                return
+
+            self.logger.info(
+                "legacy_reconciliation_guided_offer rows=%s resolved=%s "
+                "ambiguous=%s unresolved=%s",
+                plan.total_rows,
+                len(plan.resolved),
+                len(plan.ambiguous),
+                len(plan.unresolved),
+            )
+            self.migrate_legacy_history(
+                parent=self,
+                prebuilt_plan=plan,
+            )
+
+        def planning_failed(exc: Exception) -> None:
+            self.logger.warning(
+                "legacy_reconciliation_plan_failed type=%s",
+                type(exc).__name__,
+            )
+            messagebox.showwarning(
+                "Storico precedente da verificare",
+                str(exc)
+                if isinstance(exc, LegacyMigrationError)
+                else (
+                    "Impossibile analizzare automaticamente lo storico "
+                    "precedente. Usare Manutenzione per la verifica guidata."
+                ),
+                parent=self,
+            )
+
+        self._run_background_task(
+            "Verifica storico precedente…",
+            lambda: build_legacy_migration_plan(
+                history_path=history_path,
+                expected_fingerprint=fingerprint,
+                secret=history_key,
+                candidates=candidates,
+            ),
+            planned,
+            planning_failed,
+        )
+
+    def migrate_legacy_history(
+        self,
+        *,
+        parent=None,
+        prebuilt_plan=None,
+    ) -> None:
         """Run the explicit 4.x history migration after operator review.
 
         Candidate voucher identities are snapshotted on the Tk thread from the
@@ -873,23 +998,33 @@ class DataMaintenanceMixin:
         """
 
         parent = parent or self
-        try:
-            fingerprint, history_key = self.history.verified_identity_material()
-            candidates = legacy_candidates_from_database(self.database)
-        except Exception as exc:
-            detail = (
-                str(exc)
-                if isinstance(exc, (HistoryError, LegacyMigrationError))
-                else "Impossibile preparare la migrazione dello storico."
+        if prebuilt_plan is None:
+            try:
+                fingerprint, history_key = (
+                    self.history.verified_identity_material()
+                )
+                candidates = legacy_candidates_from_database(
+                self.database,
+                preferred_controller_id=getattr(
+                    self,
+                    "active_controller_id",
+                    None,
+                ),
             )
-            messagebox.showerror(
-                "Migrazione storico 4.x",
-                detail,
-                parent=parent,
-            )
-            return
+            except Exception as exc:
+                detail = (
+                    str(exc)
+                    if isinstance(exc, (HistoryError, LegacyMigrationError))
+                    else "Impossibile preparare la migrazione dello storico."
+                )
+                messagebox.showerror(
+                    "Migrazione storico 4.x",
+                    detail,
+                    parent=parent,
+                )
+                return
 
-        history_path = Path(self.paths.history)
+            history_path = Path(self.paths.history)
 
         def planned(plan) -> None:
             if plan.total_rows == 0:
@@ -978,7 +1113,11 @@ class DataMaintenanceMixin:
                     migration_db.close()
 
             def completed(result) -> None:
-                self.populate()
+                refreshed = self._finalize_voucher_operation_ui(
+                    operation="legacy_history_migration",
+                )
+                if not refreshed:
+                    return
                 messagebox.showinfo(
                     "Migrazione storico 4.x",
                     "Migrazione completata.\n\n"
@@ -1029,6 +1168,10 @@ class DataMaintenanceMixin:
                 detail,
                 parent=parent,
             )
+
+        if prebuilt_plan is not None:
+            planned(prebuilt_plan)
+            return
 
         self._run_background_task(
             "Analisi storico 4.x…",

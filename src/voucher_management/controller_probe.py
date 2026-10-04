@@ -28,6 +28,7 @@ def probe_controller(
     api_key: str,
     *,
     trusted_cert_sha256: str | None = None,
+    preferred_site_id: str | None = None,
     client_factory: Callable[..., UniFiClient] = UniFiClient,
 ) -> ControllerProbeResult:
     """Validate one controller and fetch the initial complete voucher snapshot."""
@@ -35,6 +36,7 @@ def probe_controller(
     client = client_factory(
         api_root,
         trusted_cert_sha256=trusted_cert_sha256,
+        preferred_site_id=preferred_site_id,
     )
     info = client.connect(api_key)
     vouchers = tuple(client.list_vouchers())

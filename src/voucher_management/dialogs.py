@@ -44,6 +44,7 @@ class CreateDialog(tk.Toplevel):
         self.data = tk.StringVar()
         self.down = tk.StringVar()
         self.up = tk.StringVar()
+        self.nominal = tk.BooleanVar(value=False)
 
         frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True)
@@ -75,8 +76,18 @@ class CreateDialog(tk.Toplevel):
                 pady=4,
             )
 
+        ttk.Checkbutton(
+            frame,
+            text="Voucher nominale",
+            variable=self.nominal,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 2))
+        ttk.Label(
+            frame,
+            text="Classificazione locale per i report; non viene inviata a UniFi.",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
         ttk.Label(frame, text="Utilizzo").grid(
-            row=2,
+            row=4,
             column=0,
             sticky="w",
             pady=4,
@@ -87,28 +98,28 @@ class CreateDialog(tk.Toplevel):
             state="readonly",
             values=("Monouso", "Multiuso", "Multiuso illimitato"),
             width=22,
-        ).grid(row=2, column=1, sticky="w")
+        ).grid(row=4, column=1, sticky="w")
 
         ttk.Label(
             frame,
-            text="Numero utilizzi (Multiuso)",
-        ).grid(row=3, column=0, sticky="w", pady=4)
+            text="Limite guest autorizzati (Multiuso)",
+        ).grid(row=5, column=0, sticky="w", pady=4)
         ttk.Spinbox(
             frame,
             from_=2,
             to=999,
             textvariable=self.quota,
             width=8,
-        ).grid(row=3, column=1, sticky="w")
+        ).grid(row=5, column=1, sticky="w")
 
-        ttk.Label(frame, text="Scadenza").grid(
-            row=4,
+        ttk.Label(frame, text="Validità dal primo utilizzo").grid(
+            row=6,
             column=0,
             sticky="w",
             pady=4,
         )
         expiry = ttk.Frame(frame)
-        expiry.grid(row=4, column=1, sticky="w")
+        expiry.grid(row=6, column=1, sticky="w")
         ttk.Spinbox(
             expiry,
             from_=1,
@@ -130,7 +141,7 @@ class CreateDialog(tk.Toplevel):
                 ("Download Mbps (vuoto = illimitato)", self.down),
                 ("Upload Mbps (vuoto = illimitato)", self.up),
             ),
-            5,
+            7,
         ):
             ttk.Label(frame, text=label).grid(
                 row=row,
@@ -146,7 +157,7 @@ class CreateDialog(tk.Toplevel):
 
         buttons = ttk.Frame(frame)
         buttons.grid(
-            row=8,
+            row=10,
             column=0,
             columnspan=2,
             sticky="e",
@@ -176,6 +187,11 @@ class CreateDialog(tk.Toplevel):
                 data_mb=self.data.get(),
                 down_mbps=self.down.get(),
                 up_mbps=self.up.get(),
+                is_nominal=(
+                    self.nominal.get()
+                    if hasattr(self, "nominal")
+                    else False
+                ),
             )
         except (TypeError, ValueError, tk.TclError):
             messagebox.showerror(
@@ -313,20 +329,30 @@ class ReprintConfirmDialog(tk.Toplevel):
                 frame,
                 text=f"Voucher: {code}",
             ).pack(anchor="w")
-            ttk.Label(
-                frame,
-                text=(
-                    "Ultima stampa: "
-                    f"{_local_print_time(warning.last_printed_at)}"
-                ),
-            ).pack(anchor="w", pady=(4, 0))
-            ttk.Label(
-                frame,
-                text=(
-                    "Stampe precedenti: "
-                    f"{warning.previous_print_jobs}"
-                ),
-            ).pack(anchor="w", pady=(4, 0))
+            if warning.print_history_incomplete:
+                ttk.Label(
+                    frame,
+                    text="Ultima stampa: non determinabile",
+                ).pack(anchor="w", pady=(4, 0))
+                ttk.Label(
+                    frame,
+                    text="Stampe precedenti: numero non determinabile",
+                ).pack(anchor="w", pady=(4, 0))
+            else:
+                ttk.Label(
+                    frame,
+                    text=(
+                        "Ultima stampa: "
+                        f"{_local_print_time(warning.last_printed_at)}"
+                    ),
+                ).pack(anchor="w", pady=(4, 0))
+                ttk.Label(
+                    frame,
+                    text=(
+                        "Stampe precedenti: "
+                        f"{warning.previous_print_jobs}"
+                    ),
+                ).pack(anchor="w", pady=(4, 0))
             continue_text = "Ristampa voucher"
         else:
             self.title("Conferma ristampe")
@@ -357,12 +383,17 @@ class ReprintConfirmDialog(tk.Toplevel):
             details_button.pack(anchor="w", pady=(0, 8))
 
             for code, warning in self.warnings:
-                ttk.Label(
-                    self.details,
-                    text=(
+                detail = (
+                    f"{code} — storico stampa precedente non determinabile"
+                    if warning.print_history_incomplete
+                    else (
                         f"{code} — {warning.previous_print_jobs} stampe — "
                         f"ultima {_local_print_time(warning.last_printed_at)}"
-                    ),
+                    )
+                )
+                ttk.Label(
+                    self.details,
+                    text=detail,
                 ).pack(anchor="w", pady=2)
             continue_text = "Continua con le ristampe"
 

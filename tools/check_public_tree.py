@@ -57,7 +57,7 @@ EXCLUDED_DIRECTORY_NAMES = {
 }
 
 TEXT_SUFFIXES = {
-    ".py", ".ps1", ".md", ".txt", ".yml", ".yaml",
+    ".py", ".ps1", ".cs", ".manifest", ".md", ".txt", ".yml", ".yaml",
     ".json", ".toml", ".spec",
 }
 

@@ -7,30 +7,48 @@ Status: released 2026-09-27; maintained as the 5.0 architecture baseline.
 ## Report credential exposure policy
 
 Voucher codes are reusable network credentials and are therefore excluded by
-default from every report. Summary and audit reports cannot expose a clear code
-even if a caller requests it. The only permitted exception remains an explicit
-operational-handoff purpose requested by the operator.
+default from every report. Summary reports can never expose a clear code.
+Complete audit history and operational handoff may expose codes only after an
+explicit operator request; this preserves the locally retained credential
+without making routine exports disclose it.
 
-Reporting is now implemented through one privacy boundary:
+Reporting is implemented through one policy boundary:
 `reporting.build_report_dataset()` reads durable SQLite facts, applies
-`report_policy.py`, and returns renderer-safe rows. Administrative summary and
-audit datasets therefore contain an empty voucher-code field even when a caller
-requests code exposure. PDF/CSV renderers accept only this sanitized dataset and
-have no database or controller access. As a second boundary they re-evaluate
-the central code-exposure policy and reject an inconsistent dataset, so a
-manually constructed summary/audit object cannot smuggle a clear voucher code
-into an export.
+`report_policy.py`, and returns renderer-safe rows. PDF/CSV renderers accept
+only this dataset and have no database or controller access. As a second
+boundary they re-evaluate the central code-exposure policy and reject an
+inconsistent dataset, so a manually constructed summary object cannot smuggle a
+clear voucher code into an export.
 
-The operator UI provides summary, used, expired, printed-but-never-used,
-never-printed, nominal-assignment and full-history views, scoped either to the
-active controller or to all persisted controllers. PDF output is printable A4
-landscape; CSV is an administrative export. Both are written atomically.
+The operator UI provides historical summary, generated-by-application,
+generated-but-never-observed-used, used, expired, printed,
+printed-but-never-used, never-printed, explicitly nominal, unclassified and
+full-history views. The default scope is the complete local archive; the active
+controller is an optional filter. PDF output is printable A4 landscape; CSV is
+an administrative export. Both are written atomically.
 
-Report totals are calculated from atomic persisted facts: current/last-observed
-controller usage counters and the application's physical-print audit. A usage
-counter is never converted into an invented guest-use timestamp. Controller
-creation time and first local import time remain separate fields rather than
-being collapsed into an unsupported created/imported classification.
+The operational Home and administrative Report workspaces intentionally answer
+different questions. Home is a live controller workspace: its counters and
+recent-voucher list remain blank until this process has completed a successful
+controller list operation. Report is an offline-capable history workspace and
+always reads persisted SQLite facts.
+
+Schema version 5 retains application-owned `origin`, tri-state `is_nominal`,
+monotonic `ever_used` and compatibility state for historical nominality
+redaction. `origin='APPLICATION'` is reserved for controller vouchers whose
+creation was confirmed by Voucher Management. Controller/external discovery
+remains distinct. A legacy PDF `generate` event proves document generation,
+not controller creation, so it cannot promote a voucher into the application
+creation set. Pre-existing rows migrate conservatively instead of receiving
+invented provenance or nominality. `ever_used` becomes true as soon as any
+controller evidence proves positive use and never returns to false.
+
+Report totals are calculated from atomic persisted facts: the durable
+`ever_used` fact, current/last-observed controller usage counters and the
+application's physical-print audit. A usage counter is never converted into an
+invented guest-use timestamp. Controller creation time and first local import
+time remain separate fields rather than being collapsed into an unsupported
+created/imported classification.
 
 ## Data ownership
 
@@ -109,41 +127,50 @@ still requires the existing explicit operator recovery decision.
 
 ## Retention
 
-Default policy:
+Retention review and controller-side security revocation are intentionally
+separate concerns.
 
-- used vouchers are protected;
-- physically printed vouchers are protected;
-- only never-used, never-printed vouchers are candidates for age-based cleanup;
-- the default candidate age is 180 days;
-- cleanup is review-driven, not silent deletion.
+The current release has two explicit voucher thresholds and no active privacy
+retention policy. New installations must choose both values; upgraded
+installations without them remain fail-closed and produce no threshold
+candidates until configured.
 
-The implemented 5.0 candidate boundary is deliberately stricter than the
-minimum policy: a voucher must also be absent from the latest complete
-controller snapshot and have no generated-PDF or physical-print evidence in
-the verified HMAC history. A generated PDF is treated as credential-bearing
-material even if it was never sent to a printer. If the HMAC history cannot be
-verified, retention fails closed and no candidate can be minimized. When an
-expiry timestamp
-exists it is the age basis, so a voucher is never proposed merely because it
-was created long ago while its known validity still extends into the future.
+The operational threshold flags vouchers that are still present on UniFi,
+positively aligned as `NOT_PRINTED`, never observed used, and older than the
+configured age measured from the UniFi creation timestamp. It is alert-only and
+never authorizes deletion.
 
-"Cleanup" is data minimization rather than destruction of the durable historical
-row. After explicit operator selection the application revalidates the candidate
-inside the write transaction, sets `archived_at`, replaces the reusable voucher
-code with a non-credential tombstone and removes recipient, nominal assignment
-and free-text notes. Controller identifiers, non-secret lifecycle metadata,
-observations and the retention audit event remain available for historical
-reports. Archived rows are excluded from the ordinary operator voucher list.
+Privacy minimization is disabled in the current release. The retained backend
+entry point fails closed; it cannot set `archived_at`, replace voucher
+credentials, erase recipient/local fields or redact nominality. Historical
+`RETENTION_ARCHIVED` facts from old beta data remain irreversible evidence,
+but no new minimization is created.
 
-If the same UniFi voucher identifier later reappears in a successful controller
-snapshot, the normal upsert clears `archived_at` and restores current
-controller-owned voucher fields rather than creating a second historical row.
+Security revocation covers a different risk: a voucher may have been printed
+and remain valid on UniFi without any positive-use evidence for longer than the
+operator-selected security threshold. With a known print timestamp, candidate
+selection requires a controller observation after the latest print. A voucher
+positively classified as printed but lacking a reconstructable print timestamp
+is proposed for immediate review. Immediately before DELETE the application
+performs a fresh GET of that exact voucher and refuses revocation if it is
+expired, has positive use, is missing or no longer matches the candidate.
 
-The first-run wizard explains that recommended retention defaults are already
-configured and should be changed only when specifically required. Continue is
-the primary action; advanced editing is secondary. Completion is recorded in
-the shared SQLite installation settings, so the explanation is installation-
-scoped rather than repeated for every Windows profile.
+Before DELETE, Voucher Management commits a
+`SECURITY_REVOKE_REQUESTED` audit marker. A confirmed DELETE promotes that
+marker to `SECURITY_REVOKED`. If the network outcome is uncertain, automatic
+replay is forbidden; a later complete controller snapshot reconciles the
+request. Audit details distinguish direct DELETE confirmation from absence
+confirmed only by a later snapshot. If the voucher is still present, the
+request becomes `SECURITY_REVOKE_NOT_APPLIED` and a later operator-reviewed
+attempt can start again.
+
+Revocation never performs privacy minimization. Voucher code, recipient, local
+assignment, notes, nominality and historical events remain available locally.
+The reporting layer exposes “Revocato per sicurezza”; complete history can show
+the preserved clear code only after explicit operator opt-in. Ordinary
+preparation-error deletion likewise stores a mandatory reason before DELETE and
+reports the confirmed deletion timestamp and reason after snapshot
+reconciliation.
 
 ## First-run and upgrade disposition
 
@@ -401,13 +428,65 @@ the source profile because that source is contractually left unchanged; after
 a successful restore it writes the verified source-backup facts into the
 resulting shared database instead.
 
+## Export identity and uniqueness
+Schema 5 also repairs provenance for synthetic pre-SQLite backup controllers:
+a recovered legacy recipient historically stored in `vouchers.name` is moved
+to `assigned_to` only when the local assignment is empty, and the synthetic
+controller-name field is cleared. Real UniFi controller rows are not modified.
+New legacy imports follow the same rule directly.
+
+
+Exported administrative data is keyed by the durable SQLite voucher row, whose
+controller identity is `(controller_id, unifi_id)`. A voucher code is not an
+identity key and is never used to collapse report rows. The reporting query
+returns one row per voucher and aggregates print facts by that voucher row;
+security events are read through a scalar aggregate so additional historical
+events cannot multiply print totals.
+
+Any future reporting change that returns the same voucher ID more than once is
+rejected before PDF/CSV rendering. Logically inconsistent states such as
+`ever_used=1` without usage evidence, or simultaneous nominal classification
+and privacy redaction, also fail closed rather than producing a plausible but
+incorrect export.
+
+Physical-print and voucher-PDF workflows resolve human-readable codes only when
+the code maps to exactly one voucher on the active controller. Missing or
+ambiguous mappings are rejected. A print batch also rejects duplicate voucher
+IDs and duplicate codes; deliberate multiple labels remain supported only for
+the explicit single unlimited-voucher copy workflow.
+
+History exchange uses stable `event_id` / `print_job_id + voucher_id`
+identities for modern events, preserves legacy rows as a multiset and rejects
+duplicate/conflicting modern event identities. Re-import is idempotent.
+
+Backup export does not recalculate or deduplicate application facts: it captures
+a transactionally consistent SQLite image. The backup container rejects
+duplicate/case-colliding Windows paths and validates SQLite integrity, snapshot
+hash and schema version before restore.
+
 ## Reporting
 
 Reports are calculated from durable atomic facts rather than stored aggregate
-monthly counters. Required report dimensions include created/imported vouchers,
-unique printed vouchers, physical copies, reprints, used vouchers, total
-controller-reported uses, expired vouchers, printed-but-never-used vouchers,
-never-printed vouchers, nominal assignment, controller and Windows operator.
+monthly counters. The local archive is authoritative for creation provenance,
+explicit nominal classification, physical print/reprint audit and the monotonic
+"ever observed used" fact. UniFi remains authoritative for the controller state
+seen at each synchronization.
+
+A successful create records `origin='APPLICATION'` and the operator's
+`is_nominal` choice only for voucher IDs returned by that confirmed create.
+Those fields survive later controller upserts. Legacy PDF-generation or print evidence is materialized as historical
+document/print evidence only; it does not prove who created the voucher on the
+controller. Historical rows for which creation provenance cannot be established
+remain `origin='UNKNOWN'` and `is_nominal=NULL`; no historical fact is invented.
+
+Required report dimensions include all locally retained vouchers, vouchers
+generated by Voucher Management, generated-but-never-observed-used vouchers,
+unique printed vouchers, indeterminate print state, physical copies, reprints,
+used vouchers, total last-observed controller uses, expired vouchers,
+printed-but-never-used vouchers, never-printed vouchers,
+nominal/non-nominal/unclassified state, created-but-unprinted threshold
+candidates, security-review candidates, confirmed security revocations,
+confirmed preparation deletions with reason, controller and Windows operator.
 
 Observation timestamps mean "the application observed this change at this
 time". They must not be presented as an exact guest-use timestamp unless UniFi

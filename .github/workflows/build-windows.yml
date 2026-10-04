@@ -1,4 +1,4 @@
-name: Build Windows portable
+name: Build Windows
 
 on:
   push:
@@ -7,6 +7,7 @@ on:
       - public-readiness
       - 'beta/**'
       - 'release/**'
+      - 'feature/**'
     paths:
       - 'src/**'
       - 'tests/**'
@@ -51,6 +52,30 @@ jobs:
           cache: 'pip'
           cache-dependency-path: requirements-lock.txt
 
+      - name: Stage deterministic Tcl/Tk runtime
+        shell: pwsh
+        run: |
+          $sourceRoot = Join-Path $env:pythonLocation "tcl"
+          $tclSource = Join-Path $sourceRoot "tcl8.6"
+          $tkSource = Join-Path $sourceRoot "tk8.6"
+          if (-not (Test-Path -LiteralPath (Join-Path $tclSource "init.tcl") -PathType Leaf)) {
+            throw "Hosted Python Tcl runtime is incomplete: $tclSource"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $tkSource "tk.tcl") -PathType Leaf)) {
+            throw "Hosted Python Tk runtime is incomplete: $tkSource"
+          }
+
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP "voucher-management-tcltk"
+          Remove-Item -LiteralPath $runtimeRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
+          Copy-Item -LiteralPath $tclSource -Destination $runtimeRoot -Recurse -Force
+          Copy-Item -LiteralPath $tkSource -Destination $runtimeRoot -Recurse -Force
+
+          $tclRuntime = Join-Path $runtimeRoot "tcl8.6"
+          $tkRuntime = Join-Path $runtimeRoot "tk8.6"
+          "TCL_LIBRARY=$tclRuntime" >> $env:GITHUB_ENV
+          "TK_LIBRARY=$tkRuntime" >> $env:GITHUB_ENV
+
       - name: Create isolated build environment
         shell: pwsh
         run: |
@@ -59,10 +84,10 @@ jobs:
           .\.venv\Scripts\python.exe -m pip install --require-hashes --no-deps -r requirements-lock.txt
           .\.venv\Scripts\python.exe -m pip check
 
-      - name: Verify Pillow Windows integrations
+      - name: Verify Pillow and Tk Windows integrations
         shell: pwsh
         run: |
-          .\.venv\Scripts\python.exe -c "from PIL import Image, ImageTk, ImageWin; image=Image.new('RGB',(2,2),'white'); ImageWin.Dib(image); print('Pillow', Image.__version__, 'ImageTk/ImageWin.Dib OK')"
+          .\.venv\Scripts\python.exe -c "import tkinter as tk; from PIL import Image, ImageTk, ImageWin; root=tk.Tk(); root.withdraw(); root.update_idletasks(); root.destroy(); image=Image.new('RGB',(2,2),'white'); ImageWin.Dib(image); print('Pillow', Image.__version__, 'Tk/ImageTk/ImageWin.Dib OK')"
 
       - name: Audit locked dependencies
         shell: pwsh
@@ -80,6 +105,16 @@ jobs:
         env:
           PYTHONPATH: src
         run: .\.venv\Scripts\python.exe -m compileall -q src launcher.py
+
+      - name: Check Python correctness with Ruff
+        shell: pwsh
+        run: |
+          $lintVenv = Join-Path $env:RUNNER_TEMP "voucher-management-ruff"
+          python -m venv $lintVenv
+          $lintPython = Join-Path $lintVenv "Scripts\python.exe"
+          $ruffExe = Join-Path $lintVenv "Scripts\ruff.exe"
+          & $lintPython -m pip install ruff==0.12.11
+          & $ruffExe check --select F,E9 src launcher.py
 
       - name: Check generic engineering privacy
         run: .\.venv\Scripts\python.exe tools/check_public_tree.py
@@ -205,6 +240,22 @@ jobs:
             ForEach-Object { "$($_.Hash.ToLower())  VoucherManagement.exe" } |
             Out-File -Encoding ascii dist\VoucherManagement\SHA256SUMS.txt
 
+      - name: Build self-contained Windows Setup
+        shell: pwsh
+        run: .\tools\Build-WindowsSetup.ps1 -SourcePath .\dist\VoucherManagement -OutputDirectory .\dist\installer
+
+      - name: Verify Windows Setup icon
+        shell: pwsh
+        run: |
+          $version = (Get-Content version.txt -Raw).Trim()
+          .\.venv\Scripts\python.exe tools\verify_exe_icon.py `
+            --exe ".\dist\installer\VoucherManagement-Setup-$version.exe" `
+            --ico ".\dist\VoucherManagement\_internal\assets\VoucherManagement.ico"
+
+      - name: Test self-contained Windows Setup
+        shell: pwsh
+        run: $version = (Get-Content version.txt -Raw).Trim(); .\tools\Test-WindowsSetupBootstrap.ps1 -SetupPath ".\dist\installer\VoucherManagement-Setup-$version.exe"
+
       - name: Package public release files
         if: github.event.repository.private == false && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
         shell: pwsh
@@ -214,9 +265,15 @@ jobs:
             throw "Public stable release requires a stable SemVer X.Y.Z version: $version"
           }
           $archive = "VoucherManagement-$version-Windows-x64.zip"
+          $setup = "VoucherManagement-Setup-$version.exe"
           Compress-Archive -Path dist\VoucherManagement\* -DestinationPath $archive -CompressionLevel Optimal
+          Copy-Item "dist\installer\$setup" $setup
           $zipHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
-          "$zipHash  $archive" | Out-File -Encoding ascii SHA256SUMS.txt
+          $setupHash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          @(
+            "$zipHash  $archive",
+            "$setupHash  $setup"
+          ) | Out-File -Encoding ascii SHA256SUMS.txt
 
       - name: Upload public release files
         if: github.event.repository.private == false && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
@@ -225,20 +282,34 @@ jobs:
           name: VoucherManagement-release-${{ github.sha }}
           path: |
             VoucherManagement-*-Windows-x64.zip
+            VoucherManagement-Setup-*.exe
             SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload portable build
         # Normal development pushes are still fully compiled/tested, but the
-        # ~28 MB portable ZIP is retained only when explicitly requested or
-        # when building a release/main branch. This prevents Actions artifact
-        # storage from growing on every review commit.
-        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
+        # ~28 MB portable ZIP is normally retained only when explicitly
+        # requested or when building a release/main branch. The current 5.1
+        # reporting-core branch is an explicit field-test exception so the
+        # reviewed portable can be exercised before release without publishing
+        # stable assets.
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || github.ref == 'refs/heads/feature/5.1-reporting-core'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: VoucherManagement-Windows-x64-${{ github.sha }}
           path: dist/VoucherManagement/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Setup build
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || github.ref == 'refs/heads/feature/5.1-reporting-core'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: VoucherManagement-Setup-Windows-x64-${{ github.sha }}
+          path: |
+            dist/installer/VoucherManagement-Setup-*.exe
+            dist/installer/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -264,8 +335,9 @@ jobs:
         run: |
           set -euo pipefail
           archive="$(find release-files -maxdepth 1 -type f -name 'VoucherManagement-*-Windows-x64.zip' -print -quit)"
-          if [ -z "$archive" ]; then
-            echo "Release archive not found"
+          setup="$(find release-files -maxdepth 1 -type f -name 'VoucherManagement-Setup-*.exe' -print -quit)"
+          if [ -z "$archive" ] || [ -z "$setup" ]; then
+            echo "Release archive or Setup.exe not found"
             exit 1
           fi
           base="$(basename "$archive")"
@@ -286,6 +358,7 @@ jobs:
           fi
           gh release create "$tag" \
             "$archive" \
+            "$setup" \
             release-files/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
