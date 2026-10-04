@@ -395,6 +395,11 @@ def test_ui_no_leaves_exact_candidates_external_but_closes_request(
             tasks.append((label, worker, success, error)) or True
         ),
     )
+    fake._finalize_voucher_operation_ui = lambda **kwargs: (
+        fake.checked_ids.clear(),
+        fake.populate(),
+        True,
+    )[-1]
     monkeypatch.setattr(
         creation_ui.messagebox,
         "askyesnocancel",
