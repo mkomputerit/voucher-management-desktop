@@ -298,7 +298,7 @@ def test_ui_requires_explicit_yes_before_associating_exact_candidates(
         settings={},
         logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
         create_guard=guard,
-        checked_ids=set(),
+        checked_ids={"previous-selection"},
         filter_var=SimpleNamespace(set=lambda value: None),
         populate=lambda: None,
         _refresh_report_summary=lambda: None,
@@ -307,6 +307,11 @@ def test_ui_requires_explicit_yes_before_associating_exact_candidates(
             tasks.append((label, worker, success, error)) or True
         ),
     )
+    fake._finalize_voucher_operation_ui = lambda **kwargs: (
+        fake.checked_ids.clear(),
+        fake.populate(),
+        True,
+    )[-1]
     monkeypatch.setattr(
         creation_ui.messagebox,
         "askyesnocancel",
@@ -331,7 +336,7 @@ def test_ui_requires_explicit_yes_before_associating_exact_candidates(
         tasks[0][2](result)
 
         assert guard.pending is False
-        assert fake.checked_ids == {"new-1", "new-2"}
+        assert fake.checked_ids == set()
         assert not marker.exists()
         origins = db.connection.execute(
             "SELECT origin FROM vouchers ORDER BY unifi_id"
@@ -412,6 +417,7 @@ def test_ui_no_leaves_exact_candidates_external_but_closes_request(
         tasks[0][2](result)
 
         assert guard.pending is False
+        assert fake.checked_ids == set()
         assert not marker.exists()
         origins = db.connection.execute(
             "SELECT origin FROM vouchers ORDER BY unifi_id"
