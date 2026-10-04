@@ -15,15 +15,24 @@
   positive evidence from indeterminate/negative observations.
 - Restore the operator-facing **report guide** and preview-first PDF workflow:
   the guide starts from the operator's goal, preselects the matching report,
-  and generated PDFs open in preview before optional save or print.
+  and generated PDFs open in preview before optional save or print. The owner
+  guide explicitly exposes the existing **Voucher nominali** report and the
+  **Voucher eliminati dalla controller** preparation-error report, while
+  security revocations remain a separate report.
 - Consolidate Voucher local actions into one dynamic **Allinea / modifica**
   menu driven by the blue workspace selection. Alignment, nominality and notes
   no longer open a second selector; unavailable actions are disabled
   fail-closed. Expired rows may still be selected for permitted local metadata
   corrections, while print/delete continue to exclude them defensively.
-- Upgrade the SQLite model to **schema 9**, preserving durable controller/Site
+- Standardize every successful voucher-changing workflow on one post-operation
+  refresh invariant: clear the shared Home/Voucher selection, rebuild affected
+  local projections, refresh threshold/report summaries as applicable and avoid
+  unnecessary UniFi reads for local-only metadata changes.
+- Make the corrected modal dialogs DPI-safe so action footers remain reachable
+  without manual resizing; real-Windows UAT confirmed the corrected dialog set.
+- Upgrade the SQLite model to **schema 10**, preserving durable controller/Site
   identity, voucher provenance, explicit print state/alignment, monotonic
-  positive-use evidence, conservative absence tracking and migration
+  positive-use/expiry evidence, conservative absence tracking and migration
   compatibility with older databases.
 - Identify a controller by **API root + verified UniFi Site UUID**. First
   association must be unambiguous; later sessions reconnect only to the same
