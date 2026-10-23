@@ -1,7 +1,7 @@
 # Direct runtime dependencies. Versions must match requirements-lock.txt,
 # which is the hash-verified environment used by Windows CI/release builds.
 reportlab==4.5.1
-Pillow==12.3.0
+Pillow==13.0.0
 pypdfium2==4.30.0
 pywin32==311
 sv-ttk==2.6.1
